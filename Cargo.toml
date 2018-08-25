@@ -1,0 +1,12 @@
+[package]
+name = "rsearch"
+version = "0.1.0"
+authors = ["Yishen Miao <mys721tx@gmail.com>"]
+
+[dependencies]
+bio = "0.21.0"
+clap = "2"
+
+[[bin]]
+name = "derep"
+path = "src/derep/main.rs"
