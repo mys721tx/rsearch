@@ -39,3 +39,67 @@ pub fn parse_id(id: &str) -> (&str, u64) {
 
     (name.unwrap_or("sequence"), size.unwrap_or(1))
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_id() {
+        let mut input = "foo;size=100";
+        let mut expected = ("foo", 100);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should parse a semicolon seperated list."
+        );
+
+        input = "";
+        expected = ("sequence", 1);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should return name of \"sequence\" and size of 1 by default."
+        );
+
+        input = "egg;spam=fried;";
+        expected = ("egg", 1);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should return a size of 1 if not such field is in the input."
+        );
+
+        input = "species=9606;spam=fried;size=100";
+        expected = ("sequence", 100);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should return a name of \"sequence\" of 1 if there is no non-empty field with an equal sign."
+        );
+
+        input = "maple;lily;iris";
+        expected = ("maple", 1);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should return the first non-empty field with an equal sign as the name."
+        );
+
+        input = "size=1;size=2;size=3;size=4";
+        expected = ("sequence", 1);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should return the value of the first non-empty field with an equal sign as size."
+        );
+
+        input = "size=abc;size=def;size=ghi";
+        expected = ("sequence", 1);
+        assert_eq!(
+            parse_id(input),
+            expected,
+            "parse_id should return a size of 1 when all such fields are not numbers."
+        );
+    }
+}
