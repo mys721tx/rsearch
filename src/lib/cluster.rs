@@ -25,7 +25,7 @@ pub fn parse_id(id: &str) -> (&str, u64) {
     for item in id.split(';') {
         let pair: Vec<&str> = item.split('=').collect();
         match pair.len() {
-            1 => if name.is_none() {
+            1 => if name.is_none() && !pair[0].is_empty() {
                 name = Some(pair[0]);
             },
             2 => if size.is_none() && pair[0] == "size" {
