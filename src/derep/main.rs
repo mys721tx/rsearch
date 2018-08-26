@@ -1,6 +1,6 @@
 extern crate bio;
 
-use bio::io::fasta;
+use bio::io::fasta::{Reader, Writer, Record};
 
 use std::collections::HashMap;
 use std::io;
@@ -16,7 +16,7 @@ impl Cluster {
         let merged: Vec<String> = Vec::new();
         Cluster { size: 0, merged }
     }
-    fn build_from_record(record: &bio::io::fasta::Record) -> Cluster {
+    fn build_from_record(record: &Record) -> Cluster {
         let (name, size) = parse_id(record.id());
 
         let merged = vec![name.unwrap_or_default("sequence").to_string()];
@@ -72,7 +72,7 @@ fn parse_id(id: &str) -> (Field<&str>, Field<u64>) {
 fn main() {
     let mut seqs: HashMap<Vec<u8>, Cluster> = HashMap::new();
 
-    let reader = fasta::Reader::new(io::stdin());
+    let reader = Reader::new(io::stdin());
 
     for record in reader.records() {
         let record = record.unwrap();
@@ -87,5 +87,10 @@ fn main() {
         entry.merged.extend(cluster.merged);
     }
 
-    println!("{:?}", seqs);
+    let mut writer = Writer::new(io::stdout());
+
+    for (k, v) in &seqs {
+        let name = format!("{};size={}", v.merged[0], v.size);
+        writer.write(name.as_str(), Option::None, k).unwrap();
+    }
 }
