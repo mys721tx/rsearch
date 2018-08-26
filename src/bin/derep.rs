@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
-use rsearch::cluster::Cluster;
 
 use bio::io::fasta::{Reader, Writer};
 use clap::{App, Arg};
+
+use rsearch::cluster::Cluster;
 
 fn main() {
     let matches = App::new("DeRep")
@@ -46,7 +47,7 @@ fn main() {
 
         let cluster = Cluster::build_from_record(&record);
 
-        let entry = seqs.entry(key).or_insert_with(Cluster::new);
+        let entry = seqs.entry(key).or_default();
 
         entry.size += cluster.size;
         entry.merged.extend(cluster.merged);

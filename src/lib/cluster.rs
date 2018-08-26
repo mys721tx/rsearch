@@ -6,10 +6,6 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn new() -> Cluster {
-        let merged: Vec<String> = Vec::new();
-        Cluster { size: 0, merged }
-    }
     pub fn build_from_record(record: &Record) -> Cluster {
         let (name, size) = parse_id(record.id());
 
