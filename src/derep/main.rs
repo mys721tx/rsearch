@@ -4,7 +4,7 @@ extern crate clap;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{Read, Write};
 
 use bio::io::fasta::{Reader, Record, Writer};
 use clap::{App, Arg};
@@ -92,9 +92,9 @@ fn main() {
                 .takes_value(true),
         ).get_matches();
 
-    let fin: Box<BufRead> = match matches.value_of("in") {
-        Some(f) => Box::new(BufReader::new(File::open(f).unwrap())),
-        None => Box::new(BufReader::new(io::stdin())),
+    let fin: Box<Read> = match matches.value_of("in") {
+        Some(f) => Box::new(File::open(f).unwrap()),
+        None => Box::new(io::stdin()),
     };
 
     let reader = Reader::new(fin);
@@ -115,8 +115,8 @@ fn main() {
     }
 
     let fout: Box<Write> = match matches.value_of("out") {
-        Some(f) => Box::new(BufWriter::new(File::create(f).unwrap())),
-        None => Box::new(BufWriter::new(io::stdout())),
+        Some(f) => Box::new(File::create(f).unwrap()),
+        None => Box::new(io::stdout()),
     };
 
     let mut writer = Writer::new(fout);
