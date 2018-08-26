@@ -17,10 +17,56 @@ impl Cluster {
         Cluster { size: 0, merged }
     }
     fn build_from_record(record: &bio::io::fasta::Record) -> Cluster {
-        let merged = vec![record.id().to_string()];
+        let (name, size) = parse_id(record.id());
 
-        Cluster { size: 1, merged }
+        let merged = vec![name.unwrap_or_default("sequence").to_string()];
+        Cluster {
+            size: size.unwrap_or_default(1),
+            merged,
+        }
     }
+}
+
+enum Field<T> {
+    Set(T),
+    Unset,
+}
+
+impl<T> Field<T> {
+    fn unwrap_or_default(self, default: T) -> T {
+        match self {
+            Field::Set(x) => x,
+            Field::Unset => default,
+        }
+    }
+}
+
+fn parse_id(id: &str) -> (Field<&str>, Field<u64>) {
+    let mut name = Field::Unset;
+    let mut size: Field<u64> = Field::Unset;
+
+    for item in id.split(';') {
+        let pair: Vec<&str> = item.split('=').collect();
+        match pair.len() {
+            1 => match name {
+                Field::Unset => name = Field::Set(pair[0]),
+                Field::Set(_) => (),
+            },
+            2 => match size {
+                Field::Unset => if pair[0] == "size" {
+                    if let Ok(x) = pair[1].parse() {
+                        if x > 0 {
+                            size = Field::Set(x)
+                        }
+                    }
+                },
+                Field::Set(_) => (),
+            },
+            _ => (),
+        }
+    }
+
+    (name, size)
 }
 
 fn main() {
