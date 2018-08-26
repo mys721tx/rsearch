@@ -1,9 +1,13 @@
 extern crate bio;
-
-use bio::io::fasta::{Reader, Writer, Record};
+extern crate clap;
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+
+use bio::io::fasta::{Reader, Record, Writer};
+use clap::{App, Arg};
 
 #[derive(Debug)]
 struct Cluster {
@@ -70,9 +74,32 @@ fn parse_id(id: &str) -> (Field<&str>, Field<u64>) {
 }
 
 fn main() {
-    let mut seqs: HashMap<Vec<u8>, Cluster> = HashMap::new();
+    let matches = App::new("DeRep")
+        .about("Remove duplications in FASTA sequences.")
+        .arg(
+            Arg::with_name("in")
+                .short("i")
+                .long("in")
+                .value_name("INPUT")
+                .help("Input FASTA file, default to stdin")
+                .takes_value(true),
+        ).arg(
+            Arg::with_name("out")
+                .short("o")
+                .long("out")
+                .value_name("OUTPUT")
+                .help("Output FASTA file, default to stdout")
+                .takes_value(true),
+        ).get_matches();
 
-    let reader = Reader::new(io::stdin());
+    let fin: Box<BufRead> = match matches.value_of("in") {
+        Some(f) => Box::new(BufReader::new(File::open(f).unwrap())),
+        None => Box::new(BufReader::new(io::stdin())),
+    };
+
+    let reader = Reader::new(fin);
+
+    let mut seqs: HashMap<Vec<u8>, Cluster> = HashMap::new();
 
     for record in reader.records() {
         let record = record.unwrap();
@@ -87,7 +114,12 @@ fn main() {
         entry.merged.extend(cluster.merged);
     }
 
-    let mut writer = Writer::new(io::stdout());
+    let fout: Box<Write> = match matches.value_of("out") {
+        Some(f) => Box::new(BufWriter::new(File::create(f).unwrap())),
+        None => Box::new(BufWriter::new(io::stdout())),
+    };
+
+    let mut writer = Writer::new(fout);
 
     for (k, v) in &seqs {
         let name = format!("{};size={}", v.merged[0], v.size);
