@@ -9,4 +9,8 @@ clap = "2"
 
 [[bin]]
 name = "derep"
-path = "src/derep/main.rs"
+path = "src/bin/derep.rs"
+
+[lib]
+name = "rsearch"
+path = "src/lib/lib.rs"

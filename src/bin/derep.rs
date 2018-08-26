@@ -1,54 +1,15 @@
 extern crate bio;
 extern crate clap;
+extern crate rsearch;
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
+use rsearch::cluster::Cluster;
 
-use bio::io::fasta::{Reader, Record, Writer};
+use bio::io::fasta::{Reader, Writer};
 use clap::{App, Arg};
-
-#[derive(Debug)]
-struct Cluster {
-    size: u64,
-    merged: Vec<String>,
-}
-
-impl Cluster {
-    fn new() -> Cluster {
-        let merged: Vec<String> = Vec::new();
-        Cluster { size: 0, merged }
-    }
-    fn build_from_record(record: &Record) -> Cluster {
-        let (name, size) = parse_id(record.id());
-
-        let merged = vec![name.to_string()];
-        Cluster { size, merged }
-    }
-}
-
-fn parse_id(id: &str) -> (&str, u64) {
-    let mut name = None;
-    let mut size: Option<u64> = None;
-
-    for item in id.split(';') {
-        let pair: Vec<&str> = item.split('=').collect();
-        match pair.len() {
-            1 => if name.is_none() {
-                name = Some(pair[0]);
-            },
-            2 => if size.is_none() && pair[0] == "size" {
-                if let Ok(x) = pair[1].parse().map(|x| if x > 0 { x } else { 1 }) {
-                    size = Some(x);
-                };
-            },
-            _ => (),
-        }
-    }
-
-    (name.unwrap_or("sequence"), size.unwrap_or(1))
-}
 
 fn main() {
     let matches = App::new("DeRep")
