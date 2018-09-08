@@ -7,7 +7,7 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    /// returns a Cluster from a bio::io::fasta::Record.
+    /// returns a Cluster from a `bio::io::fasta::Record`.
     ///
     /// # Example
     /// ```rust
@@ -34,13 +34,13 @@ impl Cluster {
 
 /// returns the name and the size of a semicolon-saperated string.
 ///
-/// parse_id parses a semicolon-saperated string annotated sequence ID and
+/// `parse_id` parses a semicolon-saperated string annotated sequence ID and
 /// returns the name and the size of that sequence.
 ///
-/// parse_id takes the first non-empty item without an equal sign as the name of
-/// the sequence. parse_id treat non-empty item with a single equal sign as a
-/// key-value pair. parse_id takes the value of the first pair with "size" as key
-/// as the size of the sequence.
+/// `parse_id` takes the first non-empty item without an equal sign as the name
+/// of the sequence. `parse_id` treat non-empty item with a single equal sign as
+/// a key-value pair. `parse_id` takes the value of the first pair with "size" as
+/// key as the size of the sequence.
 ///
 /// If no valid item exists, the name defaults to "sequence" and the size
 /// defaults to 1.
