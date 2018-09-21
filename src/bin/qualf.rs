@@ -9,10 +9,6 @@ use std::io::{Read, Write};
 use bio::io::fastq::{Reader, Writer};
 use clap::{App, Arg};
 
-fn convert_score(q: u8) -> f64 {
-    f64::from(q - 33u8)
-}
-
 fn main() {
     let matches = App::new("QualF")
         .about("Filter FASTQ sequences by quality scores.")
@@ -52,35 +48,28 @@ fn main() {
         if r.check().is_err() {
             continue;
         }
+
         let l = r.seq().len();
 
-        if l < 225 {
+        if l < 225 || l > 275{
             continue;
         }
 
-        if l > 275 {
-            continue;
-        }
-
-        let seq = r.seq();
-        let qual = r.qual();
-
-        let iter = seq.iter().zip(qual.iter());
-
-        let mut phred = 0f64;
-        let mut bad = 0;
-
-        for (s, q) in iter {
-            phred += 10f64.powf(-(convert_score(*q)) / 10f64);
-
-            if s.to_ascii_uppercase() == b'N' {
-                bad += 1;
-            }
-        }
+        let phred: f64 = r
+            .qual()
+            .iter()
+            .map(|x| 10f64.powf(-(f64::from(*x - 33u8) / 10f64)))
+            .sum();
 
         if phred > 0.5f64 {
             continue;
         }
+
+        let bad = r
+            .seq()
+            .iter()
+            .filter(|x| x.to_ascii_uppercase() == b'N')
+            .count();
 
         if bad > 0 {
             continue;
