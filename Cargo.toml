@@ -11,6 +11,10 @@ clap = "2"
 name = "derep"
 path = "src/bin/derep.rs"
 
+[[bin]]
+name = "qualf"
+path = "src/bin/qualf.rs"
+
 [lib]
 name = "rsearch"
 path = "src/lib/lib.rs"
