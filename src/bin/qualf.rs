@@ -5,9 +5,23 @@ extern crate rsearch;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
+use std::str::FromStr;
 
 use bio::io::fastq::{Reader, Writer};
 use clap::{App, Arg};
+
+fn parse_option<T>(o: Option<&str>) -> Option<T>
+where
+    T: FromStr,
+{
+    match o {
+        Some(m) => match m.parse::<T>() {
+            Ok(x) => Some(x),
+            Err(_) => None,
+        },
+        None => None,
+    }
+}
 
 fn main() {
     let matches = App::new("QualF")
@@ -26,6 +40,18 @@ fn main() {
                 .value_name("OUTPUT")
                 .help("Output FASTQ file, default to stdout")
                 .takes_value(true),
+        ).arg(
+            Arg::with_name("max")
+                .long("max")
+                .value_name("MAX_LEN")
+                .help("Maximum value for length filter, disabled by default")
+                .takes_value(true),
+        ).arg(
+            Arg::with_name("min")
+                .long("min")
+                .value_name("MIN_LEN")
+                .help("Minimum value for length filter, disabled by default")
+                .takes_value(true),
         ).get_matches();
 
     let fin: Box<Read> = match matches.value_of("in") {
@@ -42,6 +68,10 @@ fn main() {
 
     let mut writer = Writer::new(fout);
 
+    let min_len = parse_option(matches.value_of("min"));
+
+    let max_len = parse_option(matches.value_of("max"));
+
     for record in reader.records() {
         let r = record.unwrap();
 
@@ -51,8 +81,16 @@ fn main() {
 
         let l = r.seq().len();
 
-        if l < 225 || l > 275{
-            continue;
+        if let Some(m) = min_len {
+            if l < m {
+                continue;
+            }
+        }
+
+        if let Some(m) = max_len {
+            if l > m {
+                continue;
+            }
         }
 
         let phred: f64 = r
