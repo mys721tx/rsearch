@@ -10,6 +10,15 @@ use std::str::FromStr;
 use bio::io::fastq::{Reader, Writer};
 use clap::{App, Arg};
 
+/// parses an `Option<&str>` to `Option<T>`.
+///
+/// # Example
+/// ```rust
+/// let foo = Some("123");
+///
+/// let bar = parse_option<u64>(foo);
+/// assert_eq!(bar, Some(123));
+/// ```
 fn parse_option<T>(o: Option<&str>) -> Option<T>
 where
     T: FromStr,
@@ -89,6 +98,9 @@ fn main() {
     let bad_call = parse_option(matches.value_of("bad_call"));
 
     for record in reader.records() {
+        // Since FASTQ uses '@' for both the description header and a quality symbol, there is no
+        // reliable way to recover from a malformed record.
+        // Panics if a FASTQ record cannot be read.
         let r = record.unwrap();
 
         if r.check().is_err() {
@@ -101,6 +113,8 @@ fn main() {
             continue;
         }
 
+        // Calculates probability of an mistake using Sanger encoding.
+        // Sanger encoding starts from '!', or 33u8.
         let phred: f64 = r
             .qual()
             .iter()
@@ -111,6 +125,7 @@ fn main() {
             continue;
         }
 
+        // Counts the number of bad base call 'N'.
         let bad = r
             .seq()
             .iter()
