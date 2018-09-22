@@ -7,14 +7,6 @@ authors = ["Yishen Miao <mys721tx@gmail.com>"]
 bio = "0.21.0"
 clap = "2"
 
-[[bin]]
-name = "derep"
-path = "src/bin/derep.rs"
-
-[[bin]]
-name = "qualf"
-path = "src/bin/qualf.rs"
-
 [lib]
 name = "rsearch"
 path = "src/lib/lib.rs"
