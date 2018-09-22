@@ -52,6 +52,18 @@ fn main() {
                 .value_name("MIN_LEN")
                 .help("Minimum value for length filter, disabled by default")
                 .takes_value(true),
+        ).arg(
+            Arg::with_name("prob")
+                .long("prob")
+                .value_name("PROB")
+                .help("Probability of incorrect base call for quality filter, disabled by default")
+                .takes_value(true),
+        ).arg(
+            Arg::with_name("bad")
+                .long("bad")
+                .value_name("BAD")
+                .help("Number of bad base call allowed for quality filter, disabled by default")
+                .takes_value(true),
         ).get_matches();
 
     let fin: Box<Read> = match matches.value_of("in") {
@@ -71,6 +83,10 @@ fn main() {
     let min_len = parse_option(matches.value_of("min"));
 
     let max_len = parse_option(matches.value_of("max"));
+
+    let prob = parse_option(matches.value_of("prob"));
+
+    let bad_call = parse_option(matches.value_of("bad_call"));
 
     for record in reader.records() {
         let r = record.unwrap();
@@ -99,8 +115,10 @@ fn main() {
             .map(|x| 10f64.powf(-(f64::from(*x - 33u8) / 10f64)))
             .sum();
 
-        if phred > 0.5f64 {
-            continue;
+        if let Some(p) = prob {
+            if phred > p {
+                continue;
+            }
         }
 
         let bad = r
@@ -109,8 +127,10 @@ fn main() {
             .filter(|x| x.to_ascii_uppercase() == b'N')
             .count();
 
-        if bad > 0 {
-            continue;
+        if let Some(b) = bad_call {
+            if bad > b {
+                continue;
+            }
         }
 
         writer.write_record(&r).unwrap();
