@@ -97,16 +97,8 @@ fn main() {
 
         let l = r.seq().len();
 
-        if let Some(m) = min_len {
-            if l < m {
-                continue;
-            }
-        }
-
-        if let Some(m) = max_len {
-            if l > m {
-                continue;
-            }
+        if min_len.map_or(false, |m| l < m) || max_len.map_or(false, |m| l > m) {
+            continue;
         }
 
         let phred: f64 = r
@@ -115,10 +107,8 @@ fn main() {
             .map(|x| 10f64.powf(-(f64::from(*x - 33u8) / 10f64)))
             .sum();
 
-        if let Some(p) = prob {
-            if phred > p {
-                continue;
-            }
+        if prob.map_or(false, |p| phred > p) {
+            continue;
         }
 
         let bad = r
@@ -127,10 +117,8 @@ fn main() {
             .filter(|x| x.to_ascii_uppercase() == b'N')
             .count();
 
-        if let Some(b) = bad_call {
-            if bad > b {
-                continue;
-            }
+        if bad_call.map_or(false, |b| bad > b) {
+            continue;
         }
 
         writer.write_record(&r).unwrap();
