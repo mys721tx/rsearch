@@ -23,13 +23,7 @@ fn parse_option<T>(o: Option<&str>) -> Option<T>
 where
     T: FromStr,
 {
-    match o {
-        Some(m) => match m.parse::<T>() {
-            Ok(x) => Some(x),
-            Err(_) => None,
-        },
-        None => None,
-    }
+    o?.parse::<T>().ok()
 }
 
 fn main() {
