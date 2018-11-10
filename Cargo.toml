@@ -6,6 +6,7 @@ authors = ["Yishen Miao <mys721tx@gmail.com>"]
 [dependencies]
 bio = "0.23.0"
 clap = "2"
+jemallocator = "0.1.8"
 
 [lib]
 name = "rsearch"

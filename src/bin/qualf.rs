@@ -1,6 +1,10 @@
+extern crate jemallocator;
 extern crate bio;
 extern crate clap;
 extern crate rsearch;
+
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use std::fs::File;
 use std::io;
