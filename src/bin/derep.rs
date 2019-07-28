@@ -1,10 +1,7 @@
-extern crate jemallocator;
-extern crate bio;
-extern crate clap;
-extern crate rsearch;
+use jemallocator::Jemalloc;
 
 #[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -35,7 +32,7 @@ fn main() {
                 .takes_value(true),
         ).get_matches();
 
-    let fin: Box<Read> = match matches.value_of("in") {
+    let fin: Box<dyn Read> = match matches.value_of("in") {
         Some(f) => Box::new(File::open(f).unwrap()),
         None => Box::new(io::stdin()),
     };
@@ -57,7 +54,7 @@ fn main() {
         entry.merged.extend(cluster.merged);
     }
 
-    let fout: Box<Write> = match matches.value_of("out") {
+    let fout: Box<dyn Write> = match matches.value_of("out") {
         Some(f) => Box::new(File::create(f).unwrap()),
         None => Box::new(io::stdout()),
     };

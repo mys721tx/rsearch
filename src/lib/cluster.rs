@@ -1,4 +1,5 @@
 use bio::io::fasta::Record;
+
 #[derive(Debug, Default)]
 /// A struct to store the size and annotation of sequences.
 pub struct Cluster {
