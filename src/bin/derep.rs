@@ -1,7 +1,7 @@
-use jemallocator::Jemalloc;
+use mimalloc::MiMalloc;
 
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: MiMalloc = MiMalloc;
 
 use std::collections::HashMap;
 use std::fs::File;

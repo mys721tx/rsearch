@@ -1,6 +1,7 @@
-use jemallocator::Jemalloc;
+use mimalloc::MiMalloc;
+
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: MiMalloc = MiMalloc;
 
 use std::fs::File;
 use std::io;
