@@ -23,14 +23,16 @@ fn main() {
                 .value_name("INPUT")
                 .help("Input FASTA file, default to stdin")
                 .takes_value(true),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("out")
                 .short("o")
                 .long("out")
                 .value_name("OUTPUT")
                 .help("Output FASTA file, default to stdout")
                 .takes_value(true),
-        ).get_matches();
+        )
+        .get_matches();
 
     let fin: Box<dyn Read> = match matches.value_of("in") {
         Some(f) => Box::new(File::open(f).unwrap()),

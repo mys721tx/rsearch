@@ -37,38 +37,44 @@ fn main() {
                 .value_name("INPUT")
                 .help("Input FASTQ file, default to stdin")
                 .takes_value(true),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("out")
                 .short("o")
                 .long("out")
                 .value_name("OUTPUT")
                 .help("Output FASTQ file, default to stdout")
                 .takes_value(true),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("max")
                 .long("max")
                 .value_name("MAX_LEN")
                 .help("Maximum value for length filter, disabled by default")
                 .takes_value(true),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("min")
                 .long("min")
                 .value_name("MIN_LEN")
                 .help("Minimum value for length filter, disabled by default")
                 .takes_value(true),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("prob")
                 .long("prob")
                 .value_name("PROB")
                 .help("Probability of incorrect base call for quality filter, disabled by default")
                 .takes_value(true),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("bad")
                 .long("bad")
                 .value_name("BAD")
                 .help("Number of bad base call allowed for quality filter, disabled by default")
                 .takes_value(true),
-        ).get_matches();
+        )
+        .get_matches();
 
     let fin: Box<dyn Read> = match matches.value_of("in") {
         Some(f) => Box::new(File::open(f).unwrap()),
