@@ -7,7 +7,7 @@ authors = ["Yishen Miao <mys721tx@gmail.com>"]
 [dependencies]
 bio = "0.31.0"
 clap = "2"
-mimalloc = "0.1.19"
+mimalloc = "0.1.20"
 
 [lib]
 name = "rsearch"
