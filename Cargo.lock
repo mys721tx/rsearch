@@ -57,9 +57,9 @@ checksum = "22130e92352b948e7e82a49cdb0aa94f2211761117f29e052dd397c1ac33542b"
 
 [[package]]
 name = "bio"
-version = "0.37.0"
+version = "0.37.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cd1fa26bbc8822577da82a89c3c362fce337fdca5c1f41f14b4ca6b72065c37"
+checksum = "2788488d71db156b2ed53d2114a84b333a4ad38e855bff3f151d536b2670d08d"
 dependencies = [
  "anyhow",
  "approx",
@@ -89,7 +89,7 @@ dependencies = [
  "serde_derive",
  "statrs",
  "strum",
- "strum_macros 0.16.0",
+ "strum_macros",
  "thiserror",
  "triple_accel",
  "vec_map",
@@ -104,7 +104,7 @@ dependencies = [
  "derive-new",
  "lazy_static",
  "regex",
- "strum_macros 0.20.1",
+ "strum_macros",
  "thiserror",
 ]
 
@@ -797,18 +797,6 @@ name = "strum"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6138f8f88a16d90134763314e3fc76fa3ed6a7db4725d6acf9a3ef95a3188d22"
-
-[[package]]
-name = "strum_macros"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0054a7df764039a6cd8592b9de84be4bec368ff081d203a7d5371cbfa8e65c81"
-dependencies = [
- "heck",
- "proc-macro2 1.0.27",
- "quote 1.0.9",
- "syn 1.0.73",
-]
 
 [[package]]
 name = "strum_macros"

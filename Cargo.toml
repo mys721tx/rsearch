@@ -5,7 +5,7 @@ edition = "2018"
 authors = ["Yishen Miao <mys721tx@gmail.com>"]
 
 [dependencies]
-bio = "0.37.0"
+bio = "0.37.1"
 clap = "2"
 mimalloc = "0.1.19"
 
