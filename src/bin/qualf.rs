@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::str::FromStr;
 
 use bio::io::fastq::{Reader, Writer};
-use clap::{App, Arg};
+use clap::{Arg, Command};
 
 /// parses an `Option<&str>` to `Option<T>`.
 ///
@@ -28,47 +28,47 @@ where
 }
 
 fn main() {
-    let matches = App::new("QualF")
+    let matches = Command::new("QualF")
         .about("Filter FASTQ sequences by quality scores.")
         .arg(
-            Arg::with_name("in")
-                .short("i")
+            Arg::new("in")
+                .short('i')
                 .long("in")
                 .value_name("INPUT")
                 .help("Input FASTQ file, default to stdin")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("out")
-                .short("o")
+            Arg::new("out")
+                .short('o')
                 .long("out")
                 .value_name("OUTPUT")
                 .help("Output FASTQ file, default to stdout")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("max")
+            Arg::new("max")
                 .long("max")
                 .value_name("MAX_LEN")
                 .help("Maximum value for length filter, disabled by default")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("min")
+            Arg::new("min")
                 .long("min")
                 .value_name("MIN_LEN")
                 .help("Minimum value for length filter, disabled by default")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("prob")
+            Arg::new("prob")
                 .long("prob")
                 .value_name("PROB")
                 .help("Probability of incorrect base call for quality filter, disabled by default")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("bad")
+            Arg::new("bad")
                 .long("bad")
                 .value_name("BAD")
                 .help("Number of bad base call allowed for quality filter, disabled by default")

@@ -9,24 +9,24 @@ use std::io;
 use std::io::{Read, Write};
 
 use bio::io::fasta::{Reader, Writer};
-use clap::{App, Arg};
+use clap::{Arg, Command};
 
 use rsearch::cluster::Cluster;
 
 fn main() {
-    let matches = App::new("DeRep")
+    let matches = Command::new("DeRep")
         .about("Remove duplications in FASTA sequences.")
         .arg(
-            Arg::with_name("in")
-                .short("i")
+            Arg::new("in")
+                .short('i')
                 .long("in")
                 .value_name("INPUT")
                 .help("Input FASTA file, default to stdin")
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("out")
-                .short("o")
+            Arg::new("out")
+                .short('o')
                 .long("out")
                 .value_name("OUTPUT")
                 .help("Output FASTA file, default to stdout")
