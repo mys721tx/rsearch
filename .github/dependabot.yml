@@ -6,8 +6,4 @@ updates:
     interval: monthly
     time: "10:00"
   open-pull-requests-limit: 10
-  ignore:
-  - dependency-name: mimalloc
-    versions:
-    - 0.1.22
   rebase-strategy: disabled
