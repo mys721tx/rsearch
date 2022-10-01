@@ -6,7 +6,7 @@ authors = ["Yishen Miao <mys721tx@gmail.com>"]
 
 [dependencies]
 bio = "0.42.0"
-clap = "3.2"
+clap = "4.0"
 mimalloc = "0.1.29"
 
 [lib]
