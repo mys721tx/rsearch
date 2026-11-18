@@ -294,6 +294,47 @@ fn filters_fasta_by_length_ns_and_size() {
 }
 
 #[test]
+fn keeps_whole_headers() {
+    // vsearch --fastx_filter writes headers as read, tabs included
+    let input = ">b\tt\nACGT\n";
+    assert_eq!(run_ok(&["--min", "1"], input), input);
+    let input = "@b\tt x\nACGT\n+\nIIII\n";
+    let expected = "@R1 b\tt x\nACGT\n+\nIIII\n";
+    assert_eq!(
+        run_ok(&["--relabel", "R", "--relabel-keep"], input),
+        expected
+    );
+}
+
+#[test]
+fn keeps_reads_with_empty_labels() {
+    let input = "@\nACGT\n+\nIIII\n";
+    assert_eq!(run_ok(&[], input), input);
+}
+
+#[test]
+fn stops_at_invalid_reads() {
+    // the reads before are written
+    let output = run(&["-q"], "@a\nACGT\n+\nIIII\n@b\nAC*T\n+\nIIII\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"@a\nACGT\n+\nIIII\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Illegal sequence character"), "{stderr}");
+}
+
+/// Runs qualf quietly, which must succeed, and returns its output.
+fn run_ok(args: &[&str], input: &str) -> String {
+    let args = [args, &["-q"]].concat();
+    let output = run(&args, input);
+    assert!(
+        output.status.success(),
+        "qualf failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
 fn rejects_malformed_input() {
     for input in ["r1\nACGT\n+\nIIII\n", "@r1\nACGT\n+\nIII\n", "@r1\nACGT\n"] {
         assert!(!run(&[], input).status.success(), "{input:?} should fail");

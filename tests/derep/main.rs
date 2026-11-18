@@ -308,10 +308,35 @@ fn drops_empty_fastq_reads() {
 }
 
 #[test]
-fn splits_fasta_labels_at_any_whitespace() {
-    // the label is the id, which ends at a tab as well as a space
+fn cuts_labels_at_the_first_blank() {
+    // a label ends at a space or a tab, and a header at a carriage return
     let input = ">a\tdesc\nACGT\n>b desc\nACGT\n";
     assert_eq!(derep(&[], input), fasta(&[("a;size=2", "ACGT")]));
+    let input = "@a\tdesc\nACGT\n+\nIIII\n@b\rc\nACGT\n+\nIIII\n";
+    assert_eq!(derep(&[], input), fastq(&[("a;size=2", "ACGT", "IIII")]));
+}
+
+#[test]
+fn strips_invalid_fasta_characters_with_a_warning() {
+    let output = run(&[], ">a\nAC1T\n>b\nACT\n");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, fasta(&[("a;size=2", "ACT")]).as_bytes());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("1 invalid characters stripped from FASTA file: 1(1)"));
+}
+
+#[test]
+fn fails_on_invalid_input() {
+    for (input, message) in [
+        ("xyz", "File type not recognized"),
+        ("@a\nAC*T\n+\nIIII\n", "Illegal sequence character"),
+        (">a\nAC-T\n", "Illegal sequence character"),
+    ] {
+        let output = run(&[], input);
+        assert_eq!(output.status.code(), Some(1), "{input:?} should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{input:?}: {stderr}");
+    }
 }
 
 #[test]

@@ -434,3 +434,115 @@ fn writes_reads_before_malformed_fastq() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, fastq(&[("a", "AC", "II")]).as_bytes());
 }
+
+/// Runs conv on `input`, which must fail with exit code 1 and an error
+/// message containing `message`.
+fn assert_fails_with(args: &[&str], input: &str, message: &str) {
+    let output = run(args, input);
+    assert_eq!(output.status.code(), Some(1), "{input:?} should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(message), "{input:?}: {stderr}");
+}
+
+#[test]
+fn strips_carriage_returns() {
+    // the header ends at the carriage return
+    let input = "@a b\r\nAcGt\r\n+\r\nIIII\r\n";
+    assert_eq!(conv(&[], input), fastq(&[("a b", "AcGt", "IIII")]));
+}
+
+#[test]
+fn rejects_illegal_fastq_sequence_characters() {
+    for symbol in ["1", "*", "-", ".", " ", "\t"] {
+        let input = format!("@a\nAC{symbol}T\n+\nIIII\n");
+        assert_fails_with(&[], &input, "Illegal sequence character");
+    }
+}
+
+#[test]
+fn rejects_illegal_quality_characters() {
+    for symbol in [" ", "\t", "\x7f"] {
+        let input = format!("@a\nACGT\n+\nII{symbol}I\n");
+        assert_fails_with(&[], &input, "Illegal quality character");
+    }
+}
+
+#[test]
+fn checks_the_plus_line() {
+    // empty or the header again
+    let input = "@a x\nACGT\n+a x\nIIII\n";
+    assert_eq!(conv(&[], input), fastq(&[("a x", "ACGT", "IIII")]));
+    let input = "@a x\nACGT\n+a\nIIII\n";
+    assert_fails_with(&[], input, "'+' line must be empty or identical to header");
+}
+
+#[test]
+fn rejects_incomplete_fastq() {
+    for input in ["@a", "@a\nACGT", "@a\nACGT\n+"] {
+        assert_fails_with(&[], input, "Unexpected end of file");
+    }
+    // the last quality line needs no line end
+    let input = "@a\nACGT\n+\nIIII";
+    assert_eq!(conv(&[], input), fastq(&[("a", "ACGT", "IIII")]));
+}
+
+#[test]
+fn reads_multiline_fastq() {
+    let input = "@a\nAC\nGT\n+\nII\nII\n@b\nA\n+\n@\n";
+    let expected = fastq(&[("a", "ACGT", "IIII"), ("b", "A", "@")]);
+    assert_eq!(conv(&[], input), expected);
+}
+
+#[test]
+fn rejects_illegal_header_characters() {
+    for input in [
+        "@a\x0bb\nACGT\n+\nIIII\n",
+        "@a\x7fb\nACGT\n+\nIIII\n",
+        ">a\x0bb\nACGT\n",
+    ] {
+        assert_fails_with(&[], input, "Illegal header character");
+    }
+}
+
+#[test]
+fn accepts_empty_headers() {
+    let input = fastq(&[("", "ACGT", "IIII")]);
+    assert_eq!(conv(&[], &input), input);
+    assert_eq!(conv(&[], ">\nACGT\n"), fastq(&[("", "ACGT", "JJJJ")]));
+}
+
+#[test]
+fn strips_invalid_fasta_characters_with_a_warning() {
+    let output = run(&[], ">a\nAC1 G*T\n>b\nA2A\n");
+    assert!(output.status.success());
+    let expected = fastq(&[("a", "ACGT", "JJJJ"), ("b", "AA", "JJ")]);
+    assert_eq!(output.stdout, expected.as_bytes());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("4 invalid characters stripped from FASTA file:  (1) *(1) 1(1) 2(1)"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn strips_fasta_whitespace_silently() {
+    let output = run(&[], ">a\nA\tC\x0bG\x0cT\r\n");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, fastq(&[("a", "ACGT", "JJJJ")]).as_bytes());
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn rejects_illegal_fasta_sequence_characters() {
+    for symbol in ["-", ".", "\x01"] {
+        let input = format!(">a\nAC{symbol}T\n");
+        assert_fails_with(&[], &input, "Illegal sequence character");
+    }
+}
+
+#[test]
+fn requires_a_line_end_after_fasta_headers() {
+    assert_fails_with(&[], ">a", "header must be terminated with newline");
+    // the last sequence line needs none
+    assert_eq!(conv(&[], ">a\nACGT"), fastq(&[("a", "ACGT", "JJJJ")]));
+}
