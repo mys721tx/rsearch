@@ -310,6 +310,9 @@ fn rejects_quality_options_with_fasta() {
         &["--trunc-prob", "1"],
         &["--trunc-rate", "0.1"],
         &["--ee"],
+        &["--ascii", "64"],
+        &["--qmin", "1"],
+        &["--qmax", "40"],
     ] {
         let output = run(option, FASTA);
         assert!(!output.status.success(), "{option:?} should fail");
@@ -459,4 +462,79 @@ fn needs_reverse_reads_for_reverse_outputs() {
             .status
             .success()
     );
+}
+
+/// Phred+64 reads: `a` is Q40 throughout, `b` starts with two scores of -5.
+const PHRED64: &str = "@a\nACGT\n+\nhhhh\n@b\nACGT\n+\n;;hh\n";
+
+#[test]
+fn decodes_phred64() {
+    // b's negative scores fall below the default --min-qual of 0
+    let (out, dis) = qualf(&["--ascii", "64", "--qmin", "-5", "--ee"], PHRED64);
+    assert_eq!(out, fastq(&[("a;ee=0.0004000", "ACGT", "hhhh")]));
+    assert_eq!(dis, fastq(&[("b;ee=6.3248", "ACGT", ";;hh")]));
+}
+
+#[test]
+fn rejects_scores_outside_the_range() {
+    // with the default --qmin of 0, b's scores of -5 are an error
+    let output = run(&["--ascii", "64"], PHRED64);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("below the minimum 0 in read b"), "{stderr}");
+
+    // the last two bases are Q41
+    let input = "@a\nACGTACGT\n+\nIIIIIIJJ\n";
+    let output = run(&["--qmax", "40"], input);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("above the maximum 40 in read a"),
+        "{stderr}"
+    );
+
+    // only the bases left after trimming are checked
+    let (out, _) = qualf(&["--qmax", "40", "--trunc-keep", "6"], input);
+    assert_eq!(out, fastq(&[("a", "ACGTAC", "IIIIII")]));
+}
+
+#[test]
+fn rejects_invalid_quality_ranges() {
+    for args in [
+        &["--qmin", "10", "--qmax", "5"][..],
+        &["--qmin", "-1"],
+        &["--ascii", "64", "--qmax", "63"],
+        &["--ascii", "50"],
+    ] {
+        assert!(!run(args, INPUT).status.success(), "{args:?} should fail");
+    }
+}
+
+#[test]
+fn wraps_fasta_lines() {
+    let (out, _) = qualf(&["--fasta-width", "4"], ">w\nACGTACGTAC\n");
+    assert_eq!(out, ">w\nACGT\nACGT\nAC\n");
+    // FASTQ output is never wrapped
+    let (out, _) = qualf(&["--fasta-width", "4"], INPUT);
+    assert_eq!(out, fastq(&[R1, R2, R3, R4, R5]));
+}
+
+#[test]
+fn prints_a_summary_unless_quiet() {
+    let output = run(&["--trunc-keep", "6"], FORWARD);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "3 sequences kept (of which 2 truncated), 0 sequences discarded.\n"
+    );
+    let output = run(&["--min", "4"], FASTA);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "2 sequences kept (of which 0 truncated), 2 sequences discarded.\n"
+    );
+    for quiet in ["-q", "--quiet"] {
+        let output = run(&[quiet], FORWARD);
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+    }
 }
