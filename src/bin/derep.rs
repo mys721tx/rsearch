@@ -12,6 +12,7 @@ use clap::{Arg, ArgAction, Command, value_parser};
 
 use rsearch::cluster::{Cluster, Clusters, sort_by_size};
 use rsearch::fastx::{Format, Reader, Record};
+use rsearch::label::{Label, Relabel, size_annotation};
 
 fn main() {
     let matches = Command::new("DeRep")
@@ -76,6 +77,13 @@ fn main() {
                 .value_name("MAP")
                 .help("Output file mapping each merged sequence to its output sequence"),
         )
+        .arg(
+            Arg::new("fasta-width")
+                .long("fasta-width")
+                .value_name("WIDTH")
+                .value_parser(value_parser!(usize))
+                .help("Wrap FASTA sequence lines at this width, default to 0 (no wrapping)"),
+        )
         .get_matches();
 
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
@@ -98,6 +106,14 @@ fn main() {
 
         if record.is_empty() {
             break;
+        }
+
+        if size_annotation(record.id()) == Some(0) {
+            eprintln!(
+                "Error: invalid (zero) abundance annotation in read {}",
+                record.id()
+            );
+            std::process::exit(1);
         }
 
         if !record.seq().is_empty() {
@@ -123,12 +139,20 @@ fn main() {
         .filter(|c| c.size >= min && c.size <= max)
         .take(top);
 
-    let relabel = matches.get_one::<String>("relabel");
-
-    let label = |i: usize, c: &Cluster| match relabel {
-        Some(prefix) => format!("{}{}", prefix, i + 1),
-        None => c.merged[0].clone(),
+    let relabel = match matches.get_one::<String>("relabel") {
+        Some(prefix) => Relabel::Prefix(prefix.clone()),
+        None => Relabel::None,
     };
+
+    // the written label: the first merged label with its size replaced,
+    // or the new label, as vsearch --sizeout writes it
+    let written = Label {
+        relabel: relabel.clone(),
+        sizeout: true,
+        ..Label::default()
+    };
+    let label =
+        |i: usize, c: &Cluster| written.format(&c.merged[0], &c.seq, c.size, i as u64 + 1, None);
 
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => Box::new(File::create(f).unwrap()),
@@ -138,25 +162,39 @@ fn main() {
     if is_fastq {
         let mut writer = fastq::Writer::new(fout);
         for (i, c) in selected.clone().enumerate() {
-            let name = format!("{};size={}", label(i, c), c.size);
             let qual = c.qual.as_deref().unwrap_or_default();
-            writer.write(name.as_str(), None, &c.seq, qual).unwrap();
+            writer.write(&label(i, c), None, &c.seq, qual).unwrap();
         }
         writer.flush().unwrap();
     } else {
+        let width = matches
+            .get_one::<usize>("fasta-width")
+            .copied()
+            .unwrap_or(0);
         let mut writer = fasta::Writer::new(fout);
+        writer.set_linewrap((width > 0).then_some(width));
         for (i, c) in selected.clone().enumerate() {
-            let name = format!("{};size={}", label(i, c), c.size);
-            writer.write(name.as_str(), None, &c.seq).unwrap();
+            writer.write(&label(i, c), None, &c.seq).unwrap();
         }
         writer.flush().unwrap();
     }
 
     if let Some(f) = matches.get_one::<String>("map") {
+        // labels without their size annotations
+        let unsized_member = Label {
+            xsize: true,
+            ..Label::default()
+        };
+        let unsized_written = Label {
+            relabel,
+            xsize: true,
+            ..Label::default()
+        };
         let mut map = io::BufWriter::new(File::create(f).unwrap());
         for (i, c) in selected.enumerate() {
-            let name = label(i, c);
+            let name = unsized_written.format(&c.merged[0], &c.seq, c.size, i as u64 + 1, None);
             for member in &c.merged {
+                let member = unsized_member.format(member, &c.seq, c.size, 0, None);
                 writeln!(map, "{member}\t{name}").unwrap();
             }
         }

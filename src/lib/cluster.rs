@@ -4,12 +4,15 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use crate::fastx;
+use crate::label::abundance;
 
 #[derive(Clone, Debug, Default)]
 /// A struct to store the size and annotation of sequences.
 ///
-/// `seq` and `qual` are those of the first merged sequence; `qual` is
-/// `None` for FASTA input.
+/// `merged` holds the label of every merged sequence, annotations
+/// included, and its size is the sum of their `;size=` annotations. `seq`
+/// and `qual` are those of the first merged sequence; `qual` is `None` for
+/// FASTA input.
 pub struct Cluster {
     pub size: u64,
     pub merged: Vec<String>,
@@ -77,11 +80,9 @@ impl Cluster {
     /// assert_eq!(cluster.qual.as_deref(), Some(&b"IIII"[..]));
     /// ```
     pub fn build_from_fastq_record(record: &fastq::Record) -> Cluster {
-        let (name, size) = parse_id(record.id());
-
         Cluster {
-            size,
-            merged: vec![name.to_string()],
+            size: abundance(record.id()),
+            merged: vec![record.id().to_string()],
             seq: record.seq().to_vec(),
             qual: Some(floor_quality(record.qual())),
         }
@@ -153,15 +154,13 @@ impl Cluster {
     /// let cluster = Cluster::build_from_fastx(&Record::fasta_with_attrs("foo;size=3", None, b"ACGT"));
     ///
     /// assert_eq!(cluster.size, 3);
-    /// assert_eq!(cluster.merged, ["foo"]);
+    /// assert_eq!(cluster.merged, ["foo;size=3"]);
     /// assert_eq!(cluster.qual, None);
     /// ```
     pub fn build_from_fastx(record: &fastx::Record) -> Cluster {
-        let (name, size) = parse_id(record.id());
-
         Cluster {
-            size,
-            merged: vec![name.to_string()],
+            size: abundance(record.id()),
+            merged: vec![record.id().to_string()],
             seq: record.seq().to_vec(),
             qual: record.is_fastq().then(|| floor_quality(record.qual())),
         }
@@ -181,16 +180,13 @@ impl Cluster {
     /// let cluster = Cluster::build_from_record(&record);
     ///
     /// assert_eq!(cluster.size, 100);
-    /// assert_eq!(cluster.merged[0], "foo");
+    /// assert_eq!(cluster.merged[0], "foo;size=100");
     /// # }
     /// ```
     pub fn build_from_record(record: &Record) -> Cluster {
-        let (name, size) = parse_id(record.id());
-
-        let merged = vec![name.to_string()];
         Cluster {
-            size,
-            merged,
+            size: abundance(record.id()),
+            merged: vec![record.id().to_string()],
             seq: record.seq().to_vec(),
             qual: None,
         }
@@ -274,9 +270,8 @@ impl Clusters {
     pub fn add_fastx(&mut self, record: &fastx::Record, strand: bool) {
         match self.find(record.seq(), strand) {
             Some((i, reverse)) => {
-                let (name, size) = parse_id(record.id());
                 let qual = record.is_fastq().then(|| record.qual());
-                self.clusters[i].merge_read(name, size, qual, reverse);
+                self.clusters[i].merge_read(record.id(), abundance(record.id()), qual, reverse);
             }
             None => self.push(Cluster::build_from_fastx(record)),
         }
@@ -289,7 +284,8 @@ impl Clusters {
 }
 
 /// sorts clusters by decreasing size. The sort is stable, and ties are
-/// broken by name, then by first appearance.
+/// broken by the label of the first merged sequence, then by first
+/// appearance, as in vsearch.
 pub fn sort_by_size(clusters: &mut [Cluster]) {
     clusters.sort_by(|a, b| {
         b.size
@@ -365,89 +361,9 @@ pub fn reverse_complement_into(dest: &mut Vec<u8>, seq: &[u8]) {
     }));
 }
 
-/// returns the name and the size of a semicolon-saperated string.
-///
-/// `parse_id` parses a semicolon-saperated string annotated sequence ID and
-/// returns the name and the size of that sequence.
-///
-/// `parse_id` takes the first non-empty item without an equal sign as the name
-/// of the sequence. `parse_id` treat non-empty item with a single equal sign as
-/// a key-value pair. `parse_id` takes the value of the first pair with "size" as
-/// key as the size of the sequence.
-///
-/// If no valid item exists, the name defaults to "sequence" and the size
-/// defaults to 1.
-///
-/// # Example
-/// ```rust
-/// # use rsearch::cluster::parse_id;
-/// # fn main() {
-/// let (name, size) = parse_id("foo;size=100");
-/// assert_eq!(name, "foo");
-/// assert_eq!(size, 100);
-/// # }
-/// ```
-pub fn parse_id(id: &str) -> (&str, u64) {
-    let mut name = None;
-    let mut size: Option<u64> = None;
-
-    for item in id.split(';') {
-        let pair: Vec<&str> = item.split('=').collect();
-        match pair.len() {
-            1 => {
-                if name.is_none() && !pair[0].is_empty() {
-                    name = Some(pair[0]);
-                }
-            }
-            2 => {
-                if size.is_none()
-                    && pair[0] == "size"
-                    && let Ok(x) = pair[1].parse().map(|x| if x > 0 { x } else { 1 })
-                {
-                    size = Some(x);
-                }
-            }
-            _ => (),
-        }
-    }
-
-    (name.unwrap_or("sequence"), size.unwrap_or(1))
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn test_parse_id() {
-        let mut input = "foo;size=100";
-        let mut expected = ("foo", 100);
-        assert_eq!(parse_id(input), expected,);
-
-        input = "species=9606;spam=fried;size=23";
-        expected = ("sequence", 23);
-        assert_eq!(parse_id(input), expected,);
-
-        input = "egg=scrumbled;spam=fried;pancake;size=127;waffle";
-        expected = ("pancake", 127);
-        assert_eq!(parse_id(input), expected,);
-
-        input = "かえで;lily;Ἶρῐς";
-        expected = ("かえで", 1);
-        assert_eq!(parse_id(input), expected,);
-
-        input = "size=0022;size=2;size=3;size=4";
-        expected = ("sequence", 22);
-        assert_eq!(parse_id(input), expected,);
-
-        input = "size=abc;size=甲乙丙;size=αβγ";
-        expected = ("sequence", 1);
-        assert_eq!(parse_id(input), expected,);
-
-        input = "size;size=200;size=400=300;";
-        expected = ("size", 200);
-        assert_eq!(parse_id(input), expected,);
-    }
 
     fn fastq_cluster(id: &str, seq: &[u8], qual: &[u8]) -> Cluster {
         Cluster::build_from_fastq_record(&fastq::Record::with_attrs(id, None, seq, qual))
@@ -479,7 +395,7 @@ mod test {
         let record = Record::with_attrs("foo;size=3", Some("desc"), b"acgu");
         let cluster = Cluster::build_from_record(&record);
         assert_eq!(cluster.size, 3);
-        assert_eq!(cluster.merged, ["foo"]);
+        assert_eq!(cluster.merged, ["foo;size=3"]);
         // the sequence is kept as written; matching uses `normalize`
         assert_eq!(cluster.seq, b"acgu");
         assert_eq!(cluster.qual, None);
@@ -500,7 +416,7 @@ mod test {
         let b = Cluster::build_from_record(&Record::with_attrs("b;size=5", None, b"acgt"));
         a.merge(b, false);
         assert_eq!(a.size, 7);
-        assert_eq!(a.merged, ["a", "b"]);
+        assert_eq!(a.merged, ["a;size=2", "b;size=5"]);
         // the first sequence represents the cluster
         assert_eq!(a.seq, b"ACGT");
         assert_eq!(a.qual, None);

@@ -53,10 +53,24 @@ fn find_attribute(header: &[u8], name: &[u8], dots: bool) -> Option<(usize, usiz
 /// assert_eq!(abundance("read1 1:N:0;size=4"), 4);
 /// ```
 pub fn abundance(header: &str) -> u64 {
-    find_attribute(header.as_bytes(), b"size=", false)
-        .and_then(|(start, end)| header[start + 5..end].parse().ok())
+    size_annotation(header)
         .filter(|&size| size > 0)
         .unwrap_or(1)
+}
+
+/// returns the abundance annotated in a whole header as written, under
+/// the rules of `abundance`, or `None`. A zero is returned as is, for
+/// tools that refuse it as vsearch's dereplication does.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::label::size_annotation;
+/// assert_eq!(size_annotation("read1;size=0"), Some(0));
+/// assert_eq!(size_annotation("read1;size=x"), None);
+/// ```
+pub fn size_annotation(header: &str) -> Option<u64> {
+    find_attribute(header.as_bytes(), b"size=", false)
+        .and_then(|(start, end)| header[start + 5..end].parse().ok())
 }
 
 /// Formats expected errors with about four significant digits, as vsearch.
