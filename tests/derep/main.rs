@@ -87,7 +87,7 @@ fn adds_up_input_sizes() {
 }
 
 #[test]
-fn sorts_by_decreasing_size_then_name() {
+fn sorts_by_decreasing_size_then_label() {
     let input = fasta(&[
         ("b", "CCCC"),
         ("a", "GGGG"),
@@ -105,7 +105,18 @@ fn sorts_by_decreasing_size_then_name() {
 }
 
 #[test]
-fn breaks_ties_on_name_by_first_appearance() {
+fn compares_whole_labels_to_break_ties() {
+    let input = fasta(&[("b;x=1", "AAAA"), ("b", "CCCC"), ("b;a=1", "GGGG")]);
+    let expected = fasta(&[
+        ("b;size=1", "CCCC"),
+        ("b;a=1;size=1", "GGGG"),
+        ("b;x=1;size=1", "AAAA"),
+    ]);
+    assert_eq!(derep(&[], &input), expected);
+}
+
+#[test]
+fn breaks_ties_on_label_by_first_appearance() {
     let input = fasta(&[("x", "CCCC"), ("x", "AAAA")]);
     let expected = fasta(&[("x;size=1", "CCCC"), ("x;size=1", "AAAA")]);
     assert_eq!(derep(&[], &input), expected);
@@ -179,12 +190,43 @@ fn joins_multiline_sequences() {
 }
 
 #[test]
-fn labels_with_the_name_and_new_size() {
-    // derep's own labelling (vsearch keeps the whole header instead):
-    // the name and size are taken from the label, and the description and
-    // other annotations are dropped
-    let input = fasta(&[("sample=1;foo;size=3 desc", "ACGT"), ("bar", "ACGT")]);
-    assert_eq!(derep(&[], &input), fasta(&[("foo;size=4", "ACGT")]));
+fn replaces_only_the_size_annotation() {
+    // the description is dropped, other annotations are kept, and the
+    // first valid size annotation is replaced by the new size at the end
+    for (label, expected) in [
+        ("sample=1;foo;size=3 desc", "sample=1;foo;size=4"),
+        ("a;size=3;x=1", "a;x=1;size=4"),
+        ("a;size=2;size=5", "a;size=5;size=3"),
+        ("size=3", ";size=4"),
+        ("a;size=abc", "a;size=abc;size=2"),
+        ("asize=2", "asize=2;size=2"),
+    ] {
+        let input = fasta(&[(label, "ACGT"), ("z", "ACGT")]);
+        assert_eq!(derep(&[], &input), fasta(&[(expected, "ACGT")]), "{label}");
+    }
+}
+
+#[test]
+fn rejects_zero_sizes() {
+    let output = run(&[], &fasta(&[("a;size=0", "ACGT")]));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("zero"));
+}
+
+#[test]
+fn wraps_fasta_lines() {
+    let seq = "ACGT".repeat(60);
+    let input = fasta(&[("a", &seq), ("b", &seq)]);
+    // vsearch's default width of 80
+    let wrapped = format!(
+        ">a;size=2\n{}\n{}\n{}\n",
+        &seq[..80],
+        &seq[80..160],
+        &seq[160..]
+    );
+    assert_eq!(derep(&["--fasta-width", "80"], &input), wrapped);
+    // vsearch --fasta_width 0
+    assert_eq!(derep(&[], &input), fasta(&[("a;size=2", &seq)]));
 }
 
 #[test]
@@ -231,7 +273,7 @@ fn maps_members_to_written_sequences() {
     std::fs::remove_file(map).unwrap();
     assert_eq!(output, fasta(&[("U1;size=3", "ACGT")]));
     // derep's own format: unlike vsearch --tabbedout, members of sequences
-    // that are not written are left out, and member names drop annotations
+    // that are not written are left out, and labels drop their sizes
     assert_eq!(table, "a\tU1\nc\tU1\n");
 }
 
@@ -267,7 +309,7 @@ fn drops_empty_fastq_reads() {
 
 #[test]
 fn splits_fasta_labels_at_any_whitespace() {
-    // the name is taken from the id, which ends at a tab as well as a space
+    // the label is the id, which ends at a tab as well as a space
     let input = ">a\tdesc\nACGT\n>b desc\nACGT\n";
     assert_eq!(derep(&[], input), fasta(&[("a;size=2", "ACGT")]));
 }
