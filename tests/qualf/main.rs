@@ -270,6 +270,13 @@ fn rejects_invalid_arguments() {
 }
 
 #[test]
+fn rejects_fasta_input() {
+    let output = run(&[], ">r1\nACGT\n");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn rejects_malformed_input() {
     for input in ["r1\nACGT\n+\nIIII\n", "@r1\nACGT\n+\nIII\n", "@r1\nACGT\n"] {
         assert!(!run(&[], input).status.success(), "{input:?} should fail");

@@ -260,6 +260,19 @@ fn reverses_qualities_of_reverse_strand_reads() {
 }
 
 #[test]
+fn drops_empty_fastq_reads() {
+    let input = fastq(&[("a", "ACGT", "IIII"), ("e", "", ""), ("b", "ACGT", "IIII")]);
+    assert_eq!(derep(&[], &input), fastq(&[("a;size=2", "ACGT", "IIII")]));
+}
+
+#[test]
+fn splits_fasta_labels_at_any_whitespace() {
+    // the name is taken from the id, which ends at a tab as well as a space
+    let input = ">a\tdesc\nACGT\n>b desc\nACGT\n";
+    assert_eq!(derep(&[], input), fasta(&[("a;size=2", "ACGT")]));
+}
+
+#[test]
 fn raises_quality_zero_to_one() {
     let input = fastq(&[("a", "ACGT", "!!+I")]);
     assert_eq!(derep(&[], &input), fastq(&[("a;size=1", "ACGT", "\"\"+I")]));
