@@ -11,8 +11,6 @@ use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 
 use rsearch::fastx::{Format, Reader, Record};
-use rsearch::label::{Label, abundance};
-use rsearch::options;
 use rsearch::quality::Conversion;
 use rsearch::sff;
 use rsearch::writer::Writer;
@@ -24,6 +22,12 @@ const SFF_REFUSED: [&str; 4] = ["ascii", "qmin", "qmax", "solexa"];
 /// Options about input scores or the lowest score written, which cannot be
 /// used with FASTA input.
 const FASTA_REFUSED: [&str; 5] = ["ascii", "qmin", "qmax", "solexa", "qmin-out"];
+
+/// Options about output scores, which cannot be used with FASTA output.
+const FASTA_OUT_REFUSED: [&str; 3] = ["ascii-out", "qmin-out", "qmax-out"];
+
+/// vsearch's default width of FASTA sequence lines.
+const FASTA_WIDTH: usize = 80;
 
 /// The score written at every base of FASTA input, by default.
 const FASTA_QUALITY: i16 = 41;
@@ -106,14 +110,16 @@ fn main() {
             .value_parser(value_parser!(i16))
             .help(help)
     };
-    let command = Command::new("Conv")
-        .about("Convert the quality encoding of FASTQ sequences, or FASTA or SFF to FASTQ.")
+    let mut command = Command::new("Conv")
+        .about("Convert between FASTQ, FASTA and SFF, and between quality encodings.")
         .long_about(
-            "Convert the quality encoding of FASTQ sequences, or FASTA or SFF to FASTQ.\n\n\
+            "Convert between FASTQ, FASTA and SFF, and between quality encodings.\n\n\
              FASTQ scores are read with the input encoding, converted from the Solexa \
              scale if asked, limited to the output range and written with the output \
              offset. FASTA sequences get the highest output score at every base. SFF \
-             reads keep their Phred scores, written with the output encoding.",
+             reads keep their Phred scores, written with the output encoding. With \
+             --fasta, any input is written as FASTA, its scores checked and dropped. \
+             Headers are written unchanged.",
         )
         .arg(
             Arg::new("in")
@@ -127,7 +133,7 @@ fn main() {
                 .short('o')
                 .long("out")
                 .value_name("OUTPUT")
-                .help("Output FASTQ file, default to stdout"),
+                .help("Output FASTQ (or FASTA with --fasta) file, default to stdout"),
         )
         .arg(
             Arg::new("ascii")
@@ -174,13 +180,21 @@ fn main() {
                 .help("Remove the bases outside the clip points of SFF reads instead of writing them in lower case"),
         )
         .arg(
-            Arg::new("sizeout")
-                .long("sizeout")
+            Arg::new("fasta")
+                .long("fasta")
                 .action(ArgAction::SetTrue)
-                .help("Annotate output labels with abundance (;size=)"),
+                .help("Write FASTA instead of FASTQ"),
+        )
+        .arg(
+            Arg::new("fasta-width")
+                .long("fasta-width")
+                .value_name("WIDTH")
+                .value_parser(value_parser!(usize))
+                .requires("fasta")
+                .help("Wrap FASTA sequence lines at this width, 0 for no wrapping, default to 80"),
         );
-    let mut command = options::label_args(command);
     let matches = command.get_matches_mut();
+    let as_fasta = matches.get_flag("fasta");
 
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => {
@@ -218,14 +232,20 @@ fn main() {
         &[]
     };
     let kind = if is_sff { "SFF" } else { "FASTA" };
-    if let Some(option) = refused
-        .iter()
-        .find(|&&id| matches.value_source(id) == Some(ValueSource::CommandLine))
-    {
+    let given = |id: &&&str| matches.value_source(id) == Some(ValueSource::CommandLine);
+    if let Some(option) = refused.iter().find(given) {
         command
             .error(
                 clap::error::ErrorKind::ArgumentConflict,
                 format!("--{option} cannot be used with {kind} input"),
+            )
+            .exit();
+    }
+    if as_fasta && let Some(option) = FASTA_OUT_REFUSED.iter().find(given) {
+        command
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!("--{option} cannot be used with FASTA output"),
             )
             .exit();
     }
@@ -245,10 +265,10 @@ fn main() {
             .exit();
     }
 
-    let label = Label {
-        sizeout: matches.get_flag("sizeout"),
-        ..options::label_from(&matches)
-    };
+    let width = matches
+        .get_one::<usize>("fasta-width")
+        .copied()
+        .unwrap_or(FASTA_WIDTH);
 
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => {
@@ -257,8 +277,7 @@ fn main() {
         None => Box::new(io::stdout()),
     };
     let mut out = Output {
-        writer: Writer::new(fout, false, 0),
-        label,
+        writer: Writer::new(fout, as_fasta, width),
     };
 
     match input {
@@ -275,21 +294,15 @@ enum Input<R: BufRead> {
     Fastx(Reader<R>),
 }
 
-/// Writes records with their new labels.
+/// Writes records with their headers unchanged.
 struct Output {
     writer: Writer<Box<dyn Write>>,
-    label: Label,
 }
 
 impl Output {
-    /// writes a record of abundance `size`, the `ordinal`th of the input.
-    fn write(&mut self, header: &str, seq: &[u8], qual: &[u8], size: u64, ordinal: u64) {
-        if self.label.is_identity() {
-            self.writer.write(header, None, seq, qual).unwrap();
-        } else {
-            let header = self.label.format(header, seq, size, ordinal, None);
-            self.writer.write(&header, None, seq, qual).unwrap();
-        }
+    /// writes a record; the scores are dropped when writing FASTA.
+    fn write(&mut self, header: &str, seq: &[u8], qual: &[u8]) {
+        self.writer.write(header, None, seq, qual).unwrap();
     }
 
     /// writes what is buffered and fails with `message`, so that the
@@ -312,7 +325,6 @@ fn convert_fastx<R: BufRead>(
 
     let mut record = Record::new();
     let mut qual = Vec::new();
-    let mut ordinal = 0;
 
     loop {
         if let Err(e) = reader.read(&mut record) {
@@ -326,8 +338,6 @@ fn convert_fastx<R: BufRead>(
             break;
         }
 
-        ordinal += 1;
-
         if is_fasta {
             qual.clear();
             qual.resize(record.seq().len(), fasta_symbol);
@@ -335,13 +345,7 @@ fn convert_fastx<R: BufRead>(
             out.fail(&format!("{e} in read {}", record.id()));
         }
 
-        let header = record.header();
-        let size = if out.label.sizeout {
-            abundance(header)
-        } else {
-            1
-        };
-        out.write(header, record.seq(), &qual, size, ordinal);
+        out.write(record.header(), record.seq(), &qual);
     }
 }
 
@@ -362,7 +366,6 @@ fn convert_sff<R: BufRead>(input: R, out: &mut Output, conversion: &Conversion, 
     let mut reader = sff::Reader::new(input).unwrap_or_else(|e| out.fail(&e.to_string()));
     let mut read = sff::SffRecord::default();
     let mut qual = Vec::new();
-    let mut ordinal = 0;
 
     loop {
         match reader.read_record(&mut read) {
@@ -370,8 +373,6 @@ fn convert_sff<R: BufRead>(input: R, out: &mut Output, conversion: &Conversion, 
             Ok(false) => break,
             Err(e) => out.fail(&e.to_string()),
         }
-        ordinal += 1;
-
         let (start, end) = (read.clip_start, read.clip_end);
         // with inverted clip points, the clipped ends meet
         let kept = start.min(end)..end;
@@ -389,12 +390,6 @@ fn convert_sff<R: BufRead>(input: R, out: &mut Output, conversion: &Conversion, 
         } else {
             0..read.bases.len()
         };
-        out.write(
-            &read.name,
-            &read.bases[kept.clone()],
-            &qual[kept],
-            1,
-            ordinal,
-        );
+        out.write(&read.name, &read.bases[kept.clone()], &qual[kept]);
     }
 }
