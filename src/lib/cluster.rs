@@ -1,6 +1,6 @@
 use bio::io::fasta::Record;
 use bio::io::fastq;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 use crate::fastx;
@@ -10,62 +10,137 @@ use crate::label::abundance;
 /// A struct to store the size and annotation of sequences.
 ///
 /// `merged` holds the label of every merged sequence, annotations
-/// included, and its size is the sum of their `;size=` annotations. `seq`
-/// and `qual` are those of the first merged sequence; `qual` is `None` for
-/// FASTA input.
+/// included, and its size is the sum of their abundances. `reverse` and
+/// `lengths` run parallel to it: whether each sequence was merged through
+/// its reverse complement, and its length. `seq` and `qual` are those of
+/// the first merged sequence; `qual` is `None` for FASTA input, and keeps
+/// the input encoding until `Quality::encode` writes it out.
 pub struct Cluster {
     pub size: u64,
     pub merged: Vec<String>,
+    pub reverse: Vec<bool>,
+    pub lengths: Vec<usize>,
     pub seq: Vec<u8>,
     pub qual: Option<Vec<u8>>,
 }
 
-/// ASCII offset of Phred quality scores.
-const PHRED_OFFSET: u8 = 33;
-/// Lowest Phred score written: a score of 0 claims a certain error, so it
-/// is raised to 1, as vsearch does.
-const MIN_QUALITY: u8 = 1;
-/// Highest Phred score representable in printable ASCII.
-const MAX_QUALITY: f64 = 93.0;
 /// Error probabilities are capped at a random guess among four bases.
 const MAX_ERROR: f64 = 0.75;
-
-fn error_probability(symbol: u8) -> f64 {
-    10f64
-        .powf(-f64::from(symbol.saturating_sub(PHRED_OFFSET)) / 10.0)
-        .min(MAX_ERROR)
-}
-
-/// `error_probability` of every byte, computed once: merging looks up two
-/// probabilities per position of every merged read.
-static ERROR_PROBABILITY: LazyLock<[f64; 256]> =
-    LazyLock::new(|| std::array::from_fn(|symbol| error_probability(symbol as u8)));
-
-/// The quality symbol of an error probability: the Phred score
-/// `trunc(-10 log10(p))`, limited to `MIN_QUALITY..=MAX_QUALITY`.
-fn quality_symbol(probability: f64) -> u8 {
-    let q = (-10.0 * probability.log10())
-        .trunc()
-        .clamp(f64::from(MIN_QUALITY), MAX_QUALITY);
-    q as u8 + PHRED_OFFSET
-}
-
+/// Lowest score kept. A score of 0 claims a certain error and is raised to
+/// 1, as vsearch does.
+const MIN_QUALITY: u8 = 1;
 /// Below this score a quality carries too little information to keep
 /// against a better read.
-const MIN_KEPT_QUALITY: u8 = 2;
+const MIN_KEPT_QUALITY: i16 = 2;
 /// A read that much less abundant than its cluster cannot raise a score.
 const NEGLIGIBLE_SIZE_RATIO: u64 = 4;
 /// Up to this cluster size, the abundance weights are exact in an `f64`.
 const RESOLVABLE_SIZE: u64 = 1 << 40;
 
-/// raises Q0 to Q1, as vsearch does on output.
-fn floor_quality(qual: &[u8]) -> Vec<u8> {
-    qual.iter()
-        .map(|&q| q.max(PHRED_OFFSET + MIN_QUALITY))
-        .collect()
+/// How quality scores are read, merged and written.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::cluster::Quality;
+/// // Phred+64 in, Phred+33 out, scores limited to 2..=40
+/// let quality = Quality {
+///     offset: 64,
+///     offset_out: 33,
+///     min_out: 2,
+///     max_out: 40,
+///     ..Quality::default()
+/// };
+/// assert_eq!(quality.encode(b"@Ahi"), b"##II");
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quality {
+    /// ASCII offset of the input scores.
+    pub offset: u8,
+    /// ASCII offset of the output scores.
+    pub offset_out: u8,
+    /// Lowest score written.
+    pub min_out: u8,
+    /// Highest score written.
+    pub max_out: u8,
+    /// Keep the best score of the merged sequences instead of the
+    /// size-weighted average of their error probabilities.
+    pub keep_best: bool,
 }
 
+impl Default for Quality {
+    /// Phred+33, with every score the encoding can carry.
+    fn default() -> Quality {
+        Quality {
+            offset: 33,
+            offset_out: 33,
+            min_out: 0,
+            max_out: 93,
+            keep_best: false,
+        }
+    }
+}
+
+impl Quality {
+    /// the score of a symbol, which may be negative.
+    fn score(&self, symbol: u8) -> i16 {
+        i16::from(symbol) - i16::from(self.offset)
+    }
+
+    /// the error probability of every symbol, capped at `MAX_ERROR`.
+    fn probabilities(&self) -> [f64; 256] {
+        std::array::from_fn(|symbol| {
+            10f64
+                .powf(-f64::from(self.score(symbol as u8)) / 10.0)
+                .min(MAX_ERROR)
+        })
+    }
+
+    /// the input symbol of an error probability: the score
+    /// `trunc(-10 log10(p))`, limited to `min_out..=max_out`.
+    fn symbol(&self, probability: f64) -> u8 {
+        let q = (-10.0 * probability.log10()).trunc();
+        let q = q.min(f64::from(self.max_out)).max(f64::from(self.min_out));
+        (q as u8).saturating_add(self.offset)
+    }
+
+    /// the output symbol of every stored symbol: its score raised to at
+    /// least 1, limited to `min_out..=max_out` and written with
+    /// `offset_out`.
+    pub fn output_table(&self) -> [u8; 256] {
+        std::array::from_fn(|symbol| {
+            let q = self
+                .score(symbol as u8)
+                .max(i16::from(MIN_QUALITY))
+                .min(i16::from(self.max_out))
+                .max(i16::from(self.min_out));
+            (q + i16::from(self.offset_out)).clamp(0, 255) as u8
+        })
+    }
+
+    /// re-encodes stored scores for output, as `output_table` does.
+    pub fn encode(&self, qual: &[u8]) -> Vec<u8> {
+        let table = self.output_table();
+        qual.iter().map(|&q| table[usize::from(q)]).collect()
+    }
+}
+
+/// The error probabilities of the default encoding.
+static DEFAULT_PROBABILITY: LazyLock<[f64; 256]> =
+    LazyLock::new(|| Quality::default().probabilities());
+
 impl Cluster {
+    /// returns a cluster of one sequence, without qualities.
+    fn new(label: &str, size: u64, seq: &[u8]) -> Cluster {
+        Cluster {
+            size,
+            merged: vec![label.to_string()],
+            reverse: vec![false],
+            lengths: vec![seq.len()],
+            seq: seq.to_vec(),
+            qual: None,
+        }
+    }
+
     /// returns a Cluster from a `bio::io::fastq::Record`.
     ///
     /// # Example
@@ -81,10 +156,8 @@ impl Cluster {
     /// ```
     pub fn build_from_fastq_record(record: &fastq::Record) -> Cluster {
         Cluster {
-            size: abundance(record.id()),
-            merged: vec![record.id().to_string()],
-            seq: record.seq().to_vec(),
-            qual: Some(floor_quality(record.qual())),
+            qual: Some(record.qual().to_vec()),
+            ..Cluster::new(record.id(), abundance(record.id()), record.seq())
         }
     }
 
@@ -98,9 +171,19 @@ impl Cluster {
     /// moves the average by less than one, and computing it could still
     /// lower the score by one through rounding.
     pub fn merge(&mut self, other: Cluster, reverse: bool) {
-        self.merge_quality(other.size, other.qual.as_deref(), reverse);
+        let quality = Quality::default();
+        self.merge_quality(
+            other.size,
+            other.qual.as_deref(),
+            reverse,
+            &quality,
+            &DEFAULT_PROBABILITY,
+        );
         self.size += other.size;
         self.merged.extend(other.merged);
+        self.reverse
+            .extend(other.reverse.iter().map(|&r| r != reverse));
+        self.lengths.extend(other.lengths);
     }
 
     /// merges a read named `name` of abundance `size`, as `merge` does,
@@ -118,28 +201,65 @@ impl Cluster {
     /// assert_eq!(cluster.qual.as_deref(), Some(&b"&&5+"[..]));
     /// ```
     pub fn merge_read(&mut self, name: &str, size: u64, qual: Option<&[u8]>, reverse: bool) {
-        self.merge_quality(size, qual, reverse);
+        let quality = Quality::default();
+        self.merge_with(name, size, qual, reverse, &quality, &DEFAULT_PROBABILITY);
+    }
+
+    /// `merge_read` with the given quality settings and their error
+    /// probabilities.
+    fn merge_with(
+        &mut self,
+        name: &str,
+        size: u64,
+        qual: Option<&[u8]>,
+        reverse: bool,
+        quality: &Quality,
+        probability: &[f64; 256],
+    ) {
+        self.merge_quality(size, qual, reverse, quality, probability);
         self.size += size;
         self.merged.push(name.to_string());
+        self.reverse.push(reverse);
+        self.lengths.push(self.seq.len());
     }
 
     /// combines the qualities of a read of abundance `size` into the
     /// cluster's, before the sizes are added up.
-    fn merge_quality(&mut self, size: u64, qual: Option<&[u8]>, reverse: bool) {
+    fn merge_quality(
+        &mut self,
+        size: u64,
+        qual: Option<&[u8]>,
+        reverse: bool,
+        quality: &Quality,
+        probability: &[f64; 256],
+    ) {
         if let (Some(q1), Some(q2)) = (&mut self.qual, qual) {
+            let len = q1.len();
+            let other = |i: usize| q2[if reverse { len - 1 - i } else { i }];
+            if quality.keep_best {
+                for (i, q) in q1.iter_mut().enumerate() {
+                    *q = (*q).max(other(i));
+                }
+                return;
+            }
             let negligible =
                 size <= self.size / NEGLIGIBLE_SIZE_RATIO && self.size < RESOLVABLE_SIZE;
+            // the stored symbols a negligible read cannot raise: informative
+            // scores that need no clamping on output
+            let lowest = (i16::from(quality.offset)
+                + MIN_KEPT_QUALITY.max(i16::from(quality.min_out)))
+            .clamp(0, 256) as u16;
+            let highest = u16::from(quality.offset) + u16::from(quality.max_out);
             let (s1, s2) = (self.size as f64, size as f64);
-            let probability = &*ERROR_PROBABILITY;
-            let len = q1.len();
             for (i, q) in q1.iter_mut().enumerate() {
-                let p = q2[if reverse { len - 1 - i } else { i }];
-                if *q == p || (negligible && p > *q && *q >= PHRED_OFFSET + MIN_KEPT_QUALITY) {
+                let p = other(i);
+                if *q == p || (negligible && p > *q && (lowest..=highest).contains(&u16::from(*q)))
+                {
                     continue;
                 }
                 let mixed = (probability[usize::from(*q)] * s1 + probability[usize::from(p)] * s2)
                     / (s1 + s2);
-                *q = quality_symbol(mixed);
+                *q = quality.symbol(mixed);
             }
         }
     }
@@ -159,10 +279,8 @@ impl Cluster {
     /// ```
     pub fn build_from_fastx(record: &fastx::Record) -> Cluster {
         Cluster {
-            size: abundance(record.id()),
-            merged: vec![record.id().to_string()],
-            seq: record.seq().to_vec(),
-            qual: record.is_fastq().then(|| floor_quality(record.qual())),
+            qual: record.is_fastq().then(|| record.qual().to_vec()),
+            ..Cluster::new(record.id(), abundance(record.id()), record.seq())
         }
     }
 
@@ -184,12 +302,7 @@ impl Cluster {
     /// # }
     /// ```
     pub fn build_from_record(record: &Record) -> Cluster {
-        Cluster {
-            size: abundance(record.id()),
-            merged: vec![record.id().to_string()],
-            seq: record.seq().to_vec(),
-            qual: None,
-        }
+        Cluster::new(record.id(), abundance(record.id()), record.seq())
     }
 }
 
@@ -209,15 +322,35 @@ impl Cluster {
 /// assert_eq!(clusters.len(), 1);
 /// assert_eq!(clusters[0].size, 3);
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Clusters {
     clusters: Vec<Cluster>,
     index: HashMap<Vec<u8>, usize>,
-    /// The normalized sequence being added, and its reverse complement.
+    /// The key of the sequence being added (its normalized sequence, and
+    /// with `by_label` its label), and that of its reverse complement.
     key: Vec<u8>,
     reverse: Vec<u8>,
     /// Leave out qualities, which are only needed to write FASTQ.
     no_qualities: bool,
+    /// Merge only sequences with identical labels.
+    by_label: bool,
+    quality: Quality,
+    probability: Box<[f64; 256]>,
+}
+
+impl Default for Clusters {
+    fn default() -> Clusters {
+        Clusters {
+            clusters: Vec::new(),
+            index: HashMap::new(),
+            key: Vec::new(),
+            reverse: Vec::new(),
+            no_qualities: false,
+            by_label: false,
+            quality: Quality::default(),
+            probability: Box::new(*DEFAULT_PROBABILITY),
+        }
+    }
 }
 
 impl Clusters {
@@ -240,17 +373,55 @@ impl Clusters {
         }
     }
 
+    /// reads, merges and keeps qualities with these settings.
+    pub fn with_quality(self, quality: Quality) -> Clusters {
+        Clusters {
+            quality,
+            probability: Box::new(quality.probabilities()),
+            ..self
+        }
+    }
+
+    /// merges only sequences that also have identical labels, as vsearch
+    /// --derep_id does.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::cluster::Clusters;
+    /// # use rsearch::fastx::Record;
+    /// let mut clusters = Clusters::default().by_label();
+    /// for id in ["a", "b", "a"] {
+    ///     clusters.add_fastx(&Record::fasta_with_attrs(id, None, b"ACGT"), false);
+    /// }
+    ///
+    /// let sizes: Vec<u64> = clusters.into_clusters().iter().map(|c| c.size).collect();
+    /// assert_eq!(sizes, [2, 1]);
+    /// ```
+    pub fn by_label(self) -> Clusters {
+        Clusters {
+            by_label: true,
+            ..self
+        }
+    }
+
     /// finds the cluster of `seq` by its normalized sequence, or with
-    /// `strand`, its reverse complement; returns its index and whether it
-    /// matched the reverse complement. Leaves the normalized sequence in
-    /// `self.key`.
-    fn find(&mut self, seq: &[u8], strand: bool) -> Option<(usize, bool)> {
+    /// `strand`, its reverse complement; with `by_label`, the label must
+    /// match too. Returns its index and whether it matched the reverse
+    /// complement. Leaves the key of the sequence in `self.key`.
+    fn find(&mut self, seq: &[u8], label: &str, strand: bool) -> Option<(usize, bool)> {
         normalize_into(&mut self.key, seq);
+        let sequence_len = self.key.len();
+        if self.by_label {
+            // a normalized sequence has no 0 byte and ends at the first
+            self.key.push(0);
+            self.key.extend_from_slice(label.as_bytes());
+        }
         if let Some(&i) = self.index.get(self.key.as_slice()) {
             return Some((i, false));
         }
         if strand {
-            reverse_complement_into(&mut self.reverse, &self.key);
+            reverse_complement_into(&mut self.reverse, &self.key[..sequence_len]);
+            self.reverse.extend_from_slice(&self.key[sequence_len..]);
             if let Some(&i) = self.index.get(self.reverse.as_slice()) {
                 return Some((i, true));
             }
@@ -266,7 +437,7 @@ impl Clusters {
     /// adds a sequence, merging it into an existing cluster with the same
     /// normalized sequence, or with `strand`, its reverse complement.
     pub fn add(&mut self, cluster: Cluster, strand: bool) {
-        match self.find(&cluster.seq, strand) {
+        match self.find(&cluster.seq, &cluster.merged[0], strand) {
             Some((i, reverse)) => self.clusters[i].merge(cluster, reverse),
             None => self.push(cluster),
         }
@@ -311,14 +482,22 @@ impl Clusters {
     /// ```
     pub fn add_read(&mut self, label: &str, size: u64, record: &fastx::Record, strand: bool) {
         let qual = (record.is_fastq() && !self.no_qualities).then(|| record.qual());
-        match self.find(record.seq(), strand) {
-            Some((i, reverse)) => self.clusters[i].merge_read(label, size, qual, reverse),
-            None => self.push(Cluster {
+        match self.find(record.seq(), label, strand) {
+            Some((i, reverse)) => self.clusters[i].merge_with(
+                label,
                 size,
-                merged: vec![label.to_string()],
-                seq: record.seq().to_vec(),
-                qual: qual.map(floor_quality),
-            }),
+                qual,
+                reverse,
+                &self.quality,
+                &self.probability,
+            ),
+            None => {
+                let cluster = Cluster {
+                    qual: qual.map(<[u8]>::to_vec),
+                    ..Cluster::new(label, size, record.seq())
+                };
+                self.push(cluster);
+            }
         }
     }
 
@@ -326,6 +505,107 @@ impl Clusters {
     pub fn into_clusters(self) -> Vec<Cluster> {
         self.clusters
     }
+}
+
+/// A sequence to dereplicate by prefix: its label, its abundance, the
+/// abundance annotated in its label (which orders sequences of the same
+/// length) and its sequence.
+#[derive(Clone, Debug)]
+pub struct PrefixRead {
+    pub label: String,
+    pub size: u64,
+    pub annotated: u64,
+    pub seq: Vec<u8>,
+}
+
+/// dereplicates sequences by prefix, as vsearch --derep_prefix does.
+///
+/// Sequences are taken from the shortest, then by decreasing annotated
+/// abundance, label and input order. Each is merged into the cluster whose
+/// representative is identical to it or, failing that, is its longest
+/// prefix. In the latter case the longer sequence becomes the
+/// representative and comes first among the members. Returns the clusters
+/// in the order their representatives were taken.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::cluster::{PrefixRead, dereplicate_prefixes};
+/// let read = |label: &str, seq: &[u8]| PrefixRead {
+///     label: label.into(),
+///     size: 1,
+///     annotated: 1,
+///     seq: seq.to_vec(),
+/// };
+/// let clusters = dereplicate_prefixes(vec![
+///     read("a", b"ACGTAC"),
+///     read("b", b"ACG"),
+///     read("c", b"acgt"),
+///     read("d", b"TTT"),
+/// ]);
+///
+/// assert_eq!(clusters.len(), 2);
+/// assert_eq!(clusters[1].seq, b"ACGTAC");
+/// assert_eq!(clusters[1].merged, ["a", "c", "b"]);
+/// assert_eq!(clusters[1].lengths, [6, 4, 3]);
+/// ```
+pub fn dereplicate_prefixes(reads: Vec<PrefixRead>) -> Vec<Cluster> {
+    let mut order: Vec<usize> = (0..reads.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (a, b) = (&reads[a], &reads[b]);
+        a.seq
+            .len()
+            .cmp(&b.seq.len())
+            .then(b.annotated.cmp(&a.annotated))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+
+    let mut reads: Vec<Option<PrefixRead>> = reads.into_iter().map(Some).collect();
+    let mut clusters: Vec<Option<Cluster>> = Vec::new();
+    // the normalized representative of each live cluster, and how many
+    // live representatives have each length
+    let mut index: HashMap<Vec<u8>, usize> = HashMap::new();
+    let mut lengths: BTreeMap<usize, usize> = BTreeMap::new();
+
+    for i in order {
+        let read = reads[i].take().unwrap();
+        let key = normalize(&read.seq);
+        let len = key.len();
+
+        if let Some(&j) = index.get(&key) {
+            let cluster = clusters[j].as_mut().unwrap();
+            cluster.size += read.size;
+            cluster.merged.push(read.label);
+            cluster.reverse.push(false);
+            cluster.lengths.push(len);
+            continue;
+        }
+
+        let prefix = lengths
+            .range(..len)
+            .rev()
+            .find_map(|(&l, _)| index.get(&key[..l]).map(|&j| (l, j)));
+
+        let mut cluster = Cluster::new(&read.label, read.size, &read.seq);
+        if let Some((l, j)) = prefix {
+            index.remove(&key[..l]);
+            if let Some(count) = lengths.get_mut(&l) {
+                *count -= 1;
+                if *count == 0 {
+                    lengths.remove(&l);
+                }
+            }
+            let old = clusters[j].take().unwrap();
+            cluster.size += old.size;
+            cluster.merged.extend(old.merged);
+            cluster.reverse.extend(old.reverse);
+            cluster.lengths.extend(old.lengths);
+        }
+        index.insert(key, clusters.len());
+        *lengths.entry(len).or_insert(0) += 1;
+        clusters.push(Some(cluster));
+    }
+
+    clusters.into_iter().flatten().collect()
 }
 
 /// sorts clusters by decreasing size. The sort is stable, and ties are
@@ -451,8 +731,11 @@ mod test {
         let cluster = fastq_cluster("bar", b"ACGT", b"!\"+I");
         assert_eq!(cluster.size, 1);
         assert_eq!(cluster.merged, ["bar"]);
-        // Q0 is raised to Q1, as vsearch does
-        assert_eq!(cluster.qual.as_deref(), Some(&b"\"\"+I"[..]));
+        // qualities are kept as read, and Q0 is raised to Q1 on output, as
+        // vsearch does
+        assert_eq!(cluster.qual.as_deref(), Some(&b"!\"+I"[..]));
+        let encoded = Quality::default().encode(cluster.qual.as_deref().unwrap());
+        assert_eq!(encoded, b"\"\"+I");
     }
 
     #[test]
@@ -506,7 +789,7 @@ mod test {
 
     #[test]
     fn test_merge_quality_bounds() {
-        // error probabilities are capped at 0.75 and scores floored at Q1
+        // error probabilities are capped at 0.75, and Q0 merges as Q1
         let mut a = fastq_cluster("a", b"AC", b"!#");
         a.merge(fastq_cluster("b", b"AC", b"#!"), false);
         assert_eq!(a.qual.as_deref(), Some(&b"\"\""[..]));
