@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "relab"
 harness = false
+
+[[bench]]
+name = "sqtrim"
+harness = false
