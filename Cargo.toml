@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "sqfilt"
 harness = false
+
+[[bench]]
+name = "rerep"
+harness = false
