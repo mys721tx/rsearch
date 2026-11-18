@@ -2,9 +2,10 @@
 //!
 //! `converter` measures `Converter::convert` on parsed reads; `binary` runs
 //! the conv program end to end on files: Phred+33 to Phred+64 and back,
-//! Solexa scores, limited output scores, relabelling and FASTA to FASTQ.
-//! Set `VSEARCH` to a vsearch executable to time `vsearch --fastq_convert`
-//! and `--fasta2fastq` on the same files for comparison:
+//! Solexa scores, limited output scores, relabelling, FASTA to FASTQ and
+//! SFF to FASTQ, with and without clipping. Set `VSEARCH` to a vsearch
+//! executable to time `vsearch --fastq_convert`, `--fasta2fastq` and
+//! `--sff_convert` on the same files for comparison:
 //!
 //! ```sh
 //! VSEARCH=/path/to/vsearch cargo bench --bench conv
@@ -72,6 +73,62 @@ fn to_fasta(fastq: &str) -> String {
         .collect()
 }
 
+/// Pads `bytes` with zeros to a multiple of 8, as SFF sections are.
+fn pad8(bytes: &mut Vec<u8>) {
+    bytes.resize(bytes.len().div_ceil(8) * 8, 0);
+}
+
+/// Builds an SFF file of the reads of `fastq` (Phred+33), with 400 flows
+/// per read, clip points 5 bases in from each end and an index at the end.
+fn to_sff(fastq: &str) -> Vec<u8> {
+    const FLOWS: u16 = 400;
+    let header_length = (31 + FLOWS + 4).div_ceil(8) * 8;
+    let lines: Vec<&str> = fastq.lines().collect();
+    let mut body = Vec::new();
+    for read in lines.chunks(4) {
+        let (name, bases, quals) = (&read[0][1..], read[1].as_bytes(), read[3].as_bytes());
+        let n = bases.len() as u16;
+        let mut header = Vec::new();
+        header.extend(
+            (16 + name.len() as u16)
+                .div_ceil(8)
+                .wrapping_mul(8)
+                .to_be_bytes(),
+        );
+        header.extend((name.len() as u16).to_be_bytes());
+        header.extend(u32::from(n).to_be_bytes());
+        for clip in [5, n - 5, 0, 0] {
+            header.extend(clip.to_be_bytes());
+        }
+        header.extend(name.as_bytes());
+        pad8(&mut header);
+        body.extend(header);
+        let mut data = vec![0; 2 * usize::from(FLOWS)];
+        data.extend(vec![1; bases.len()]);
+        data.extend(bases);
+        data.extend(quals.iter().map(|q| q - 33));
+        pad8(&mut data);
+        body.extend(data);
+    }
+    let mut index = b".mft1.00".to_vec();
+    index.extend([0; 8]);
+    let index_offset = u64::from(header_length) + body.len() as u64;
+    let mut header = b".sff".to_vec();
+    header.extend(1u32.to_be_bytes());
+    header.extend(index_offset.to_be_bytes());
+    header.extend((index.len() as u32).to_be_bytes());
+    header.extend((lines.len() as u32 / 4).to_be_bytes());
+    header.extend(header_length.to_be_bytes());
+    header.extend(4u16.to_be_bytes());
+    header.extend(FLOWS.to_be_bytes());
+    header.push(1);
+    header.extend(b"TACG".repeat(usize::from(FLOWS) / 4));
+    header.extend(b"TCAG");
+    pad8(&mut header);
+    pad8(&mut index);
+    [header, body, index].concat()
+}
+
 fn parse(text: &str) -> Vec<Record> {
     Reader::new(text.as_bytes())
         .records()
@@ -121,6 +178,7 @@ struct Inputs {
     phred64: PathBuf,
     solexa: PathBuf,
     fasta: PathBuf,
+    sff: PathBuf,
 }
 
 fn input_files() -> Inputs {
@@ -130,8 +188,10 @@ fn input_files() -> Inputs {
         phred64: dir.join("conv-bench-64.fq"),
         solexa: dir.join("conv-bench-solexa.fq"),
         fasta: dir.join("conv-bench.fa"),
+        sff: dir.join("conv-bench.sff"),
     };
     let phred33 = generate(33, 0);
+    std::fs::write(&inputs.sff, to_sff(&phred33)).unwrap();
     std::fs::write(&inputs.fasta, to_fasta(&phred33)).unwrap();
     std::fs::write(&inputs.phred33, phred33).unwrap();
     std::fs::write(&inputs.phred64, generate(64, 0)).unwrap();
@@ -151,6 +211,7 @@ fn cases(inputs: &Inputs) -> Vec<Case<'_>> {
     let fq64 = inputs.phred64.to_str().unwrap();
     let solexa = inputs.solexa.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
+    let sff = inputs.sff.to_str().unwrap();
     let case = |name, file, conv: &[&'static str], command, vsearch: &[&'static str]| Case {
         name,
         conv: [&["-i", file, "-o", "/dev/null"], conv].concat(),
@@ -198,6 +259,14 @@ fn cases(inputs: &Inputs) -> Vec<Case<'_>> {
             &["--relabel", "R", "--sizeout"],
         ),
         case("fasta", fa, &[], "--fasta2fastq", &[]),
+        case("sff", sff, &[], "--sff_convert", &[]),
+        case(
+            "sff_clip",
+            sff,
+            &["--clip"],
+            "--sff_convert",
+            &["--sff_clip"],
+        ),
     ]
 }
 
