@@ -2,10 +2,12 @@
 //!
 //! `converter` measures `Converter::convert` on parsed reads; `binary` runs
 //! the conv program end to end on files: Phred+33 to Phred+64 and back,
-//! Solexa scores, limited output scores, relabelling, FASTA to FASTQ and
-//! SFF to FASTQ, with and without clipping. Set `VSEARCH` to a vsearch
-//! executable to time `vsearch --fastq_convert`, `--fasta2fastq` and
-//! `--sff_convert` on the same files for comparison:
+//! Solexa scores, limited output scores, FASTA to FASTQ, SFF to FASTQ with
+//! and without clipping, and FASTQ and FASTA to wrapped or unwrapped FASTA.
+//! Set `VSEARCH` to a vsearch executable to time `vsearch --fastq_convert`,
+//! `--fasta2fastq`, `--sff_convert` and, for FASTA output,
+//! `--fastx_subsample --sample_pct 100`, which writes every read, on the
+//! same files for comparison:
 //!
 //! ```sh
 //! VSEARCH=/path/to/vsearch cargo bench --bench conv
@@ -251,13 +253,6 @@ fn cases(inputs: &Inputs) -> Vec<Case<'_>> {
             convert,
             &["--fastq_qminout", "2", "--fastq_qmaxout", "40"],
         ),
-        case(
-            "relabel",
-            fq,
-            &["--relabel", "R", "--sizeout"],
-            convert,
-            &["--relabel", "R", "--sizeout"],
-        ),
         case("fasta", fa, &[], "--fasta2fastq", &[]),
         case("sff", sff, &[], "--sff_convert", &[]),
         case(
@@ -268,6 +263,40 @@ fn cases(inputs: &Inputs) -> Vec<Case<'_>> {
             &["--sff_clip"],
         ),
     ]
+    .into_iter()
+    .chain(
+        [
+            ("fastq_to_fasta", fq, &[][..], &[][..]),
+            (
+                "fastq_to_fasta_unwrapped",
+                fq,
+                &["--fasta-width", "0"],
+                &["--fasta_width", "0"],
+            ),
+            ("fasta_rewrap", fa, &[], &[]),
+        ]
+        .map(|(name, file, conv, vsearch)| Case {
+            name,
+            conv: [&["-i", file, "-o", "/dev/null", "--fasta"], conv].concat(),
+            vsearch: [
+                &[
+                    "--fastx_subsample",
+                    file,
+                    "--sample_pct",
+                    "100",
+                    "--minseqlength",
+                    "0",
+                    "--notrunclabels",
+                    "--fastaout",
+                    "/dev/null",
+                    "--quiet",
+                ],
+                vsearch,
+            ]
+            .concat(),
+        }),
+    )
+    .collect()
 }
 
 fn run(program: &str, args: &[&str]) {
