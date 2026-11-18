@@ -3,7 +3,8 @@
 //! `cluster` measures the in-memory work (`Clusters::add_fastx` and
 //! sorting) on parsed records; `binary` runs the derep program end to end
 //! on files: FASTA and FASTQ, with and without `--strand`, relabelling,
-//! whole labels without sizes, and FASTQ written as FASTA.
+//! whole labels without sizes, FASTQ written as FASTA, Phred+64, the best
+//! quality, UC and tab-separated tables, identical labels and prefixes.
 //! Set `VSEARCH` to a vsearch executable to time `vsearch --fastx_uniques`
 //! on the same files for comparison:
 //!
@@ -107,13 +108,41 @@ fn bench_cluster(c: &mut Criterion) {
     group.finish();
 }
 
+/// Re-encodes Phred+33 FASTQ text as Phred+64.
+fn to_phred64(fastq: &str) -> String {
+    fastq
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i % 4 == 3 {
+                line.bytes().map(|q| char::from(q + 31)).collect::<String>() + "\n"
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect()
+}
+
+/// The generated input files: FASTA, FASTQ, and the FASTQ as Phred+64.
+struct Inputs {
+    fasta: PathBuf,
+    fastq: PathBuf,
+    phred64: PathBuf,
+}
+
 /// Writes the generated input files once, into the target directory.
-fn input_files() -> (PathBuf, PathBuf) {
+fn input_files() -> Inputs {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let (fa, fq) = (dir.join("derep-bench.fa"), dir.join("derep-bench.fq"));
-    std::fs::write(&fa, generate(false)).unwrap();
-    std::fs::write(&fq, generate(true)).unwrap();
-    (fa, fq)
+    let inputs = Inputs {
+        fasta: dir.join("derep-bench.fa"),
+        fastq: dir.join("derep-bench.fq"),
+        phred64: dir.join("derep-bench-64.fq"),
+    };
+    let fastq = generate(true);
+    std::fs::write(&inputs.fasta, generate(false)).unwrap();
+    std::fs::write(&inputs.phred64, to_phred64(&fastq)).unwrap();
+    std::fs::write(&inputs.fastq, fastq).unwrap();
+    inputs
 }
 
 fn run(program: &str, args: &[&str]) {
@@ -121,79 +150,122 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
-/// A benchmark case: the input file, derep's arguments and the equivalent
-/// vsearch ones, each after the input and output files.
+/// A benchmark case: derep's arguments and the equivalent vsearch ones.
 struct Case<'a> {
     name: &'static str,
-    file: &'a str,
     derep: Vec<&'a str>,
     vsearch: Vec<&'a str>,
 }
 
-fn cases<'a>(fa: &'a str, fq: &'a str) -> Vec<Case<'a>> {
-    let case = |name, file, derep: &[&'a str], vsearch: &[&'a str]| Case {
+fn cases<'a>(inputs: &'a Inputs) -> Vec<Case<'a>> {
+    let fa = inputs.fasta.to_str().unwrap();
+    let fq = inputs.fastq.to_str().unwrap();
+    let fq64 = inputs.phred64.to_str().unwrap();
+    let common = ["--minseqlength", "1", "--quiet"];
+    // dereplicating `file` with derep's `derep` arguments, and with vsearch
+    // `command` written to `out`, with its `vsearch` arguments
+    let case = |name, file, derep: &[&'a str], command, out, vsearch: &[&'a str]| Case {
         name,
-        file,
-        derep: derep.to_vec(),
-        vsearch: vsearch.to_vec(),
+        derep: [&["-i", file, "-o", "/dev/null"], derep].concat(),
+        vsearch: [&[command, file, out, "/dev/null"], &common[..], vsearch].concat(),
     };
+    let uniques = |name, file, derep: &[&'a str], out, vsearch: &[&'a str]| {
+        case(name, file, derep, "--fastx_uniques", out, vsearch)
+    };
+    let (fasta, fastq) = ("--fastaout", "--fastqout");
     let sizes = ["--sizein", "--sizeout"];
     let strand = ["--sizein", "--sizeout", "--strand", "both"];
     vec![
-        case("fasta", fa, &[], &sizes),
-        case("fasta_strand", fa, &["--strand"], &strand),
-        case("fastq", fq, &[], &sizes),
-        case("fastq_strand", fq, &["--strand"], &strand),
-        case(
+        uniques("fasta", fa, &[], fasta, &sizes),
+        uniques("fasta_strand", fa, &["--strand"], fasta, &strand),
+        uniques("fastq", fq, &[], fastq, &sizes),
+        uniques("fastq_strand", fq, &["--strand"], fastq, &strand),
+        uniques(
             "relabel",
             fa,
             &["--relabel-sha1", "--lengthout"],
+            fasta,
             &["--sizein", "--sizeout", "--relabel_sha1", "--lengthout"],
         ),
-        case(
+        uniques(
             "unsized",
             fa,
             &["--no-sizein", "--no-sizeout", "--full-labels"],
+            fasta,
             &["--notrunclabels"],
         ),
-        case("fastq_as_fasta", fq, &["--fasta"], &sizes),
+        uniques("fastq_as_fasta", fq, &["--fasta"], fasta, &sizes),
+        uniques(
+            "phred64",
+            fq64,
+            &["--ascii", "64", "--ascii-out", "64"],
+            fastq,
+            &[
+                "--sizein",
+                "--sizeout",
+                "--fastq_ascii",
+                "64",
+                "--fastq_asciiout",
+                "64",
+            ],
+        ),
+        uniques(
+            "best_qual",
+            fq,
+            &["--best-qual"],
+            fastq,
+            &["--sizein", "--sizeout", "--fastq_qout_max"],
+        ),
+        uniques(
+            "uc",
+            fa,
+            &["--strand", "--uc", "/dev/null", "--tabbedout", "/dev/null"],
+            fasta,
+            &[
+                "--sizein",
+                "--sizeout",
+                "--strand",
+                "both",
+                "--uc",
+                "/dev/null",
+                "--tabbedout",
+                "/dev/null",
+            ],
+        ),
+        case(
+            "same_label",
+            fa,
+            &["--same-label"],
+            "--derep_id",
+            "--output",
+            &sizes,
+        ),
+        case(
+            "prefix",
+            fa,
+            &["--prefix"],
+            "--derep_prefix",
+            "--output",
+            &sizes,
+        ),
     ]
 }
 
 fn bench_binary(c: &mut Criterion) {
-    let (fa, fq) = input_files();
-    let (fa, fq) = (fa.to_str().unwrap(), fq.to_str().unwrap());
+    let inputs = input_files();
     let derep = env!("CARGO_BIN_EXE_derep");
     let vsearch = std::env::var("VSEARCH").ok();
 
     let mut group = c.benchmark_group("derep/binary");
     group.throughput(Throughput::Elements(READS as u64));
     group.sample_size(10);
-    for case in cases(fa, fq) {
-        let mut args = vec!["-i", case.file, "-o", "/dev/null"];
-        args.extend(&case.derep);
+    for case in cases(&inputs) {
         group.bench_function(format!("derep/{}", case.name), |b| {
-            b.iter(|| run(derep, &args))
+            b.iter(|| run(derep, &case.derep))
         });
         if let Some(vsearch) = &vsearch {
-            // FASTQ input is written as FASTQ unless derep is told otherwise
-            let out = if case.file == fq && !case.derep.contains(&"--fasta") {
-                "--fastqout"
-            } else {
-                "--fastaout"
-            };
-            let mut args = vec![
-                "--fastx_uniques",
-                case.file,
-                out,
-                "/dev/null",
-                "--minseqlength",
-                "1",
-                "--quiet",
-            ];
-            args.extend(&case.vsearch);
             group.bench_function(format!("vsearch/{}", case.name), |b| {
-                b.iter(|| run(vsearch, &args))
+                b.iter(|| run(vsearch, &case.vsearch))
             });
         }
     }
