@@ -41,3 +41,7 @@ harness = false
 [[bench]]
 name = "rerep"
 harness = false
+
+[[bench]]
+name = "topn"
+harness = false
