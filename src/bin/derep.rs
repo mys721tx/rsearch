@@ -30,6 +30,15 @@ const QUALITY_OPTIONS: [&str; 7] = [
     "best-qual",
 ];
 
+/// prints a warning, which may hold bytes that are not UTF-8.
+fn warn(message: &[u8]) {
+    let mut stderr = io::stderr().lock();
+    let _ = stderr
+        .write_all(b"Warning: ")
+        .and_then(|()| stderr.write_all(message))
+        .and_then(|()| stderr.write_all(b"\n"));
+}
+
 /// prints an error and exits.
 fn fail(message: &str) -> ! {
     eprintln!("Error: {message}");
@@ -357,7 +366,7 @@ fn main() {
 
     let mut reader = Reader::new(BufReader::new(fin));
 
-    let format = reader.format().unwrap();
+    let format = reader.format().unwrap_or_else(|e| fail(&e.to_string()));
     let is_fastq = format == Some(Format::Fastq);
 
     if format == Some(Format::Fasta)
@@ -401,7 +410,9 @@ fn main() {
     let mut record = Record::new();
 
     loop {
-        reader.read(&mut record).unwrap();
+        if let Err(e) = reader.read(&mut record) {
+            fail(&e.to_string());
+        }
 
         if record.is_empty() {
             break;
@@ -444,6 +455,10 @@ fn main() {
         } else {
             seqs.add_read(label, size, &record, strand);
         }
+    }
+
+    if let Some(warning) = reader.stripped_warning() {
+        warn(&warning);
     }
 
     let mut clusters = if prefix {

@@ -96,6 +96,22 @@ fn label_from(matches: &ArgMatches) -> Label {
     }
 }
 
+/// flushes the writers that are open.
+fn flush<const N: usize>(writers: [Option<&mut Writer<Box<dyn Write>>>; N]) {
+    for writer in writers.into_iter().flatten() {
+        writer.flush().unwrap();
+    }
+}
+
+/// prints a warning, which may hold bytes that are not UTF-8.
+fn warn(message: &[u8]) {
+    let mut stderr = io::stderr().lock();
+    let _ = stderr
+        .write_all(b"Warning: ")
+        .and_then(|()| stderr.write_all(message))
+        .and_then(|()| stderr.write_all(b"\n"));
+}
+
 /// prints an error and exits.
 fn fail(message: &str) -> ! {
     eprintln!("Error: {message}");
@@ -151,7 +167,7 @@ impl Qualf {
             &[]
         };
         if self.label.is_identity() {
-            out.write(r.id(), r.desc(), seq, qual).unwrap();
+            out.write(r.header(), None, seq, qual).unwrap();
         } else {
             let header = self
                 .label
@@ -401,14 +417,14 @@ fn main() {
 
     let mut reader = Reader::new(BufReader::new(fin));
 
-    let format = reader.format().unwrap();
+    let format = reader.format().unwrap_or_else(|e| fail(&e.to_string()));
 
     let mut reverse = matches
         .get_one::<String>("reverse")
         .map(|f| Reader::new(BufReader::new(open(f))));
 
     if let Some(rev) = reverse.as_mut() {
-        let rev_format = rev.format().unwrap();
+        let rev_format = rev.format().unwrap_or_else(|e| fail(&e.to_string()));
         if format.is_some() && rev_format.is_some() && rev_format != format {
             fail("forward and reverse reads must be in the same format");
         }
@@ -468,13 +484,22 @@ fn main() {
     let mut truncated = 0;
 
     loop {
-        // Since FASTQ uses '@' for both the description header and a quality symbol, there is no
-        // reliable way to recover from a malformed record.
-        // Panics if a record cannot be read.
-        reader.read(&mut r).unwrap();
+        // the reads before an invalid one are written, as vsearch does
+        let read = reader.read(&mut r).and_then(|()| match reverse.as_mut() {
+            Some(rev) => rev.read(&mut r2),
+            None => Ok(()),
+        });
+        if let Err(e) = read {
+            flush([
+                Some(&mut writer),
+                discard.as_mut(),
+                rev_writer.as_mut(),
+                rev_discard.as_mut(),
+            ]);
+            fail(&e.to_string());
+        }
 
-        if let Some(rev) = reverse.as_mut() {
-            rev.read(&mut r2).unwrap();
+        if reverse.is_some() {
             match (r.is_empty(), r2.is_empty()) {
                 (true, false) => fail("more reverse reads than forward reads"),
                 (false, true) => fail("more forward reads than reverse reads"),
@@ -484,11 +509,6 @@ fn main() {
 
         if r.is_empty() {
             break;
-        }
-
-        // a pair is skipped if either read is invalid
-        if r.check().is_err() || (reverse.is_some() && r2.check().is_err()) {
-            continue;
         }
 
         let (outcome, size) = qualf.apply(&r);
@@ -513,16 +533,19 @@ fn main() {
         }
     }
 
-    for w in [
+    flush([
         Some(&mut writer),
         discard.as_mut(),
         rev_writer.as_mut(),
         rev_discard.as_mut(),
-    ]
-    .into_iter()
-    .flatten()
+    ]);
+
+    for warning in [Some(&reader), reverse.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter_map(Reader::stripped_warning)
     {
-        w.flush().unwrap();
+        warn(&warning);
     }
 
     if !matches.get_flag("quiet") {

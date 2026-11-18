@@ -31,6 +31,15 @@ const FASTA_QUALITY: i16 = 41;
 /// The lowest Solexa score.
 const SOLEXA_MIN: i16 = -5;
 
+/// prints a warning, which may hold bytes that are not UTF-8.
+fn warn(message: &[u8]) {
+    let mut stderr = io::stderr().lock();
+    let _ = stderr
+        .write_all(b"Warning: ")
+        .and_then(|()| stderr.write_all(message))
+        .and_then(|()| stderr.write_all(b"\n"));
+}
+
 /// prints an error and exits.
 fn fail(message: &str) -> ! {
     eprintln!("Error: {message}");
@@ -307,10 +316,13 @@ fn convert_fastx<R: BufRead>(
 
     loop {
         if let Err(e) = reader.read(&mut record) {
-            out.fail(&format!("invalid input: {e}"));
+            out.fail(&e.to_string());
         }
 
         if record.is_empty() {
+            if let Some(warning) = reader.stripped_warning() {
+                warn(&warning);
+            }
             break;
         }
 
