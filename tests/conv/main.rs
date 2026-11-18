@@ -2,7 +2,11 @@
 //!
 //! Expected outputs are those of `vsearch --fastq_convert` (FASTQ input),
 //! `vsearch --fasta2fastq` (FASTA input) and `vsearch --sff_convert` (SFF
-//! input) on the same input, with the equivalent options.
+//! input) on the same input, with the equivalent options. FASTA output is
+//! compared with `vsearch --fastx_subsample --sample_pct 100 --minseqlength
+//! 0 --notrunclabels --fastaout`, which writes every read in input order,
+//! and score checks with `vsearch --fastx_filter --fastaout`. Labels are
+//! relab's job. conv therefore writes every header unchanged.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -97,23 +101,13 @@ fn converts_solexa_to_phred() {
 }
 
 #[test]
-fn relabels() {
-    let input = fastq(&[("a;size=3 desc", "ACGT", "!+5~")]);
-    let expected = fastq(&[("R1;size=1", "ACGT", "!+5~")]);
-    assert_eq!(conv(&["--relabel", "R", "--sizeout"], &input), expected);
-}
-
-#[test]
 fn writes_fasta_as_fastq() {
     let input = fasta(&[("a;size=3 desc", "ACGT"), ("b", "AC")]);
     let expected = fastq(&[("a;size=3 desc", "ACGT", "JJJJ"), ("b", "AC", "JJ")]);
     assert_eq!(conv(&[], &input), expected);
     // the highest output score, written with the output offset
-    let expected = fastq(&[
-        ("a;size=3 desc;size=1", "ACGT", "rrrr"),
-        ("b;size=1", "AC", "rr"),
-    ]);
-    let args = ["--ascii-out", "64", "--qmax-out", "50", "--sizeout"];
+    let expected = fastq(&[("a;size=3 desc", "ACGT", "rrrr"), ("b", "AC", "rr")]);
+    let args = ["--ascii-out", "64", "--qmax-out", "50"];
     assert_eq!(conv(&args, &input), expected);
 }
 
@@ -316,17 +310,6 @@ fn encodes_sff_scores() {
     let expected = fastq(&[("r1", "acGTACGTac", "h^TJEEOYch"), ("r2", "gGCCa", "EEEEE")]);
     let input = sff_file(&sff_reads(), false, 1, b".sff");
     let args = ["--ascii-out", "64", "--qmax-out", "40", "--qmin-out", "5"];
-    assert_eq!(conv_sff(&args, &input), expected);
-}
-
-#[test]
-fn relabels_sff_reads() {
-    let expected = fastq(&[
-        ("R1;size=1;length=6", "GTACGT", "5+!&0:"),
-        ("R2;size=1;length=3", "GCC", "#$%"),
-    ]);
-    let input = sff_file(&sff_reads(), false, 1, b".sff");
-    let args = ["--clip", "--relabel", "R", "--sizeout", "--lengthout"];
     assert_eq!(conv_sff(&args, &input), expected);
 }
 
@@ -545,4 +528,211 @@ fn requires_a_line_end_after_fasta_headers() {
     assert_fails_with(&[], ">a", "header must be terminated with newline");
     // the last sequence line needs none
     assert_eq!(conv(&[], ">a\nACGT"), fastq(&[("a", "ACGT", "JJJJ")]));
+}
+
+/// Wraps a FASTA sequence at `width`, as vsearch does: no line for an
+/// empty sequence.
+fn wrapped(label: &str, seq: &str, width: usize) -> String {
+    let lines: String = seq
+        .as_bytes()
+        .chunks(width)
+        .map(|line| format!("{}\n", std::str::from_utf8(line).unwrap()))
+        .collect();
+    format!(">{label}\n{lines}")
+}
+
+/// A long read, a short one with a description, and an empty one.
+fn mixed_fq() -> String {
+    fastq(&[
+        ("a;size=3 desc", "ACGT", "!+5~"),
+        ("e", "", ""),
+        ("long", &"ACGT".repeat(45), &"I".repeat(180)),
+    ])
+}
+
+#[test]
+fn writes_fastq_as_fasta() {
+    // vsearch --fastx_subsample --sample_pct 100 --minseqlength 0
+    // --notrunclabels --fastaout, which keeps every read: lines of 80 by
+    // default
+    let long = "ACGT".repeat(45);
+    let expected = [
+        wrapped("a;size=3 desc", "ACGT", 80),
+        wrapped("e", "", 80),
+        wrapped("long", &long, 80),
+    ]
+    .concat();
+    assert_eq!(conv(&["--fasta"], &mixed_fq()), expected);
+    let expected = [
+        wrapped("a;size=3 desc", "ACGT", 7),
+        wrapped("e", "", 7),
+        wrapped("long", &long, 7),
+    ]
+    .concat();
+    assert_eq!(
+        conv(&["--fasta", "--fasta-width", "7"], &mixed_fq()),
+        expected
+    );
+}
+
+#[test]
+fn writes_unwrapped_fasta_with_width_zero() {
+    // vsearch --fasta_width 0: an empty sequence has an empty line
+    let expected = fasta(&[
+        ("a;size=3 desc", "ACGT"),
+        ("e", ""),
+        ("long", &"ACGT".repeat(45)),
+    ]);
+    let args = ["--fasta", "--fasta-width", "0"];
+    assert_eq!(conv(&args, &mixed_fq()), expected);
+}
+
+#[test]
+fn rewraps_fasta() {
+    let output = run(
+        &["--fasta", "--fasta-width", "3"],
+        ">a x\nAC\nGT\n>e\n>w\nAC1GT\n",
+    );
+    assert!(output.status.success());
+    let expected = [
+        wrapped("a x", "ACGT", 3),
+        wrapped("e", "", 3),
+        wrapped("w", "ACGT", 3),
+    ];
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected.concat());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("1 invalid characters stripped from FASTA file: 1(1)"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn checks_scores_when_writing_fasta() {
+    // as vsearch --fastx_filter --fastaout, with --fastq_qmax 41 or
+    // --fastq_ascii 64
+    let input = fastq(&[("a", "ACGT", "!+5~")]);
+    for (args, message) in [
+        (
+            &["--fasta", "--qmax", "41"][..],
+            "quality score 93 above the maximum 41",
+        ),
+        (
+            &["--fasta", "--ascii", "64"],
+            "quality score -31 below the minimum 0",
+        ),
+    ] {
+        let output = run(args, &input);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+    // Phred+64 and Solexa scores are read and checked, then dropped
+    let input = fastq(&[("s", "ACGT", ";@Jh")]);
+    let args = ["--fasta", "--ascii", "64", "--solexa"];
+    assert_eq!(conv(&args, &input), fasta(&[("s", "ACGT")]));
+}
+
+#[test]
+fn refuses_output_scores_with_fasta() {
+    let input = fastq(&[("a", "ACGT", "IIII")]);
+    for args in [
+        &["--fasta", "--ascii-out", "64"][..],
+        &["--fasta", "--qmin-out", "2"],
+        &["--fasta", "--qmax-out", "40"],
+        &["--fasta-width", "80"],
+    ] {
+        assert!(!run(args, &input).status.success(), "{args:?} should fail");
+    }
+}
+
+#[test]
+fn writes_sff_as_fasta() {
+    // the bases vsearch --sff_convert writes, without their scores
+    let input = sff_file(&sff_reads(), true, 1, b".sff");
+    let expected = fasta(&[("r1", "acGTACGTac"), ("r2", "gGCCa")]);
+    assert_eq!(conv_sff(&["--fasta"], &input), expected);
+    let expected = fasta(&[("r1", "GTACGT"), ("r2", "GCC")]);
+    assert_eq!(conv_sff(&["--fasta", "--clip"], &input), expected);
+}
+
+#[test]
+fn leaves_labels_to_relab() {
+    let input = fastq(&[("a", "ACGT", "IIII")]);
+    for args in [
+        &["--relabel", "R"][..],
+        &["--relabel-self"],
+        &["--relabel-sha1"],
+        &["--relabel-md5"],
+        &["--relabel-keep"],
+        &["--sizeout"],
+        &["--xsize"],
+        &["--xee"],
+        &["--lengthout"],
+        &["--xlength"],
+        &["--sample", "S"],
+        &["--label-suffix", "x"],
+    ] {
+        assert!(
+            !run(args, &input).status.success(),
+            "{args:?} should be refused"
+        );
+    }
+}
+
+/// Runs `bin` with `first` on `input`, then conv with `second` on its
+/// output, and returns conv's output.
+fn pipe(bin: &str, first: &[&str], second: &[&str], input: &str) -> String {
+    let mut child = Command::new(bin)
+        .args(first)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("the first binary should start");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let between = child.wait_with_output().unwrap();
+    assert!(between.status.success(), "{bin} failed");
+    conv(second, std::str::from_utf8(&between.stdout).unwrap())
+}
+
+#[test]
+fn pipeline_derep_smallmem() {
+    // vsearch --derep_smallmem in --sizein --sizeout --fastaout out
+    let long = "ACGT".repeat(45);
+    let input = fasta(&[
+        ("a;size=2", &long),
+        ("b", "AAAA"),
+        ("c", &long),
+        ("d;size=4", "AAAA"),
+    ]);
+    let derep = env!("CARGO_BIN_EXE_derep");
+    let expected = [
+        wrapped("a;size=3", &long, 80),
+        wrapped("b;size=5", "AAAA", 80),
+    ]
+    .concat();
+    assert_eq!(pipe(derep, &["--unsorted"], &["--fasta"], &input), expected);
+}
+
+#[test]
+fn pipeline_fastx_filter_relabel() {
+    // vsearch --fastx_filter in --relabel R --sizeout --fastaout out
+    let long = "ACGT".repeat(45);
+    let input = fastq(&[
+        ("x;size=3 desc", "ACGT", "!+5~"),
+        ("y", &long, &"I".repeat(180)),
+    ]);
+    let relab = env!("CARGO_BIN_EXE_relab");
+    let expected = [
+        wrapped("R1;size=1", "ACGT", 80),
+        wrapped("R2;size=1", &long, 80),
+    ]
+    .concat();
+    let args = ["--relabel", "R", "--sizeout"];
+    assert_eq!(pipe(relab, &args, &["--fasta"], &input), expected);
 }
