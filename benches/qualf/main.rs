@@ -17,7 +17,8 @@ use std::process::Command;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 use rsearch::fastx::{Reader, Record};
-use rsearch::filter::{Filter, abundance, expected_errors};
+use rsearch::filter::{Filter, expected_errors};
+use rsearch::label::abundance;
 
 /// Reads of `LENGTH` nucleotides.
 const READS: usize = 100_000;
@@ -115,7 +116,11 @@ fn bench_filter(c: &mut Criterion) {
             b.iter(|| {
                 reads
                     .iter()
-                    .filter(|r| !filter.apply(r.seq(), r.qual(), abundance(r.id())).discarded)
+                    .filter(|r| {
+                        !filter
+                            .apply(r.seq(), Some(r.qual()), abundance(r.id()))
+                            .discarded
+                    })
                     .count()
             })
         });

@@ -8,10 +8,23 @@ use std::io;
 use std::io::{BufReader, Read, Write};
 
 use bio::io::{fasta, fastq};
-use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
+use clap::parser::ValueSource;
+use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command, value_parser};
 
 use rsearch::fastx::{Format, Reader, Record};
-use rsearch::filter::{Filter, abundance, annotate_ee};
+use rsearch::filter::{Filter, Outcome};
+use rsearch::label::{Label, Relabel, abundance};
+
+/// Options that need quality scores, which cannot be used with FASTA input.
+const QUALITY_OPTIONS: [&str; 7] = [
+    "prob",
+    "prob-rate",
+    "min-qual",
+    "trunc-qual",
+    "trunc-prob",
+    "trunc-rate",
+    "ee",
+];
 
 /// parses a non-negative number of expected errors.
 fn non_negative(s: &str) -> Result<f64, String> {
@@ -80,27 +93,115 @@ fn filter_from(matches: &ArgMatches) -> Filter {
     }
 }
 
+fn label_from(matches: &ArgMatches) -> Label {
+    let relabel = if let Some(prefix) = matches.get_one::<String>("relabel") {
+        Relabel::Prefix(prefix.clone())
+    } else if matches.get_flag("relabel-self") {
+        Relabel::Sequence
+    } else if matches.get_flag("relabel-sha1") {
+        Relabel::Sha1
+    } else if matches.get_flag("relabel-md5") {
+        Relabel::Md5
+    } else {
+        Relabel::None
+    };
+    Label {
+        relabel,
+        keep: matches.get_flag("relabel-keep"),
+        sizeout: matches.get_flag("sizeout"),
+        xsize: matches.get_flag("xsize"),
+        eeout: matches.get_flag("ee"),
+        xee: matches.get_flag("xee"),
+        lengthout: matches.get_flag("lengthout"),
+        xlength: matches.get_flag("xlength"),
+        sample: matches.get_one::<String>("sample").cloned(),
+        suffix: matches.get_one::<String>("label-suffix").cloned(),
+    }
+}
+
+/// prints an error and exits.
+fn fail(message: &str) -> ! {
+    eprintln!("Error: {message}");
+    std::process::exit(1);
+}
+
+fn open(path: &str) -> Box<dyn Read> {
+    Box::new(File::open(path).unwrap())
+}
+
+fn create(path: &str) -> Box<dyn Write> {
+    Box::new(File::create(path).unwrap())
+}
+
+/// Trims and filters records, and writes them with their new labels.
+struct Qualf {
+    filter: Filter,
+    label: Label,
+}
+
+impl Qualf {
+    /// trims and filters a record; returns the outcome and the abundance.
+    fn apply(&self, r: &Record) -> (Outcome, u64) {
+        let size = if self.filter.uses_size() || self.label.sizeout {
+            abundance(r.header())
+        } else {
+            1
+        };
+        let qual = r.is_fastq().then(|| r.qual());
+        (self.filter.apply(r.seq(), qual, size), size)
+    }
+
+    /// writes the trimmed record, as the `ordinal`th of its output.
+    fn write(
+        &self,
+        out: Option<&mut Writer>,
+        r: &Record,
+        outcome: &Outcome,
+        size: u64,
+        ordinal: u64,
+    ) {
+        let Some(out) = out else {
+            return;
+        };
+        let seq = outcome.trim(r.seq());
+        let qual = if r.is_fastq() {
+            outcome.trim(r.qual())
+        } else {
+            &[]
+        };
+        if self.label.is_identity() {
+            out.write(r.id(), r.desc(), seq, qual);
+        } else {
+            let header = self
+                .label
+                .format(r.header(), seq, size, ordinal, outcome.ee);
+            out.write(&header, None, seq, qual);
+        }
+    }
+}
+
 fn main() {
-    let matches = Command::new("QualF")
+    let mut command = Command::new("QualF")
         .about("Filter FASTQ sequences by quality scores.")
         .long_about(
             "Filter FASTQ sequences by quality scores.\n\n\
              Reads are trimmed first (strip, then truncate), and the filters apply \
-             to the trimmed reads. Quality scores use the Phred+33 encoding.",
+             to the trimmed reads. Quality scores use the Phred+33 encoding. FASTA \
+             input can be filtered by length, N bases and abundance.",
         )
         .arg(
             Arg::new("in")
                 .short('i')
                 .long("in")
                 .value_name("INPUT")
-                .help("Input FASTQ file, default to stdin"),
+                .help("Input FASTQ or FASTA file, default to stdin"),
         )
         .arg(
             Arg::new("out")
                 .short('o')
                 .long("out")
                 .value_name("OUTPUT")
-                .help("Output FASTQ file, default to stdout"),
+                .help("Output file in the input format, default to stdout"),
         )
         .arg(
             Arg::new("discard")
@@ -225,81 +326,224 @@ fn main() {
                 .value_parser(value_parser!(u64).range(1..))
                 .help("Maximum abundance (;size=), disabled by default"),
         )
-        .get_matches();
+        .arg(
+            Arg::new("reverse")
+                .long("reverse")
+                .value_name("REVERSE")
+                .help("Input file of reverse reads, filtered together with their pairs"),
+        )
+        .arg(
+            Arg::new("rev-out")
+                .long("rev-out")
+                .value_name("OUTPUT")
+                .requires("reverse")
+                .help("Output file for kept reverse reads, disabled by default"),
+        )
+        .arg(
+            Arg::new("rev-discard")
+                .long("rev-discard")
+                .value_name("DISCARD")
+                .requires("reverse")
+                .help("Output file for discarded reverse reads, disabled by default"),
+        )
+        .arg(
+            Arg::new("relabel")
+                .long("relabel")
+                .value_name("PREFIX")
+                .help("Relabel sequences as PREFIX1, PREFIX2, ..."),
+        )
+        .arg(
+            Arg::new("relabel-self")
+                .long("relabel-self")
+                .action(ArgAction::SetTrue)
+                .help("Relabel sequences with the sequence itself"),
+        )
+        .arg(
+            Arg::new("relabel-sha1")
+                .long("relabel-sha1")
+                .action(ArgAction::SetTrue)
+                .help("Relabel sequences with the SHA1 digest of the sequence"),
+        )
+        .arg(
+            Arg::new("relabel-md5")
+                .long("relabel-md5")
+                .action(ArgAction::SetTrue)
+                .help("Relabel sequences with the MD5 digest of the sequence"),
+        )
+        .group(ArgGroup::new("relabeling").args([
+            "relabel",
+            "relabel-self",
+            "relabel-sha1",
+            "relabel-md5",
+        ]))
+        .arg(
+            Arg::new("relabel-keep")
+                .long("relabel-keep")
+                .action(ArgAction::SetTrue)
+                .help("Append the old label after the new one when relabelling"),
+        )
+        .arg(
+            Arg::new("sizeout")
+                .long("sizeout")
+                .action(ArgAction::SetTrue)
+                .help("Annotate output labels with abundance (;size=)"),
+        )
+        .arg(
+            Arg::new("xsize")
+                .long("xsize")
+                .action(ArgAction::SetTrue)
+                .help("Remove abundance annotations (;size=)"),
+        )
+        .arg(
+            Arg::new("xee")
+                .long("xee")
+                .action(ArgAction::SetTrue)
+                .help("Remove expected error annotations (;ee=)"),
+        )
+        .arg(
+            Arg::new("lengthout")
+                .long("lengthout")
+                .action(ArgAction::SetTrue)
+                .help("Annotate output labels with sequence length (;length=)"),
+        )
+        .arg(
+            Arg::new("xlength")
+                .long("xlength")
+                .action(ArgAction::SetTrue)
+                .help("Remove length annotations (;length=)"),
+        )
+        .arg(
+            Arg::new("sample")
+                .long("sample")
+                .value_name("SAMPLE")
+                .help("Annotate output labels with a sample name (;sample=)"),
+        )
+        .arg(
+            Arg::new("label-suffix")
+                .long("label-suffix")
+                .value_name("SUFFIX")
+                .help("Append this text to output labels"),
+        );
+
+    let matches = command.get_matches_mut();
 
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
-        Some(f) => Box::new(File::open(f).unwrap()),
+        Some(f) => open(f),
         None => Box::new(io::stdin()),
     };
 
     let mut reader = Reader::new(BufReader::new(fin));
 
-    if reader.format().unwrap() == Some(Format::Fasta) {
-        eprintln!("Error: FASTA input has no quality scores, FASTQ input is required");
-        std::process::exit(1);
+    let format = reader.format().unwrap();
+
+    let mut reverse = matches
+        .get_one::<String>("reverse")
+        .map(|f| Reader::new(BufReader::new(open(f))));
+
+    if let Some(rev) = reverse.as_mut() {
+        let rev_format = rev.format().unwrap();
+        if format.is_some() && rev_format.is_some() && rev_format != format {
+            fail("forward and reverse reads must be in the same format");
+        }
     }
 
+    let is_fasta = format == Some(Format::Fasta);
+
+    if is_fasta
+        && let Some(option) = QUALITY_OPTIONS
+            .iter()
+            .find(|&&id| matches.value_source(id) == Some(ValueSource::CommandLine))
+    {
+        command
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                format!("--{option} needs quality scores, which FASTA input lacks"),
+            )
+            .exit();
+    }
+
+    // FASTA input can only be written as FASTA
+    let as_fasta = matches.get_flag("fasta") || is_fasta;
+
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
-        Some(f) => Box::new(File::create(f).unwrap()),
+        Some(f) => create(f),
         None => Box::new(io::stdout()),
     };
 
-    let as_fasta = matches.get_flag("fasta");
-
     let mut writer = Writer::new(fout, as_fasta);
 
-    let mut discard = matches
-        .get_one::<String>("discard")
-        .map(|f| Writer::new(Box::new(File::create(f).unwrap()), as_fasta));
+    let optional = |name: &str| {
+        matches
+            .get_one::<String>(name)
+            .map(|f| Writer::new(create(f), as_fasta))
+    };
 
-    let annotate = matches.get_flag("ee");
+    let mut discard = optional("discard");
+    let mut rev_writer = optional("rev-out");
+    let mut rev_discard = optional("rev-discard");
 
-    let filter = filter_from(&matches);
+    let qualf = Qualf {
+        filter: filter_from(&matches),
+        label: label_from(&matches),
+    };
 
-    let mut r = Record::new();
+    let (mut r, mut r2) = (Record::new(), Record::new());
+
+    // ordinals of kept and discarded sequences, for --relabel
+    let (mut kept, mut discarded) = (0, 0);
 
     loop {
         // Since FASTQ uses '@' for both the description header and a quality symbol, there is no
         // reliable way to recover from a malformed record.
-        // Panics if a FASTQ record cannot be read.
+        // Panics if a record cannot be read.
         reader.read(&mut r).unwrap();
+
+        if let Some(rev) = reverse.as_mut() {
+            rev.read(&mut r2).unwrap();
+            match (r.is_empty(), r2.is_empty()) {
+                (true, false) => fail("more reverse reads than forward reads"),
+                (false, true) => fail("more forward reads than reverse reads"),
+                _ => {}
+            }
+        }
 
         if r.is_empty() {
             break;
         }
 
-        if r.check().is_err() {
+        // a pair is skipped if either read is invalid
+        if r.check().is_err() || (reverse.is_some() && r2.check().is_err()) {
             continue;
         }
 
-        let size = if filter.uses_size() {
-            abundance(r.header())
-        } else {
-            1
-        };
+        let (outcome, size) = qualf.apply(&r);
+        let rev = reverse.as_ref().map(|_| qualf.apply(&r2));
 
-        let outcome = filter.apply(r.seq(), r.qual(), size);
-
-        let out = if outcome.discarded {
-            match discard.as_mut() {
-                Some(w) => w,
-                None => continue,
+        // a pair is discarded if either read is
+        if outcome.discarded || rev.as_ref().is_some_and(|(o, _)| o.discarded) {
+            discarded += 1;
+            qualf.write(discard.as_mut(), &r, &outcome, size, discarded);
+            if let Some((o, s)) = &rev {
+                qualf.write(rev_discard.as_mut(), &r2, o, *s, discarded);
             }
         } else {
-            &mut writer
-        };
-
-        let (seq, qual) = (outcome.trim(r.seq()), outcome.trim(r.qual()));
-
-        if annotate {
-            out.write(&annotate_ee(r.header(), outcome.ee), None, seq, qual);
-        } else {
-            out.write(r.id(), r.desc(), seq, qual);
+            kept += 1;
+            qualf.write(Some(&mut writer), &r, &outcome, size, kept);
+            if let Some((o, s)) = &rev {
+                qualf.write(rev_writer.as_mut(), &r2, o, *s, kept);
+            }
         }
     }
 
-    writer.flush();
-    if let Some(w) = discard.as_mut() {
+    for w in [
+        Some(&mut writer),
+        discard.as_mut(),
+        rev_writer.as_mut(),
+        rev_discard.as_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
         w.flush();
     }
 }

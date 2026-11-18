@@ -93,8 +93,8 @@ pub struct Outcome {
     /// The kept bases are `start..start + len`.
     pub start: usize,
     pub len: usize,
-    /// Expected errors of the kept bases.
-    pub ee: f64,
+    /// Expected errors of the kept bases, `None` for a FASTA read.
+    pub ee: Option<f64>,
     /// Whether bases were removed.
     pub truncated: bool,
     /// Whether the read fails a filter.
@@ -115,7 +115,8 @@ impl Filter {
         self.min_size > 1 || self.max_size.is_some()
     }
 
-    /// trims and filters a read of abundance `size`.
+    /// trims and filters a read of abundance `size`. `qual` is `None` for a
+    /// FASTA read, which only the length, N and abundance filters apply to.
     ///
     /// # Example
     /// ```rust
@@ -127,15 +128,15 @@ impl Filter {
     /// };
     ///
     /// // truncated before the first base with a score of 10 or less ('+')
-    /// let outcome = filter.apply(b"ACGTA", b"IIII+", 1);
+    /// let outcome = filter.apply(b"ACGTA", Some(b"IIII+"), 1);
     /// assert_eq!(outcome.trim(b"ACGTA"), b"ACGT");
     /// assert!(outcome.truncated && !outcome.discarded);
     ///
-    /// let outcome = filter.apply(b"ACGTA", b"II+II", 1);
+    /// let outcome = filter.apply(b"ACGTA", Some(b"II+II"), 1);
     /// assert_eq!(outcome.len, 2);
     /// assert!(outcome.discarded);
     /// ```
-    pub fn apply(&self, seq: &[u8], qual: &[u8], size: u64) -> Outcome {
+    pub fn apply(&self, seq: &[u8], qual: Option<&[u8]>, size: u64) -> Outcome {
         let seqlen = seq.len();
         let start = self.strip_left.min(seqlen);
         let mut len = (seqlen - start).saturating_sub(self.strip_right);
@@ -154,8 +155,8 @@ impl Filter {
             || self.trunc_ee.is_some()
             || self.trunc_rate.is_some()
             || self.min_qual > 0;
-        let window = &qual[start..start + len];
-        if per_base {
+        let window = qual.map(|qual| &qual[start..start + len]);
+        if let (true, Some(window)) = (per_base, window) {
             let probability = &*ERROR_PROBABILITY;
             // scores are at least 0, so -1 never truncates
             let trunc_qual = self.trunc_qual.map_or(-1, i16::from);
@@ -176,14 +177,17 @@ impl Filter {
                     discarded = true;
                 }
             }
-        } else {
+        } else if let Some(window) = window {
             // nothing to check base by base: just add up the errors
             ee = expected_errors(window);
         }
 
         let kept = &seq[start..start + len];
-        discarded |= self.max_ee.is_some_and(|max| ee > max)
-            || (len > 0 && self.max_rate.is_some_and(|max| ee / len as f64 > max))
+        let ee = qual.map(|_| ee);
+        discarded |= ee.is_some_and(|ee| self.max_ee.is_some_and(|max| ee > max))
+            || ee.is_some_and(|ee| {
+                len > 0 && self.max_rate.is_some_and(|max| ee / len as f64 > max)
+            })
             || self.trunc_len.is_some_and(|n| len < n)
             || len < self.min_len
             || self.max_len.is_some_and(|max| len > max)
@@ -200,130 +204,5 @@ impl Filter {
             truncated: len < seqlen,
             discarded,
         }
-    }
-}
-
-/// Formats expected errors with about four significant digits, as vsearch.
-fn format_ee(ee: f64) -> String {
-    let decimals = match ee {
-        x if x < 1e-9 => 13,
-        x if x < 1e-8 => 12,
-        x if x < 1e-7 => 11,
-        x if x < 1e-6 => 10,
-        x if x < 1e-5 => 9,
-        x if x < 1e-4 => 8,
-        x if x < 1e-3 => 7,
-        x if x < 1e-2 => 6,
-        x if x < 1e-1 => 5,
-        _ => 4,
-    };
-    format!("{ee:.decimals$}")
-}
-
-/// The `[start, end)` byte range of the first `name` annotation of a
-/// header: one that starts the header or follows a `;`, with a value of
-/// digits (and dots, if `dots`) that ends the header or is followed by a
-/// `;`. These are vsearch's rules.
-fn find_attribute(header: &[u8], name: &[u8], dots: bool) -> Option<(usize, usize)> {
-    let mut offset = 0;
-    while offset + name.len() <= header.len() {
-        let hit = header[offset..]
-            .windows(name.len())
-            .position(|w| w == name)?
-            + offset;
-        offset = hit;
-        if hit > 0 && header[hit - 1] != b';' {
-            offset += name.len() + 1;
-            continue;
-        }
-        let value = hit + name.len();
-        let length = header[value..]
-            .iter()
-            .take_while(|c| c.is_ascii_digit() || (dots && **c == b'.'))
-            .count();
-        if length == 0 {
-            offset += name.len() + 1;
-            continue;
-        }
-        let end = value + length;
-        if end < header.len() && header[end] != b';' {
-            offset += name.len() + length + 2;
-            continue;
-        }
-        return Some((hit, end));
-    }
-    None
-}
-
-/// returns the abundance annotated in a whole header (`;size=N`), or 1. As
-/// in vsearch, the annotation must end the header or be followed by a `;`.
-/// A description after it hides it.
-///
-/// # Example
-/// ```rust
-/// # use rsearch::filter::abundance;
-/// assert_eq!(abundance("read1;size=4;"), 4);
-/// assert_eq!(abundance("read1;size=4 1:N:0"), 1);
-/// assert_eq!(abundance("read1 1:N:0;size=4"), 4);
-/// ```
-pub fn abundance(header: &str) -> u64 {
-    find_attribute(header.as_bytes(), b"size=", false)
-        .and_then(|(start, end)| header[start + 5..end].parse().ok())
-        .filter(|&size| size > 0)
-        .unwrap_or(1)
-}
-
-/// returns the header with its `ee=` annotation replaced by `ee`.
-///
-/// # Example
-/// ```rust
-/// # use rsearch::filter::annotate_ee;
-/// assert_eq!(annotate_ee("read1 1:N:0", 0.125), "read1 1:N:0;ee=0.1250");
-/// assert_eq!(annotate_ee("read1;ee=0.5;size=3", 0.05), "read1;size=3;ee=0.05000");
-/// ```
-pub fn annotate_ee(header: &str, ee: f64) -> String {
-    let bytes = header.as_bytes();
-    let mut out = String::with_capacity(header.len() + 16);
-    match find_attribute(bytes, b"ee=", true) {
-        None => out.push_str(header),
-        Some((start, end)) => {
-            if start > 1 {
-                out.push_str(&header[..start - 1]);
-            }
-            if bytes.len() > end + 1 {
-                out.push_str(&header[end..]);
-            }
-        }
-    }
-    if !out.ends_with(';') {
-        out.push(';');
-    }
-    out.push_str("ee=");
-    out.push_str(&format_ee(ee));
-    out
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_format_ee() {
-        assert_eq!(format_ee(0.0), "0.0000000000000");
-        assert_eq!(format_ee(0.00012346), "0.0001235");
-        assert_eq!(format_ee(0.000012346), "0.00001235");
-        assert_eq!(format_ee(0.05), "0.05000");
-        assert_eq!(format_ee(12.5), "12.5000");
-    }
-
-    #[test]
-    fn test_annotate_ee() {
-        assert_eq!(annotate_ee("a", 1.0), "a;ee=1.0000");
-        assert_eq!(annotate_ee("a;", 1.0), "a;ee=1.0000");
-        assert_eq!(annotate_ee("ee=2;a", 1.0), ";a;ee=1.0000");
-        assert_eq!(annotate_ee("a;ee=2;", 1.0), "a;ee=1.0000");
-        // not annotations: inside a word, or with an invalid value
-        assert_eq!(annotate_ee("free=2", 1.0), "free=2;ee=1.0000");
-        assert_eq!(annotate_ee("a;ee=x", 1.0), "a;ee=x;ee=1.0000");
     }
 }
