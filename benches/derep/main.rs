@@ -2,11 +2,13 @@
 //!
 //! `cluster` measures the in-memory work (`Clusters::add_fastx` and
 //! sorting) on parsed records; `binary` runs the derep program end to end
-//! on files: FASTA and FASTQ, with and without `--strand`, relabelling,
-//! whole labels without sizes, FASTQ written as FASTA, Phred+64, the best
-//! quality, UC and tab-separated tables, identical labels and prefixes.
-//! Set `VSEARCH` to a vsearch executable to time `vsearch --fastx_uniques`
-//! on the same files for comparison:
+//! on files: FASTA and FASTQ, with and without `--strand`, without sizes,
+//! in input order, Phred+64, the best quality, UC and tab-separated tables,
+//! identical labels and prefixes. Set `VSEARCH` to a vsearch executable to
+//! time `vsearch --fastx_uniques`, `--derep_smallmem`, `--derep_id` and
+//! `--derep_prefix` on the same files for comparison, with
+//! `--minseqlength 0 --notrunclabels` as derep keeps every length and whole
+//! headers:
 //!
 //! ```sh
 //! VSEARCH=/path/to/vsearch cargo bench --bench derep
@@ -161,7 +163,7 @@ fn cases<'a>(inputs: &'a Inputs) -> Vec<Case<'a>> {
     let fa = inputs.fasta.to_str().unwrap();
     let fq = inputs.fastq.to_str().unwrap();
     let fq64 = inputs.phred64.to_str().unwrap();
-    let common = ["--minseqlength", "1", "--quiet"];
+    let common = ["--minseqlength", "0", "--notrunclabels", "--quiet"];
     // dereplicating `file` with derep's `derep` arguments, and with vsearch
     // `command` written to `out`, with its `vsearch` arguments
     let case = |name, file, derep: &[&'a str], command, out, vsearch: &[&'a str]| Case {
@@ -180,21 +182,15 @@ fn cases<'a>(inputs: &'a Inputs) -> Vec<Case<'a>> {
         uniques("fasta_strand", fa, &["--strand"], fasta, &strand),
         uniques("fastq", fq, &[], fastq, &sizes),
         uniques("fastq_strand", fq, &["--strand"], fastq, &strand),
-        uniques(
-            "relabel",
+        uniques("unsized", fa, &["--no-sizein", "--no-sizeout"], fasta, &[]),
+        case(
+            "unsorted",
             fa,
-            &["--relabel-sha1", "--lengthout"],
+            &["--unsorted"],
+            "--derep_smallmem",
             fasta,
-            &["--sizein", "--sizeout", "--relabel_sha1", "--lengthout"],
+            &sizes,
         ),
-        uniques(
-            "unsized",
-            fa,
-            &["--no-sizein", "--no-sizeout", "--full-labels"],
-            fasta,
-            &["--notrunclabels"],
-        ),
-        uniques("fastq_as_fasta", fq, &["--fasta"], fasta, &sizes),
         uniques(
             "phred64",
             fq64,
