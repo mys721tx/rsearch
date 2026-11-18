@@ -316,12 +316,18 @@ pub fn normalize(seq: &[u8]) -> Vec<u8> {
 /// writes `normalize(seq)` into `dest`, reusing its allocation.
 pub fn normalize_into(dest: &mut Vec<u8>, seq: &[u8]) {
     dest.clear();
-    dest.extend(seq.iter().map(|c| match c.to_ascii_uppercase() {
+    dest.extend(seq.iter().map(|&c| normalize_base(c)));
+}
+
+/// returns one normalized base: upper case, U as T, and N for anything
+/// that is not an IUPAC nucleotide code.
+pub fn normalize_base(c: u8) -> u8 {
+    match c.to_ascii_uppercase() {
         b'U' => b'T',
         c @ (b'A' | b'B' | b'C' | b'D' | b'G' | b'H' | b'K' | b'M' | b'N' | b'R' | b'S' | b'T'
         | b'V' | b'W' | b'Y') => c,
         _ => b'N',
-    }));
+    }
 }
 
 /// returns the reverse complement of a normalized sequence.

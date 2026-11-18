@@ -4,7 +4,7 @@
 use md5::Md5;
 use sha1::{Digest, Sha1};
 
-use crate::cluster::normalize;
+use crate::cluster::normalize_base;
 
 /// The `[start, end)` byte range of the first `name` annotation of a
 /// header: one that starts the header or follows a `;`, with a value of
@@ -74,6 +74,30 @@ fn format_ee(ee: f64) -> String {
         _ => 4,
     };
     format!("{ee:.decimals$}")
+}
+
+/// Appends the bytes as lower-case hexadecimal.
+fn push_hex(bytes: &[u8], out: &mut String) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    out.reserve(2 * bytes.len());
+    for &byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+}
+
+/// Appends the hexadecimal digest of the normalized sequence, normalizing
+/// it chunk by chunk into a buffer on the stack rather than a copy.
+fn push_digest<D: Digest>(seq: &[u8], out: &mut String) {
+    let mut hasher = D::new();
+    let mut buffer = [0u8; 256];
+    for chunk in seq.chunks(buffer.len()) {
+        for (normalized, &base) in buffer.iter_mut().zip(chunk) {
+            *normalized = normalize_base(base);
+        }
+        hasher.update(&buffer[..chunk.len()]);
+    }
+    push_hex(&hasher.finalize(), out);
 }
 
 /// Appends the header with the given annotations removed, as vsearch does.
@@ -205,19 +229,14 @@ impl Label {
     ) -> String {
         let mut out = String::with_capacity(header.len() + 32);
         let mut trailing = false;
-        let hex = |digest: &[u8], out: &mut String| {
-            for byte in digest {
-                out.push_str(&format!("{byte:02x}"));
-            }
-        };
         match &self.relabel {
             Relabel::Prefix(prefix) => {
                 out.push_str(prefix);
                 out.push_str(&ordinal.to_string());
             }
             Relabel::Sequence => out.push_str(&String::from_utf8_lossy(seq)),
-            Relabel::Sha1 => hex(&Sha1::digest(normalize(seq)), &mut out),
-            Relabel::Md5 => hex(&Md5::digest(normalize(seq)), &mut out),
+            Relabel::Sha1 => push_digest::<Sha1>(seq, &mut out),
+            Relabel::Md5 => push_digest::<Md5>(seq, &mut out),
             Relabel::None => {
                 trailing = push_stripped(
                     &mut out,
@@ -330,6 +349,14 @@ mod test {
         assert_eq!(sha1.len(), 40 + ";size=1".len());
         let md5 = label(Relabel::Md5).format("a", b"ACGT", 1, 1, None);
         assert_eq!(md5, "f1f8f4bf413b16ad135722aa4591043e;size=1");
+        // longer than the normalizing buffer, and hashed in several chunks
+        let long: Vec<u8> = b"acgu".repeat(200);
+        let expected: Vec<u8> = b"ACGT".repeat(200);
+        let digest = |seq: &[u8]| label(Relabel::Md5).format("a", seq, 1, 1, None);
+        assert_eq!(digest(&long), digest(&expected));
+        let mut whole = String::new();
+        push_hex(&Md5::digest(&expected), &mut whole);
+        assert_eq!(&digest(&expected)[..32], whole);
     }
 
     #[test]
