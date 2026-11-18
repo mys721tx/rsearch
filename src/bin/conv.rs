@@ -174,11 +174,16 @@ fn main() {
     let matches = command.get_matches_mut();
 
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
-        Some(f) => Box::new(File::open(f).unwrap()),
+        Some(f) => {
+            Box::new(File::open(f).unwrap_or_else(|e| fail(&format!("cannot open {f}: {e}"))))
+        }
         None => Box::new(io::stdin()),
     };
     let mut fin = BufReader::new(fin);
-    let is_sff = fin.fill_buf().unwrap().starts_with(sff::MAGIC);
+    let is_sff = fin
+        .fill_buf()
+        .unwrap_or_else(|e| fail(&format!("cannot read the input: {e}")))
+        .starts_with(sff::MAGIC);
 
     let mut input = if is_sff {
         Input::Sff(fin)
@@ -186,7 +191,12 @@ fn main() {
         Input::Fastx(Reader::new(fin))
     };
     let is_fasta = match &mut input {
-        Input::Fastx(reader) => reader.format().unwrap() == Some(Format::Fasta),
+        Input::Fastx(reader) => {
+            let format = reader
+                .format()
+                .unwrap_or_else(|_| fail("input is not SFF, FASTA or FASTQ"));
+            format == Some(Format::Fasta)
+        }
         Input::Sff(_) => false,
     };
 
@@ -232,7 +242,9 @@ fn main() {
     };
 
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
-        Some(f) => Box::new(File::create(f).unwrap()),
+        Some(f) => {
+            Box::new(File::create(f).unwrap_or_else(|e| fail(&format!("cannot create {f}: {e}"))))
+        }
         None => Box::new(io::stdout()),
     };
     let mut out = Output {
@@ -294,7 +306,9 @@ fn convert_fastx<R: BufRead>(
     let mut ordinal = 0;
 
     loop {
-        reader.read(&mut record).unwrap();
+        if let Err(e) = reader.read(&mut record) {
+            out.fail(&format!("invalid input: {e}"));
+        }
 
         if record.is_empty() {
             break;
