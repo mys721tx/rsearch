@@ -49,3 +49,7 @@ harness = false
 [[bench]]
 name = "revcomp"
 harness = false
+
+[[bench]]
+name = "sortby"
+harness = false
