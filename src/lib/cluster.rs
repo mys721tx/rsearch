@@ -68,10 +68,11 @@ pub fn parse_id(id: &str) -> (&str, u64) {
                 }
             }
             2 => {
-                if size.is_none() && pair[0] == "size" {
-                    if let Ok(x) = pair[1].parse().map(|x| if x > 0 { x } else { 1 }) {
-                        size = Some(x);
-                    };
+                if size.is_none()
+                    && pair[0] == "size"
+                    && let Ok(x) = pair[1].parse().map(|x| if x > 0 { x } else { 1 })
+                {
+                    size = Some(x);
                 }
             }
             _ => (),

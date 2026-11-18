@@ -103,7 +103,7 @@ fn main() {
 
         let l = r.seq().len();
 
-        if min_len.map_or(false, |m| l < m) || max_len.map_or(false, |m| l > m) {
+        if min_len.is_some_and(|m| l < m) || max_len.is_some_and(|m| l > m) {
             continue;
         }
 
@@ -115,7 +115,7 @@ fn main() {
             .map(|x| 10f64.powf(-(f64::from(*x - 33u8) / 10f64)))
             .sum();
 
-        if prob.map_or(false, |p| phred > p) {
+        if prob.is_some_and(|p| phred > p) {
             continue;
         }
 
@@ -123,10 +123,10 @@ fn main() {
         let bad = r
             .seq()
             .iter()
-            .filter(|x| x.to_ascii_uppercase() == b'N')
+            .filter(|x| x.eq_ignore_ascii_case(&b'N'))
             .count();
 
-        if bad_call.map_or(false, |b| bad > b) {
+        if bad_call.is_some_and(|b| bad > b) {
             continue;
         }
 
