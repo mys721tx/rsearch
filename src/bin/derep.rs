@@ -21,20 +21,18 @@ fn main() {
                 .short('i')
                 .long("in")
                 .value_name("INPUT")
-                .help("Input FASTA file, default to stdin")
-                .takes_value(true),
+                .help("Input FASTA file, default to stdin"),
         )
         .arg(
             Arg::new("out")
                 .short('o')
                 .long("out")
                 .value_name("OUTPUT")
-                .help("Output FASTA file, default to stdout")
-                .takes_value(true),
+                .help("Output FASTA file, default to stdout"),
         )
         .get_matches();
 
-    let fin: Box<dyn Read> = match matches.value_of("in") {
+    let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => Box::new(File::open(f).unwrap()),
         None => Box::new(io::stdin()),
     };
@@ -56,7 +54,7 @@ fn main() {
         entry.merged.extend(cluster.merged);
     }
 
-    let fout: Box<dyn Write> = match matches.value_of("out") {
+    let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => Box::new(File::create(f).unwrap()),
         None => Box::new(io::stdout()),
     };

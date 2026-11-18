@@ -28,75 +28,68 @@ where
 }
 
 fn main() {
-    let matches = Command::new("QualF")
-        .about("Filter FASTQ sequences by quality scores.")
-        .arg(
-            Arg::new("in")
-                .short('i')
-                .long("in")
-                .value_name("INPUT")
-                .help("Input FASTQ file, default to stdin")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("out")
-                .short('o')
-                .long("out")
-                .value_name("OUTPUT")
-                .help("Output FASTQ file, default to stdout")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("max")
-                .long("max")
-                .value_name("MAX_LEN")
-                .help("Maximum value for length filter, disabled by default")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("min")
-                .long("min")
-                .value_name("MIN_LEN")
-                .help("Minimum value for length filter, disabled by default")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("prob")
-                .long("prob")
-                .value_name("PROB")
-                .help("Probability of incorrect base call for quality filter, disabled by default")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("bad")
-                .long("bad")
-                .value_name("BAD")
-                .help("Number of bad base call allowed for quality filter, disabled by default")
-                .takes_value(true),
-        )
-        .get_matches();
+    let matches =
+        Command::new("QualF")
+            .about("Filter FASTQ sequences by quality scores.")
+            .arg(
+                Arg::new("in")
+                    .short('i')
+                    .long("in")
+                    .value_name("INPUT")
+                    .help("Input FASTQ file, default to stdin"),
+            )
+            .arg(
+                Arg::new("out")
+                    .short('o')
+                    .long("out")
+                    .value_name("OUTPUT")
+                    .help("Output FASTQ file, default to stdout"),
+            )
+            .arg(
+                Arg::new("max")
+                    .long("max")
+                    .value_name("MAX_LEN")
+                    .help("Maximum value for length filter, disabled by default"),
+            )
+            .arg(
+                Arg::new("min")
+                    .long("min")
+                    .value_name("MIN_LEN")
+                    .help("Minimum value for length filter, disabled by default"),
+            )
+            .arg(
+                Arg::new("prob").long("prob").value_name("PROB").help(
+                    "Probability of incorrect base call for quality filter, disabled by default",
+                ),
+            )
+            .arg(
+                Arg::new("bad").long("bad").value_name("BAD").help(
+                    "Number of bad base call allowed for quality filter, disabled by default",
+                ),
+            )
+            .get_matches();
 
-    let fin: Box<dyn Read> = match matches.value_of("in") {
+    let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => Box::new(File::open(f).unwrap()),
         None => Box::new(io::stdin()),
     };
 
     let reader = Reader::new(fin);
 
-    let fout: Box<dyn Write> = match matches.value_of("out") {
+    let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => Box::new(File::create(f).unwrap()),
         None => Box::new(io::stdout()),
     };
 
     let mut writer = Writer::new(fout);
 
-    let min_len = parse_option(matches.value_of("min"));
+    let min_len = parse_option(matches.get_one::<String>("min").map(String::as_str));
 
-    let max_len = parse_option(matches.value_of("max"));
+    let max_len = parse_option(matches.get_one::<String>("max").map(String::as_str));
 
-    let prob = parse_option(matches.value_of("prob"));
+    let prob = parse_option(matches.get_one::<String>("prob").map(String::as_str));
 
-    let bad_call = parse_option(matches.value_of("bad_call"));
+    let bad_call = parse_option(matches.get_one::<String>("bad").map(String::as_str));
 
     for record in reader.records() {
         // Since FASTQ uses '@' for both the description header and a quality symbol, there is no

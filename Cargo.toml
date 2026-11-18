@@ -5,9 +5,9 @@ edition = "2021"
 authors = ["Yishen Miao <mys721tx@gmail.com>"]
 
 [dependencies]
-bio = "0.42.0"
-clap = "3.2"
-mimalloc = "0.1.29"
+bio = "4.2.2"
+clap = "4.6.8"
+mimalloc = "0.1.52"
 
 [lib]
 name = "rsearch"
