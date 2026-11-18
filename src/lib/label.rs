@@ -73,6 +73,53 @@ pub fn size_annotation(header: &str) -> Option<u64> {
         .and_then(|(start, end)| header[start + 5..end].parse().ok())
 }
 
+/// An abundance annotation that vsearch refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbundanceError {
+    /// `;size=0`.
+    Zero,
+    /// More than a signed 64-bit integer holds.
+    Range,
+}
+
+impl std::fmt::Display for AbundanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AbundanceError::Zero => write!(f, "invalid (zero) abundance annotation"),
+            AbundanceError::Range => write!(f, "invalid (range error) abundance annotation"),
+        }
+    }
+}
+
+impl std::error::Error for AbundanceError {}
+
+/// returns the abundance annotated in a whole header under the rules of
+/// `abundance`, or 1, refusing a zero and a value above `i64::MAX` as
+/// vsearch does whenever it reads abundances.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::label::{AbundanceError, checked_abundance};
+/// assert_eq!(checked_abundance("a;size=4"), Ok(4));
+/// assert_eq!(checked_abundance("a"), Ok(1));
+/// assert_eq!(checked_abundance("a;size=0"), Err(AbundanceError::Zero));
+/// assert_eq!(
+///     checked_abundance("a;size=9223372036854775808"),
+///     Err(AbundanceError::Range)
+/// );
+/// ```
+pub fn checked_abundance(header: &str) -> Result<u64, AbundanceError> {
+    let Some((start, end)) = find_attribute(header.as_bytes(), b"size=", false) else {
+        return Ok(1);
+    };
+    // the value is digits only, and parsing fails only on overflow
+    match header[start + 5..end].parse::<i64>() {
+        Ok(0) => Err(AbundanceError::Zero),
+        Ok(size) => Ok(size as u64),
+        Err(_) => Err(AbundanceError::Range),
+    }
+}
+
 /// Formats expected errors with about four significant digits, as vsearch.
 fn format_ee(ee: f64) -> String {
     let decimals = match ee {
