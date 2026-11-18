@@ -53,3 +53,7 @@ harness = false
 [[bench]]
 name = "sortby"
 harness = false
+
+[[bench]]
+name = "getseq"
+harness = false
