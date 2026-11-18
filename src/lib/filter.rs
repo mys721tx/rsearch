@@ -32,6 +32,40 @@ pub fn expected_errors(qual: &[u8]) -> f64 {
         .fold(0.0, |ee, &q| ee + probability[usize::from(q)])
 }
 
+/// returns the percentage of residues of `seq` that `counted` accepts,
+/// computed as vsearch's `--fastx_mask` does: `NaN` for an empty sequence,
+/// which no limit then discards.
+fn percent(seq: &[u8], counted: impl Fn(u8) -> bool) -> f64 {
+    let count = seq.iter().filter(|&&c| counted(c)).count();
+    100.0 * count as f64 / seq.len() as f64
+}
+
+/// returns the percentage of upper-case residues, those a soft mask left
+/// unmasked.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::filter::upper_pct;
+/// assert_eq!(upper_pct(b"ACGTacgt"), 50.0);
+/// assert_eq!(upper_pct(b"NnACGTAC"), 87.5);
+/// ```
+pub fn upper_pct(seq: &[u8]) -> f64 {
+    percent(seq, |c| c.is_ascii_uppercase())
+}
+
+/// returns the percentage of residues other than N (or n), those a hard
+/// mask left unmasked.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::filter::non_n_pct;
+/// assert_eq!(non_n_pct(b"ACGTNNNN"), 50.0);
+/// assert_eq!(non_n_pct(b"NnACGTAC"), 75.0);
+/// ```
+pub fn non_n_pct(seq: &[u8]) -> f64 {
+    percent(seq, |c| c != b'N' && c != b'n')
+}
+
 /// Trimming and filtering settings. Trimming happens first. The ends are
 /// stripped, then the read is truncated by length, quality and expected
 /// errors. The filters then apply to what is left.
