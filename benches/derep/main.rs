@@ -1,7 +1,8 @@
 //! Benchmarks of dereplication.
 //!
-//! `cluster` measures the in-memory work (`Clusters::add` and sorting) on
-//! parsed records; `binary` runs the derep program end to end on files.
+//! `cluster` measures the in-memory work (`Clusters::add_fastx` and
+//! sorting) on parsed records; `binary` runs the derep program end to end
+//! on files.
 //! Set `VSEARCH` to a vsearch executable to time `vsearch --fastx_uniques`
 //! on the same files for comparison:
 //!
@@ -13,10 +14,10 @@ use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use bio::io::{fasta, fastq};
-use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 use rsearch::cluster::{Cluster, Clusters, reverse_complement, sort_by_size};
+use rsearch::fastx::{Reader, Record};
 
 /// Reads drawn from `UNIQUES` distinct sequences of `LENGTH` nucleotides.
 const READS: usize = 100_000;
@@ -71,24 +72,17 @@ fn generate(fastq: bool) -> String {
     out
 }
 
-fn parse(text: &str, fastq_input: bool) -> Vec<Cluster> {
-    if fastq_input {
-        fastq::Reader::new(text.as_bytes())
-            .records()
-            .map(|r| Cluster::build_from_fastq_record(&r.unwrap()))
-            .collect()
-    } else {
-        fasta::Reader::new(text.as_bytes())
-            .records()
-            .map(|r| Cluster::build_from_record(&r.unwrap()))
-            .collect()
-    }
+fn parse(text: &str) -> Vec<Record> {
+    Reader::new(text.as_bytes())
+        .records()
+        .map(Result::unwrap)
+        .collect()
 }
 
-fn dereplicate(reads: Vec<Cluster>, strand: bool) -> Vec<Cluster> {
+fn dereplicate(reads: &[Record], strand: bool) -> Vec<Cluster> {
     let mut clusters = Clusters::default();
     for read in reads {
-        clusters.add(read, strand);
+        clusters.add_fastx(read, strand);
     }
     let mut clusters = clusters.into_clusters();
     sort_by_size(&mut clusters);
@@ -96,8 +90,8 @@ fn dereplicate(reads: Vec<Cluster>, strand: bool) -> Vec<Cluster> {
 }
 
 fn bench_cluster(c: &mut Criterion) {
-    let fasta_reads = parse(&generate(false), false);
-    let fastq_reads = parse(&generate(true), true);
+    let fasta_reads = parse(&generate(false));
+    let fastq_reads = parse(&generate(true));
 
     let mut group = c.benchmark_group("derep/cluster");
     group.throughput(Throughput::Elements(READS as u64));
@@ -107,13 +101,7 @@ fn bench_cluster(c: &mut Criterion) {
         ("fastq", &fastq_reads, false),
         ("fastq_strand", &fastq_reads, true),
     ] {
-        group.bench_function(name, |b| {
-            b.iter_batched(
-                || reads.clone(),
-                |reads| black_box(dereplicate(reads, strand)),
-                BatchSize::LargeInput,
-            )
-        });
+        group.bench_function(name, |b| b.iter(|| black_box(dereplicate(reads, strand))));
     }
     group.finish();
 }
