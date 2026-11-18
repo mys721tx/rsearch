@@ -16,7 +16,7 @@ use std::process::Command;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
-use rsearch::fastq::{Reader, Record};
+use rsearch::fastx::{Reader, Record};
 use rsearch::filter::{Filter, abundance, expected_errors};
 
 /// Reads of `LENGTH` nucleotides.

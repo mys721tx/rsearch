@@ -3,6 +3,8 @@ use bio::io::fastq;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use crate::fastx;
+
 #[derive(Clone, Debug, Default)]
 /// A struct to store the size and annotation of sequences.
 ///
@@ -53,6 +55,13 @@ const NEGLIGIBLE_SIZE_RATIO: u64 = 4;
 /// Up to this cluster size, the abundance weights are exact in an `f64`.
 const RESOLVABLE_SIZE: u64 = 1 << 40;
 
+/// raises Q0 to Q1, as vsearch does on output.
+fn floor_quality(qual: &[u8]) -> Vec<u8> {
+    qual.iter()
+        .map(|&q| q.max(PHRED_OFFSET + MIN_QUALITY))
+        .collect()
+}
+
 impl Cluster {
     /// returns a Cluster from a `bio::io::fastq::Record`.
     ///
@@ -74,13 +83,7 @@ impl Cluster {
             size,
             merged: vec![name.to_string()],
             seq: record.seq().to_vec(),
-            qual: Some(
-                record
-                    .qual()
-                    .iter()
-                    .map(|&q| q.max(PHRED_OFFSET + MIN_QUALITY))
-                    .collect(),
-            ),
+            qual: Some(floor_quality(record.qual())),
         }
     }
 
@@ -94,10 +97,38 @@ impl Cluster {
     /// moves the average by less than one, and computing it could still
     /// lower the score by one through rounding.
     pub fn merge(&mut self, other: Cluster, reverse: bool) {
-        if let (Some(q1), Some(q2)) = (&mut self.qual, &other.qual) {
+        self.merge_quality(other.size, other.qual.as_deref(), reverse);
+        self.size += other.size;
+        self.merged.extend(other.merged);
+    }
+
+    /// merges a read named `name` of abundance `size`, as `merge` does,
+    /// without building a cluster for it first. `qual` is `None` for FASTA.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::cluster::Cluster;
+    /// # use rsearch::fastx::Record;
+    /// let mut cluster = Cluster::build_from_fastx(&Record::with_attrs("a", None, b"ACGT", b"I#5+"));
+    /// cluster.merge_read("b", 1, Some(b"#I5,"), false);
+    ///
+    /// assert_eq!(cluster.size, 2);
+    /// assert_eq!(cluster.merged, ["a", "b"]);
+    /// assert_eq!(cluster.qual.as_deref(), Some(&b"&&5+"[..]));
+    /// ```
+    pub fn merge_read(&mut self, name: &str, size: u64, qual: Option<&[u8]>, reverse: bool) {
+        self.merge_quality(size, qual, reverse);
+        self.size += size;
+        self.merged.push(name.to_string());
+    }
+
+    /// combines the qualities of a read of abundance `size` into the
+    /// cluster's, before the sizes are added up.
+    fn merge_quality(&mut self, size: u64, qual: Option<&[u8]>, reverse: bool) {
+        if let (Some(q1), Some(q2)) = (&mut self.qual, qual) {
             let negligible =
-                other.size <= self.size / NEGLIGIBLE_SIZE_RATIO && self.size < RESOLVABLE_SIZE;
-            let (s1, s2) = (self.size as f64, other.size as f64);
+                size <= self.size / NEGLIGIBLE_SIZE_RATIO && self.size < RESOLVABLE_SIZE;
+            let (s1, s2) = (self.size as f64, size as f64);
             let probability = &*ERROR_PROBABILITY;
             let len = q1.len();
             for (i, q) in q1.iter_mut().enumerate() {
@@ -110,9 +141,32 @@ impl Cluster {
                 *q = quality_symbol(mixed);
             }
         }
-        self.size += other.size;
-        self.merged.extend(other.merged);
     }
+
+    /// returns a Cluster from a `fastx::Record`, with qualities if the
+    /// record is from FASTQ.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::cluster::Cluster;
+    /// # use rsearch::fastx::Record;
+    /// let cluster = Cluster::build_from_fastx(&Record::fasta_with_attrs("foo;size=3", None, b"ACGT"));
+    ///
+    /// assert_eq!(cluster.size, 3);
+    /// assert_eq!(cluster.merged, ["foo"]);
+    /// assert_eq!(cluster.qual, None);
+    /// ```
+    pub fn build_from_fastx(record: &fastx::Record) -> Cluster {
+        let (name, size) = parse_id(record.id());
+
+        Cluster {
+            size,
+            merged: vec![name.to_string()],
+            seq: record.seq().to_vec(),
+            qual: record.is_fastq().then(|| floor_quality(record.qual())),
+        }
+    }
+
     /// returns a Cluster from a `bio::io::fasta::Record`.
     ///
     /// # Example
@@ -163,26 +217,69 @@ impl Cluster {
 pub struct Clusters {
     clusters: Vec<Cluster>,
     index: HashMap<Vec<u8>, usize>,
+    /// The normalized sequence being added, and its reverse complement.
+    key: Vec<u8>,
+    reverse: Vec<u8>,
 }
 
 impl Clusters {
+    /// finds the cluster of `seq` by its normalized sequence, or with
+    /// `strand`, its reverse complement; returns its index and whether it
+    /// matched the reverse complement. Leaves the normalized sequence in
+    /// `self.key`.
+    fn find(&mut self, seq: &[u8], strand: bool) -> Option<(usize, bool)> {
+        normalize_into(&mut self.key, seq);
+        if let Some(&i) = self.index.get(self.key.as_slice()) {
+            return Some((i, false));
+        }
+        if strand {
+            reverse_complement_into(&mut self.reverse, &self.key);
+            if let Some(&i) = self.index.get(self.reverse.as_slice()) {
+                return Some((i, true));
+            }
+        }
+        None
+    }
+
+    fn push(&mut self, cluster: Cluster) {
+        self.index.insert(self.key.clone(), self.clusters.len());
+        self.clusters.push(cluster);
+    }
+
     /// adds a sequence, merging it into an existing cluster with the same
     /// normalized sequence, or with `strand`, its reverse complement.
     pub fn add(&mut self, cluster: Cluster, strand: bool) {
-        let key = normalize(&cluster.seq);
-
-        if let Some(&i) = self.index.get(&key) {
-            self.clusters[i].merge(cluster, false);
-            return;
+        match self.find(&cluster.seq, strand) {
+            Some((i, reverse)) => self.clusters[i].merge(cluster, reverse),
+            None => self.push(cluster),
         }
+    }
 
-        if strand && let Some(&i) = self.index.get(&reverse_complement(&key)) {
-            self.clusters[i].merge(cluster, true);
-            return;
+    /// adds a record as `add` does, but builds a cluster only for a new
+    /// sequence. A duplicate is merged without copying its sequence.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::cluster::Clusters;
+    /// # use rsearch::fastx::Record;
+    /// let mut clusters = Clusters::default();
+    /// for (id, seq) in [("a", b"AACC"), ("b", b"aacc"), ("c", b"GGTT")] {
+    ///     clusters.add_fastx(&Record::fasta_with_attrs(id, None, seq), true);
+    /// }
+    ///
+    /// let clusters = clusters.into_clusters();
+    /// assert_eq!(clusters.len(), 1);
+    /// assert_eq!(clusters[0].merged, ["a", "b", "c"]);
+    /// ```
+    pub fn add_fastx(&mut self, record: &fastx::Record, strand: bool) {
+        match self.find(record.seq(), strand) {
+            Some((i, reverse)) => {
+                let (name, size) = parse_id(record.id());
+                let qual = record.is_fastq().then(|| record.qual());
+                self.clusters[i].merge_read(name, size, qual, reverse);
+            }
+            None => self.push(Cluster::build_from_fastx(record)),
         }
-
-        self.index.insert(key, self.clusters.len());
-        self.clusters.push(cluster);
     }
 
     /// returns the clusters in order of first appearance.
@@ -211,14 +308,20 @@ pub fn sort_by_size(clusters: &mut [Cluster]) {
 /// assert_eq!(normalize(b"acgUrx"), b"ACGTRN");
 /// ```
 pub fn normalize(seq: &[u8]) -> Vec<u8> {
-    seq.iter()
-        .map(|c| match c.to_ascii_uppercase() {
-            b'U' => b'T',
-            c @ (b'A' | b'B' | b'C' | b'D' | b'G' | b'H' | b'K' | b'M' | b'N' | b'R' | b'S'
-            | b'T' | b'V' | b'W' | b'Y') => c,
-            _ => b'N',
-        })
-        .collect()
+    let mut normalized = Vec::with_capacity(seq.len());
+    normalize_into(&mut normalized, seq);
+    normalized
+}
+
+/// writes `normalize(seq)` into `dest`, reusing its allocation.
+pub fn normalize_into(dest: &mut Vec<u8>, seq: &[u8]) {
+    dest.clear();
+    dest.extend(seq.iter().map(|c| match c.to_ascii_uppercase() {
+        b'U' => b'T',
+        c @ (b'A' | b'B' | b'C' | b'D' | b'G' | b'H' | b'K' | b'M' | b'N' | b'R' | b'S' | b'T'
+        | b'V' | b'W' | b'Y') => c,
+        _ => b'N',
+    }));
 }
 
 /// returns the reverse complement of a normalized sequence.
@@ -229,26 +332,31 @@ pub fn normalize(seq: &[u8]) -> Vec<u8> {
 /// assert_eq!(reverse_complement(b"AACGTRN"), b"NYACGTT");
 /// ```
 pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
-    seq.iter()
-        .rev()
-        .map(|c| match c {
-            b'A' => b'T',
-            b'C' => b'G',
-            b'G' => b'C',
-            b'T' => b'A',
-            b'R' => b'Y',
-            b'Y' => b'R',
-            b'K' => b'M',
-            b'M' => b'K',
-            b'B' => b'V',
-            b'V' => b'B',
-            b'D' => b'H',
-            b'H' => b'D',
-            b'S' => b'S',
-            b'W' => b'W',
-            _ => b'N',
-        })
-        .collect()
+    let mut complement = Vec::with_capacity(seq.len());
+    reverse_complement_into(&mut complement, seq);
+    complement
+}
+
+/// writes `reverse_complement(seq)` into `dest`, reusing its allocation.
+pub fn reverse_complement_into(dest: &mut Vec<u8>, seq: &[u8]) {
+    dest.clear();
+    dest.extend(seq.iter().rev().map(|c| match c {
+        b'A' => b'T',
+        b'C' => b'G',
+        b'G' => b'C',
+        b'T' => b'A',
+        b'R' => b'Y',
+        b'Y' => b'R',
+        b'K' => b'M',
+        b'M' => b'K',
+        b'B' => b'V',
+        b'V' => b'B',
+        b'D' => b'H',
+        b'H' => b'D',
+        b'S' => b'S',
+        b'W' => b'W',
+        _ => b'N',
+    }));
 }
 
 /// returns the name and the size of a semicolon-saperated string.

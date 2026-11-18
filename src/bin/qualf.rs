@@ -10,7 +10,7 @@ use std::io::{BufReader, Read, Write};
 use bio::io::{fasta, fastq};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 
-use rsearch::fastq::{Reader, Record};
+use rsearch::fastx::{Format, Reader, Record};
 use rsearch::filter::{Filter, abundance, annotate_ee};
 
 /// parses a non-negative number of expected errors.
@@ -233,6 +233,11 @@ fn main() {
     };
 
     let mut reader = Reader::new(BufReader::new(fin));
+
+    if reader.format().unwrap() == Some(Format::Fasta) {
+        eprintln!("Error: FASTA input has no quality scores, FASTQ input is required");
+        std::process::exit(1);
+    }
 
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => Box::new(File::create(f).unwrap()),

@@ -5,12 +5,13 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 
 use bio::io::{fasta, fastq};
 use clap::{Arg, ArgAction, Command, value_parser};
 
 use rsearch::cluster::{Cluster, Clusters, sort_by_size};
+use rsearch::fastx::{Format, Reader, Record};
 
 fn main() {
     let matches = Command::new("DeRep")
@@ -82,28 +83,25 @@ fn main() {
         None => Box::new(io::stdin()),
     };
 
-    let mut fin = BufReader::new(fin);
+    let mut reader = Reader::new(BufReader::new(fin));
 
-    // FASTQ records start with '@', FASTA records with '>'.
-    let is_fastq = fin.fill_buf().unwrap().first() == Some(&b'@');
+    let is_fastq = reader.format().unwrap() == Some(Format::Fastq);
 
     let strand = matches.get_flag("strand");
 
     let mut seqs = Clusters::default();
 
-    if is_fastq {
-        for record in fastq::Reader::from_bufread(fin).records() {
-            let record = record.unwrap();
-            if !record.seq().is_empty() {
-                seqs.add(Cluster::build_from_fastq_record(&record), strand);
-            }
+    let mut record = Record::new();
+
+    loop {
+        reader.read(&mut record).unwrap();
+
+        if record.is_empty() {
+            break;
         }
-    } else {
-        for record in fasta::Reader::from_bufread(fin).records() {
-            let record = record.unwrap();
-            if !record.seq().is_empty() {
-                seqs.add(Cluster::build_from_record(&record), strand);
-            }
+
+        if !record.seq().is_empty() {
+            seqs.add_fastx(&record, strand);
         }
     }
 

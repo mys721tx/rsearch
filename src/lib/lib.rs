@@ -1,3 +1,3 @@
 pub mod cluster;
-pub mod fastq;
+pub mod fastx;
 pub mod filter;
