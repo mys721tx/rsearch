@@ -261,12 +261,19 @@ fn main() {
             continue;
         }
 
-        let header = match r.desc() {
+        // the whole header, built only when an option needs it
+        let header = || match r.desc() {
             Some(desc) => format!("{} {}", r.id(), desc),
             None => r.id().to_string(),
         };
 
-        let outcome = filter.apply(r.seq(), r.qual(), abundance(&header));
+        let size = if filter.uses_size() {
+            abundance(&header())
+        } else {
+            1
+        };
+
+        let outcome = filter.apply(r.seq(), r.qual(), size);
 
         let out = if outcome.discarded {
             match discard.as_mut() {
@@ -280,7 +287,7 @@ fn main() {
         let (seq, qual) = (outcome.trim(r.seq()), outcome.trim(r.qual()));
 
         if annotate {
-            out.write(&annotate_ee(&header, outcome.ee), None, seq, qual);
+            out.write(&annotate_ee(&header(), outcome.ee), None, seq, qual);
         } else {
             out.write(r.id(), r.desc(), seq, qual);
         }

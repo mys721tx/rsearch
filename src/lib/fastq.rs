@@ -25,29 +25,40 @@ use bio::io::fastq::Record;
 /// ```
 pub struct Reader<R> {
     reader: R,
-    line: String,
+    line: Vec<u8>,
+    header: Vec<u8>,
+    seq: Vec<u8>,
+    qual: Vec<u8>,
 }
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
 }
 
+fn utf8(bytes: &[u8]) -> io::Result<&str> {
+    std::str::from_utf8(bytes).map_err(|_| invalid("FASTQ record is not valid UTF-8"))
+}
+
 impl<R: BufRead> Reader<R> {
     pub fn new(reader: R) -> Reader<R> {
         Reader {
             reader,
-            line: String::new(),
+            line: Vec::new(),
+            header: Vec::new(),
+            seq: Vec::new(),
+            qual: Vec::new(),
         }
     }
 
     /// reads the next line without its line ending; false at end of input.
     fn next_line(&mut self) -> io::Result<bool> {
         self.line.clear();
-        if self.reader.read_line(&mut self.line)? == 0 {
+        if self.reader.read_until(b'\n', &mut self.line)? == 0 {
             return Ok(false);
         }
-        let len = self.line.trim_end_matches(['\n', '\r']).len();
-        self.line.truncate(len);
+        while matches!(self.line.last(), Some(b'\n' | b'\r')) {
+            self.line.pop();
+        }
         Ok(true)
     }
 
@@ -56,49 +67,51 @@ impl<R: BufRead> Reader<R> {
         if !self.next_line()? {
             return Ok(None);
         }
-        let Some(header) = self.line.strip_prefix('@') else {
+        if self.line.first() != Some(&b'@') {
             return Err(invalid("FASTQ record does not start with '@'"));
-        };
-        let mut fields = header.trim_end().splitn(2, ' ');
-        let id = fields.next().unwrap_or_default().to_owned();
-        let desc = fields.next().map(str::to_owned);
+        }
+        std::mem::swap(&mut self.header, &mut self.line);
 
         // sequence lines, up to the '+' line
-        let mut seq = String::new();
+        self.seq.clear();
         loop {
             if !self.next_line()? {
                 return Err(invalid("incomplete FASTQ record"));
             }
-            if self.line.starts_with('+') {
+            if self.line.first() == Some(&b'+') {
                 break;
             }
-            seq.push_str(self.line.trim_end());
+            self.seq.extend_from_slice(self.line.trim_ascii_end());
         }
 
         // quality lines: at least one, until as long as the sequence
-        let mut qual = String::new();
+        self.qual.clear();
         loop {
             if !self.next_line()? {
-                if qual.is_empty() && seq.is_empty() {
+                if self.qual.is_empty() && self.seq.is_empty() {
                     break;
                 }
                 return Err(invalid("incomplete FASTQ record"));
             }
-            qual.push_str(self.line.trim_end());
-            if qual.len() >= seq.len() {
+            self.qual.extend_from_slice(self.line.trim_ascii_end());
+            if self.qual.len() >= self.seq.len() {
                 break;
             }
         }
-        if qual.len() != seq.len() {
+        if self.qual.len() != self.seq.len() {
             return Err(invalid("FASTQ sequence and quality lengths differ"));
         }
 
-        Ok(Some(Record::with_attrs(
-            &id,
-            desc.as_deref(),
-            seq.as_bytes(),
-            qual.as_bytes(),
-        )))
+        let header = utf8(self.header[1..].trim_ascii_end())?;
+        let (id, desc) = match header.split_once(' ') {
+            Some((id, desc)) => (id, Some(desc)),
+            None => (header, None),
+        };
+        // bio stores sequences as strings and panics on invalid UTF-8
+        if !self.seq.is_ascii() || !self.qual.is_ascii() {
+            return Err(invalid("FASTQ sequence or quality is not ASCII"));
+        }
+        Ok(Some(Record::with_attrs(id, desc, &self.seq, &self.qual)))
     }
 
     /// returns an iterator over the records.
@@ -163,5 +176,7 @@ mod test {
         assert!(read("@a\nAC\n").is_err());
         assert!(read("@a\nAC\n+\nI\n").is_err());
         assert!(read("@a\nAC\n+\nIII\n").is_err());
+        // é is two bytes, matched by three quality symbols
+        assert!(read("@a\nA\u{e9}\n+\nIII\n").is_err());
     }
 }

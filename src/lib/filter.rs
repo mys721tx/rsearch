@@ -22,8 +22,9 @@ static ERROR_PROBABILITY: LazyLock<[f64; 256]> = LazyLock::new(|| {
 /// assert!((expected_errors(b"++5") - 0.21).abs() < 1e-12);
 /// ```
 pub fn expected_errors(qual: &[u8]) -> f64 {
+    let probability = &*ERROR_PROBABILITY;
     qual.iter()
-        .fold(0.0, |ee, &q| ee + ERROR_PROBABILITY[usize::from(q)])
+        .fold(0.0, |ee, &q| ee + probability[usize::from(q)])
 }
 
 /// Trimming and filtering settings. Trimming happens first. The ends are
@@ -108,6 +109,12 @@ impl Outcome {
 }
 
 impl Filter {
+    /// whether the filter depends on abundance, so that callers can skip
+    /// finding it.
+    pub fn uses_size(&self) -> bool {
+        self.min_size > 1 || self.max_size.is_some()
+    }
+
     /// trims and filters a read of abundance `size`.
     ///
     /// # Example
@@ -143,22 +150,35 @@ impl Filter {
         let mut ee = 0.0;
         let trunc_ee = self.trunc_ee.unwrap_or(f64::MAX);
         let trunc_rate = self.trunc_rate.unwrap_or(f64::MAX);
-        for (i, &symbol) in qual[start..start + len].iter().enumerate() {
-            let score = symbol.saturating_sub(PHRED_OFFSET);
-            let error = ERROR_PROBABILITY[usize::from(symbol)];
-            ee += error;
-            // as vsearch: add, then take back the base that crosses a limit
-            if self.trunc_qual.is_some_and(|q| score <= q)
-                || ee > trunc_ee
-                || ee > trunc_rate * (i + 1) as f64
-            {
-                ee -= error;
-                len = i;
-                break;
+        let per_base = self.trunc_qual.is_some()
+            || self.trunc_ee.is_some()
+            || self.trunc_rate.is_some()
+            || self.min_qual > 0;
+        let window = &qual[start..start + len];
+        if per_base {
+            let probability = &*ERROR_PROBABILITY;
+            // scores are at least 0, so -1 never truncates
+            let trunc_qual = self.trunc_qual.map_or(-1, i16::from);
+            for (i, &symbol) in window.iter().enumerate() {
+                let score = symbol.saturating_sub(PHRED_OFFSET);
+                let error = probability[usize::from(symbol)];
+                ee += error;
+                // as vsearch: add, then take back the base that crosses a limit
+                if i16::from(score) <= trunc_qual
+                    || ee > trunc_ee
+                    || ee > trunc_rate * (i + 1) as f64
+                {
+                    ee -= error;
+                    len = i;
+                    break;
+                }
+                if score < self.min_qual {
+                    discarded = true;
+                }
             }
-            if score < self.min_qual {
-                discarded = true;
-            }
+        } else {
+            // nothing to check base by base: just add up the errors
+            ee = expected_errors(window);
         }
 
         let kept = &seq[start..start + len];
