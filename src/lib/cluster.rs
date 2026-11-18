@@ -686,9 +686,63 @@ pub fn reverse_complement_into(dest: &mut Vec<u8>, seq: &[u8]) {
     }));
 }
 
+/// The complement of every byte, keeping its case, as vsearch's. U is
+/// complemented to A, the IUPAC codes swap in pairs, and S, W and N are
+/// their own complements. Bytes the reader does not let through map to N.
+const COMPLEMENT: [u8; 256] = {
+    let mut table = [b'N'; 256];
+    let pairs: [(u8, u8); 10] = [
+        (b'A', b'T'),
+        (b'C', b'G'),
+        (b'R', b'Y'),
+        (b'K', b'M'),
+        (b'B', b'V'),
+        (b'D', b'H'),
+        (b'S', b'S'),
+        (b'W', b'W'),
+        (b'N', b'N'),
+        (b'U', b'A'),
+    ];
+    let mut i = 0;
+    while i < pairs.len() {
+        let (a, b) = pairs[i];
+        table[a as usize] = b;
+        table[a.to_ascii_lowercase() as usize] = b.to_ascii_lowercase();
+        // the pairs swap both ways, but U only ever becomes A
+        if a != b'U' {
+            table[b as usize] = a;
+            table[b.to_ascii_lowercase() as usize] = a.to_ascii_lowercase();
+        }
+        i += 1;
+    }
+    table
+};
+
+/// writes the reverse complement of `seq` into `dest`, keeping the case of
+/// each base, as vsearch's `--fastx_revcomp` does.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::cluster::reverse_complement_keeping_case;
+/// let mut dest = Vec::new();
+/// reverse_complement_keeping_case(&mut dest, b"AcgURyn");
+/// assert_eq!(dest, b"nrYAcgT");
+/// ```
+pub fn reverse_complement_keeping_case(dest: &mut Vec<u8>, seq: &[u8]) {
+    dest.clear();
+    dest.extend(seq.iter().rev().map(|&c| COMPLEMENT[usize::from(c)]));
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_complement_keeping_case() {
+        let mut dest = Vec::new();
+        reverse_complement_keeping_case(&mut dest, b"ACGUuRYKMBVDHSWNacgtrykmbvdhswn");
+        assert_eq!(dest, b"nwsdhbvkmryacgtNWSDHBVKMRYaACGT");
+    }
 
     fn fastq_cluster(id: &str, seq: &[u8], qual: &[u8]) -> Cluster {
         Cluster::build_from_fastq_record(&fastq::Record::with_attrs(id, None, seq, qual))
