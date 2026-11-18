@@ -1,8 +1,8 @@
 //! End-to-end tests of the conv binary.
 //!
-//! Expected outputs are those of `vsearch --fastq_convert` (FASTQ input) and
-//! `vsearch --fasta2fastq` (FASTA input) on the same input, with the
-//! equivalent options.
+//! Expected outputs are those of `vsearch --fastq_convert` (FASTQ input),
+//! `vsearch --fasta2fastq` (FASTA input) and `vsearch --sff_convert` (SFF
+//! input) on the same input, with the equivalent options.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -10,6 +10,11 @@ use std::process::{Command, Output, Stdio};
 
 /// Runs conv with `args`, feeding `input` on stdin.
 fn run(args: &[&str], input: &str) -> Output {
+    run_bytes(args, input.as_bytes())
+}
+
+/// Runs conv with `args`, feeding binary `input` on stdin.
+fn run_bytes(args: &[&str], input: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_conv"))
         .args(args)
         .stdin(Stdio::piped())
@@ -17,12 +22,7 @@ fn run(args: &[&str], input: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("conv should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
     child.wait_with_output().unwrap()
 }
 
@@ -178,4 +178,223 @@ fn reads_and_writes_files() {
 #[test]
 fn accepts_empty_input() {
     assert_eq!(conv(&[], ""), "");
+}
+
+/// An SFF read: name, bases, Phred scores, and the quality and adapter
+/// clip points (1-based, 0 for none).
+struct SffRead {
+    name: &'static str,
+    bases: &'static str,
+    quals: Vec<u8>,
+    clip_qual: (u16, u16),
+    clip_adapter: (u16, u16),
+}
+
+/// Pads `bytes` with zeros to a multiple of 8, as SFF sections are.
+fn pad8(mut bytes: Vec<u8>) -> Vec<u8> {
+    bytes.resize(bytes.len().div_ceil(8) * 8, 0);
+    bytes
+}
+
+/// Flows per read of the SFF files built here.
+const FLOWS: u16 = 4;
+
+/// Builds an SFF file (version 1, flowgram format 1, key TCAG) of `reads`,
+/// with an index after the reads if `index`. `version` and `magic` can be
+/// set wrong to build invalid files.
+fn sff_file(reads: &[SffRead], index: bool, version: u32, magic: &[u8; 4]) -> Vec<u8> {
+    let header_length = (31 + FLOWS + 4).div_ceil(8) * 8;
+    let mut body = Vec::new();
+    for read in reads {
+        let n = read.bases.len();
+        let mut read_header = Vec::new();
+        read_header.extend(
+            (16 + read.name.len() as u16)
+                .div_ceil(8)
+                .wrapping_mul(8)
+                .to_be_bytes(),
+        );
+        read_header.extend((read.name.len() as u16).to_be_bytes());
+        read_header.extend((n as u32).to_be_bytes());
+        for clip in [
+            read.clip_qual.0,
+            read.clip_qual.1,
+            read.clip_adapter.0,
+            read.clip_adapter.1,
+        ] {
+            read_header.extend(clip.to_be_bytes());
+        }
+        read_header.extend(read.name.as_bytes());
+        body.extend(pad8(read_header));
+        let mut data = vec![0; 2 * usize::from(FLOWS)];
+        data.extend(vec![1; n]);
+        data.extend(read.bases.as_bytes());
+        data.extend(&read.quals);
+        body.extend(pad8(data));
+    }
+    let (offset, length, index_data) = if index {
+        let data = [&b".mft1.00"[..], &[0; 5]].concat();
+        (
+            u64::from(header_length) + body.len() as u64,
+            data.len() as u32,
+            pad8(data),
+        )
+    } else {
+        (0, 0, Vec::new())
+    };
+    let mut header = Vec::new();
+    header.extend(magic);
+    header.extend(version.to_be_bytes());
+    header.extend(offset.to_be_bytes());
+    header.extend(length.to_be_bytes());
+    header.extend((reads.len() as u32).to_be_bytes());
+    header.extend(header_length.to_be_bytes());
+    header.extend(4u16.to_be_bytes());
+    header.extend(FLOWS.to_be_bytes());
+    header.push(1);
+    header.extend(b"TACG");
+    header.extend(b"TCAG");
+    [pad8(header), body, index_data].concat()
+}
+
+/// Two reads: the first clipped by quality to bases 3..=8, with scores
+/// from 0 to 99; the second clipped by adapter to bases 2..=4.
+fn sff_reads() -> Vec<SffRead> {
+    vec![
+        SffRead {
+            name: "r1",
+            bases: "ACGTACGTAC",
+            quals: vec![40, 30, 20, 10, 0, 5, 15, 25, 35, 99],
+            clip_qual: (3, 8),
+            clip_adapter: (0, 0),
+        },
+        SffRead {
+            name: "r2",
+            bases: "GGCCA",
+            quals: vec![1, 2, 3, 4, 5],
+            clip_qual: (0, 0),
+            clip_adapter: (2, 4),
+        },
+    ]
+}
+
+/// Runs conv on SFF input, which must succeed, and returns the output.
+fn conv_sff(args: &[&str], input: &[u8]) -> String {
+    let output = run_bytes(args, input);
+    assert!(
+        output.status.success(),
+        "conv failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn converts_sff_to_fastq() {
+    // bases outside the clip points are lower case, and scores above the
+    // highest output score are lowered to it
+    let expected = fastq(&[
+        ("r1", "acGTACGTac", "I?5+!&0:D~"),
+        ("r2", "gGCCa", "\"#$%&"),
+    ]);
+    let input = sff_file(&sff_reads(), false, 1, b".sff");
+    assert_eq!(conv_sff(&[], &input), expected);
+    // the index is skipped
+    let input = sff_file(&sff_reads(), true, 1, b".sff");
+    assert_eq!(conv_sff(&[], &input), expected);
+}
+
+#[test]
+fn clips_sff_reads() {
+    let expected = fastq(&[("r1", "GTACGT", "5+!&0:"), ("r2", "GCC", "#$%")]);
+    let input = sff_file(&sff_reads(), true, 1, b".sff");
+    assert_eq!(conv_sff(&["--clip"], &input), expected);
+}
+
+#[test]
+fn encodes_sff_scores() {
+    let expected = fastq(&[("r1", "acGTACGTac", "h^TJEEOYch"), ("r2", "gGCCa", "EEEEE")]);
+    let input = sff_file(&sff_reads(), false, 1, b".sff");
+    let args = ["--ascii-out", "64", "--qmax-out", "40", "--qmin-out", "5"];
+    assert_eq!(conv_sff(&args, &input), expected);
+}
+
+#[test]
+fn relabels_sff_reads() {
+    let expected = fastq(&[
+        ("R1;size=1;length=6", "GTACGT", "5+!&0:"),
+        ("R2;size=1;length=3", "GCC", "#$%"),
+    ]);
+    let input = sff_file(&sff_reads(), false, 1, b".sff");
+    let args = ["--clip", "--relabel", "R", "--sizeout", "--lengthout"];
+    assert_eq!(conv_sff(&args, &input), expected);
+}
+
+#[test]
+fn lowercases_reads_with_inverted_clip_points() {
+    let read = SffRead {
+        name: "r1",
+        bases: "ACGTACGT",
+        quals: vec![30; 8],
+        clip_qual: (6, 3),
+        clip_adapter: (0, 0),
+    };
+    let input = sff_file(&[read], false, 1, b".sff");
+    assert_eq!(
+        conv_sff(&[], &input),
+        fastq(&[("r1", "acgtacgt", "????????")])
+    );
+    // which cannot be clipped
+    assert!(!run_bytes(&["--clip"], &input).status.success());
+}
+
+#[test]
+fn accepts_empty_sff() {
+    let input = sff_file(&[], false, 1, b".sff");
+    assert_eq!(conv_sff(&[], &input), "");
+}
+
+#[test]
+fn rejects_invalid_sff() {
+    for input in [
+        sff_file(&sff_reads(), false, 2, b".sff"),
+        sff_file(&sff_reads(), false, 1, b".sfg"),
+    ] {
+        assert!(!run_bytes(&[], &input).status.success());
+    }
+}
+
+#[test]
+fn stops_at_truncated_sff() {
+    // the reads before are written
+    let mut input = sff_file(&sff_reads(), false, 1, b".sff");
+    input.truncate(input.len() - 12);
+    let output = run_bytes(&[], &input);
+    assert!(!output.status.success());
+    assert_eq!(
+        output.stdout,
+        fastq(&[("r1", "acGTACGTac", "I?5+!&0:D~")]).as_bytes()
+    );
+}
+
+#[test]
+fn rejects_input_score_options_with_sff() {
+    let input = sff_file(&sff_reads(), false, 1, b".sff");
+    for args in [
+        &["--ascii", "64"][..],
+        &["--qmin", "0"],
+        &["--qmax", "41"],
+        &["--solexa"],
+    ] {
+        assert!(
+            !run_bytes(args, &input).status.success(),
+            "{args:?} should fail"
+        );
+    }
+}
+
+#[test]
+fn clips_only_sff() {
+    let input = fastq(&[("a", "ACGT", "IIII")]);
+    assert!(!run(&["--clip"], &input).status.success());
 }
