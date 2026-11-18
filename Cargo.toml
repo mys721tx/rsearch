@@ -19,3 +19,7 @@ criterion = "0.8.2"
 [[bench]]
 name = "derep"
 harness = false
+
+[[bench]]
+name = "qualf"
+harness = false
