@@ -6,14 +6,17 @@ use std::sync::LazyLock;
 /// ASCII offset of Phred+33 quality scores.
 const PHRED_OFFSET: u8 = 33;
 
-/// The error probability of every Phred+33 quality symbol, `10^(-Q/10)`.
-/// A symbol of another offset is looked up shifted to Phred+33.
-static ERROR_PROBABILITY: LazyLock<[f64; 256]> = LazyLock::new(|| {
+/// The error probability `10^(-Q/10)` of every quality symbol, for a
+/// given ASCII offset.
+fn probabilities(offset: u8) -> [f64; 256] {
     std::array::from_fn(|symbol| {
-        let q = symbol as f64 - f64::from(PHRED_OFFSET);
+        let q = symbol as f64 - f64::from(offset);
         10f64.powf(-q / 10.0)
     })
-});
+}
+
+static ERROR_PROBABILITY: LazyLock<[f64; 256]> = LazyLock::new(|| probabilities(PHRED_OFFSET));
+static ERROR_PROBABILITY_64: LazyLock<[f64; 256]> = LazyLock::new(|| probabilities(64));
 
 /// returns the expected number of errors in a quality string, the sum of
 /// the error probabilities of its symbols.
@@ -64,7 +67,8 @@ pub struct Filter {
     pub min_size: u64,
     /// Discard reads with an abundance above this.
     pub max_size: Option<u64>,
-    /// ASCII offset of quality symbols: 33 (Phred+33) or 64 (Phred+64).
+    /// ASCII offset of quality symbols: 33 (Phred+33) or 64 (Phred+64);
+    /// any other value is read as 64.
     pub offset: u8,
     /// Lowest quality score accepted in the input.
     pub min_score: i16,
@@ -220,14 +224,16 @@ impl Filter {
             || self.trunc_rate.is_some()
             || self.min_qual > self.min_score;
         let window = qual.map(|qual| &qual[start..start + len]);
-        let probability = &*ERROR_PROBABILITY;
-        // shifts a symbol of this offset to Phred+33
-        let shift = usize::from(self.offset - PHRED_OFFSET);
+        // indexed by symbol, which spares lookups their bounds checks
+        let probability = match self.offset {
+            PHRED_OFFSET => &*ERROR_PROBABILITY,
+            _ => &*ERROR_PROBABILITY_64,
+        };
         if let (true, Some(window)) = (per_base, window) {
             let trunc_qual = self.trunc_qual.unwrap_or(i16::MIN);
             for (i, &symbol) in window.iter().enumerate() {
                 let score = self.score(symbol)?;
-                let error = probability[usize::from(symbol) - shift];
+                let error = probability[usize::from(symbol)];
                 ee += error;
                 // as vsearch: add, then take back the base that crosses a limit
                 if score <= trunc_qual || ee > trunc_ee || ee > trunc_rate * (i + 1) as f64 {
@@ -240,18 +246,25 @@ impl Filter {
                 }
             }
         } else if let Some(window) = window {
-            // nothing to check base by base: check the range, add up errors
+            // nothing to check base by base: add up the errors, tracking the
+            // lowest and highest symbols to check the range in the same pass
+            let (mut low, mut high) = (u8::MAX, u8::MIN);
+            for &q in window {
+                ee += probability[usize::from(q)];
+                low = low.min(q);
+                high = high.max(q);
+            }
             let lowest = i16::from(self.offset) + self.min_score;
             let highest = i16::from(self.offset) + self.max_score;
-            if let Some(&symbol) = window
-                .iter()
-                .find(|&&q| !(lowest..=highest).contains(&i16::from(q)))
-            {
-                self.score(symbol)?;
+            if !window.is_empty() && (i16::from(low) < lowest || i16::from(high) > highest) {
+                // report the first symbol out of range, as vsearch does
+                let first = window
+                    .iter()
+                    .find(|&&q| !(lowest..=highest).contains(&i16::from(q)));
+                if let Some(&symbol) = first {
+                    self.score(symbol)?;
+                }
             }
-            ee = window
-                .iter()
-                .fold(0.0, |ee, &q| ee + probability[usize::from(q) - shift]);
         }
 
         let kept = &seq[start..start + len];
