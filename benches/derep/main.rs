@@ -2,7 +2,8 @@
 //!
 //! `cluster` measures the in-memory work (`Clusters::add_fastx` and
 //! sorting) on parsed records; `binary` runs the derep program end to end
-//! on files.
+//! on files: FASTA and FASTQ, with and without `--strand`, relabelling,
+//! whole labels without sizes, and FASTQ written as FASTA.
 //! Set `VSEARCH` to a vsearch executable to time `vsearch --fastx_uniques`
 //! on the same files for comparison:
 //!
@@ -120,41 +121,79 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+/// A benchmark case: the input file, derep's arguments and the equivalent
+/// vsearch ones, each after the input and output files.
+struct Case<'a> {
+    name: &'static str,
+    file: &'a str,
+    derep: Vec<&'a str>,
+    vsearch: Vec<&'a str>,
+}
+
+fn cases<'a>(fa: &'a str, fq: &'a str) -> Vec<Case<'a>> {
+    let case = |name, file, derep: &[&'a str], vsearch: &[&'a str]| Case {
+        name,
+        file,
+        derep: derep.to_vec(),
+        vsearch: vsearch.to_vec(),
+    };
+    let sizes = ["--sizein", "--sizeout"];
+    let strand = ["--sizein", "--sizeout", "--strand", "both"];
+    vec![
+        case("fasta", fa, &[], &sizes),
+        case("fasta_strand", fa, &["--strand"], &strand),
+        case("fastq", fq, &[], &sizes),
+        case("fastq_strand", fq, &["--strand"], &strand),
+        case(
+            "relabel",
+            fa,
+            &["--relabel-sha1", "--lengthout"],
+            &["--sizein", "--sizeout", "--relabel_sha1", "--lengthout"],
+        ),
+        case(
+            "unsized",
+            fa,
+            &["--no-sizein", "--no-sizeout", "--full-labels"],
+            &["--notrunclabels"],
+        ),
+        case("fastq_as_fasta", fq, &["--fasta"], &sizes),
+    ]
+}
+
 fn bench_binary(c: &mut Criterion) {
     let (fa, fq) = input_files();
+    let (fa, fq) = (fa.to_str().unwrap(), fq.to_str().unwrap());
     let derep = env!("CARGO_BIN_EXE_derep");
     let vsearch = std::env::var("VSEARCH").ok();
 
     let mut group = c.benchmark_group("derep/binary");
     group.throughput(Throughput::Elements(READS as u64));
     group.sample_size(10);
-    for (name, file, out) in [("fasta", &fa, "--fastaout"), ("fastq", &fq, "--fastqout")] {
-        let file = file.to_str().unwrap();
-        group.bench_function(format!("derep/{name}"), |b| {
-            b.iter(|| run(derep, &["-i", file, "-o", "/dev/null"]))
-        });
-        group.bench_function(format!("derep/{name}_strand"), |b| {
-            b.iter(|| run(derep, &["-i", file, "-o", "/dev/null", "--strand"]))
+    for case in cases(fa, fq) {
+        let mut args = vec!["-i", case.file, "-o", "/dev/null"];
+        args.extend(&case.derep);
+        group.bench_function(format!("derep/{}", case.name), |b| {
+            b.iter(|| run(derep, &args))
         });
         if let Some(vsearch) = &vsearch {
-            let args = [
+            // FASTQ input is written as FASTQ unless derep is told otherwise
+            let out = if case.file == fq && !case.derep.contains(&"--fasta") {
+                "--fastqout"
+            } else {
+                "--fastaout"
+            };
+            let mut args = vec![
                 "--fastx_uniques",
-                file,
+                case.file,
                 out,
                 "/dev/null",
-                "--sizein",
-                "--sizeout",
                 "--minseqlength",
                 "1",
                 "--quiet",
             ];
-            group.bench_function(format!("vsearch/{name}"), |b| {
+            args.extend(&case.vsearch);
+            group.bench_function(format!("vsearch/{}", case.name), |b| {
                 b.iter(|| run(vsearch, &args))
-            });
-            let mut strand = args.to_vec();
-            strand.extend(["--strand", "both"]);
-            group.bench_function(format!("vsearch/{name}_strand"), |b| {
-                b.iter(|| run(vsearch, &strand))
             });
         }
     }
