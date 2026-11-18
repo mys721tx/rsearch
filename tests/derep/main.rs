@@ -1,8 +1,10 @@
 //! End-to-end tests of the derep binary.
 //!
-//! Unless noted otherwise, expected outputs are those of
-//! `vsearch --fastx_uniques --sizein --sizeout --minseqlength 1` on the same
-//! input, so that derep keeps vsearch's dereplication behaviour.
+//! Unless noted otherwise, expected outputs are those of `vsearch
+//! --fastx_uniques --sizein --sizeout --minseqlength 0 --notrunclabels
+//! --fasta_width 0` on the same input. derep keeps whole headers and every
+//! length, and leaves filtering, relabelling and format changes to other
+//! tools.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -153,34 +155,15 @@ fn prefers_the_plus_strand_match() {
 }
 
 #[test]
-fn filters_by_size_and_relabels_written_sequences() {
-    let input = fasta(&[
-        ("a;size=5", "AAAA"),
-        ("b;size=3", "CCCC"),
-        ("c;size=2", "GGGG"),
-        ("d", "TTTT"),
-    ]);
-    let expected = fasta(&[("U1;size=3", "CCCC"), ("U2;size=2", "GGGG")]);
-    let args = ["--min", "2", "--max", "4", "--relabel", "U"];
-    assert_eq!(derep(&args, &input), expected);
-}
-
-#[test]
-fn writes_only_the_top_sequences() {
-    let input = fasta(&[
-        ("a;size=5", "AAAA"),
-        ("b;size=3", "CCCC"),
-        ("c;size=2", "GGGG"),
-    ]);
-    let expected = fasta(&[("a;size=5", "AAAA"), ("b;size=3", "CCCC")]);
-    assert_eq!(derep(&["--top", "2"], &input), expected);
-}
-
-#[test]
-fn drops_empty_sequences() {
-    let input = fasta(&[("a", "AAAA"), ("e", ""), ("b;size=3", "CCCC")]);
-    let expected = fasta(&[("b;size=3", "CCCC"), ("a;size=1", "AAAA")]);
+fn keeps_empty_sequences() {
+    // vsearch --minseqlength 0: empty sequences are dereplicated too
+    let input = fasta(&[("a", "AAAA"), ("e", ""), ("b;size=3", "CCCC"), ("f", "")]);
+    let expected = fasta(&[("b;size=3", "CCCC"), ("e;size=2", ""), ("a;size=1", "AAAA")]);
     assert_eq!(derep(&[], &input), expected);
+    assert_eq!(derep(&["--strand"], &input), expected);
+    // vsearch --derep_smallmem
+    let expected = fasta(&[("a;size=1", "AAAA"), ("e;size=2", ""), ("b;size=3", "CCCC")]);
+    assert_eq!(derep(&["--unsorted"], &input), expected);
 }
 
 #[test]
@@ -191,15 +174,20 @@ fn joins_multiline_sequences() {
 
 #[test]
 fn replaces_only_the_size_annotation() {
-    // the description is dropped, other annotations are kept, and the
-    // first valid size annotation is replaced by the new size at the end
+    // other annotations and descriptions are kept, a size followed by a
+    // description is not read, and the first valid size annotation is
+    // replaced by the new size at the end
     for (label, expected) in [
-        ("sample=1;foo;size=3 desc", "sample=1;foo;size=4"),
+        (
+            "sample=1;foo;size=3 desc",
+            "sample=1;foo;size=3 desc;size=2",
+        ),
         ("a;size=3;x=1", "a;x=1;size=4"),
         ("a;size=2;size=5", "a;size=5;size=3"),
         ("size=3", ";size=4"),
         ("a;size=abc", "a;size=abc;size=2"),
         ("asize=2", "asize=2;size=2"),
+        ("a;b;size=2 x", "a;b;size=2 x;size=2"),
     ] {
         let input = fasta(&[(label, "ACGT"), ("z", "ACGT")]);
         assert_eq!(derep(&[], &input), fasta(&[(expected, "ACGT")]), "{label}");
@@ -211,22 +199,6 @@ fn rejects_zero_sizes() {
     let output = run(&[], &fasta(&[("a;size=0", "ACGT")]));
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("zero"));
-}
-
-#[test]
-fn wraps_fasta_lines() {
-    let seq = "ACGT".repeat(60);
-    let input = fasta(&[("a", &seq), ("b", &seq)]);
-    // vsearch's default width of 80
-    let wrapped = format!(
-        ">a;size=2\n{}\n{}\n{}\n",
-        &seq[..80],
-        &seq[80..160],
-        &seq[160..]
-    );
-    assert_eq!(derep(&["--fasta-width", "80"], &input), wrapped);
-    // vsearch --fasta_width 0
-    assert_eq!(derep(&[], &input), fasta(&[("a;size=2", &seq)]));
 }
 
 #[test]
@@ -247,34 +219,6 @@ fn reads_and_writes_files() {
     std::fs::remove_file(input).unwrap();
     std::fs::remove_file(output).unwrap();
     assert_eq!(written, fasta(&[("a;size=2", "ACGT")]));
-}
-
-#[test]
-fn maps_members_to_written_sequences() {
-    let map = temp_path("map.tsv");
-    let input = fasta(&[
-        ("a;size=2", "ACGT"),
-        ("b", "TTTT"),
-        ("c", "acgt"),
-        ("d", "GGGG"),
-    ]);
-    let output = derep(
-        &[
-            "--min",
-            "2",
-            "--relabel",
-            "U",
-            "--map",
-            map.to_str().unwrap(),
-        ],
-        &input,
-    );
-    let table = std::fs::read_to_string(&map).unwrap();
-    std::fs::remove_file(map).unwrap();
-    assert_eq!(output, fasta(&[("U1;size=3", "ACGT")]));
-    // derep's own format: unlike vsearch --tabbedout, members of sequences
-    // that are not written are left out, and labels drop their sizes
-    assert_eq!(table, "a\tU1\nc\tU1\n");
 }
 
 #[test]
@@ -302,18 +246,23 @@ fn reverses_qualities_of_reverse_strand_reads() {
 }
 
 #[test]
-fn drops_empty_fastq_reads() {
+fn keeps_empty_fastq_reads() {
     let input = fastq(&[("a", "ACGT", "IIII"), ("e", "", ""), ("b", "ACGT", "IIII")]);
-    assert_eq!(derep(&[], &input), fastq(&[("a;size=2", "ACGT", "IIII")]));
+    let expected = fastq(&[("a;size=2", "ACGT", "IIII"), ("e;size=1", "", "")]);
+    assert_eq!(derep(&[], &input), expected);
 }
 
 #[test]
-fn cuts_labels_at_the_first_blank() {
-    // a label ends at a space or a tab, and a header at a carriage return
+fn keeps_whole_headers() {
+    // vsearch --notrunclabels: a header goes on after a space or a tab, and
+    // ends at a carriage return
     let input = ">a\tdesc\nACGT\n>b desc\nACGT\n";
-    assert_eq!(derep(&[], input), fasta(&[("a;size=2", "ACGT")]));
+    assert_eq!(derep(&[], input), fasta(&[("a\tdesc;size=2", "ACGT")]));
     let input = "@a\tdesc\nACGT\n+\nIIII\n@b\rc\nACGT\n+\nIIII\n";
-    assert_eq!(derep(&[], input), fastq(&[("a;size=2", "ACGT", "IIII")]));
+    assert_eq!(
+        derep(&[], input),
+        fastq(&[("a\tdesc;size=2", "ACGT", "IIII")])
+    );
 }
 
 #[test]
@@ -365,78 +314,6 @@ fn keeps_labels_without_sizeout() {
     let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "ACGT"), ("c", "TTTT")]);
     let expected = fasta(&[("a;size=3", "ACGT"), ("c", "TTTT")]);
     assert_eq!(derep(&["--no-sizeout"], &input), expected);
-}
-
-#[test]
-fn relabels_with_the_sequence_or_its_digest() {
-    let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "acgt"), ("c", "TTTT")]);
-    let cases = [
-        ("--relabel-self", ["ACGT;size=5", "TTTT;size=1"]),
-        (
-            "--relabel-sha1",
-            [
-                "2108994e17f6cca9ff2352ada92b6511db076034;size=5",
-                "0e8ada676dce4baf343bdfc44e064b21ed551816;size=1",
-            ],
-        ),
-        (
-            "--relabel-md5",
-            [
-                "f1f8f4bf413b16ad135722aa4591043e;size=5",
-                "2f803268a6367d0943978eb5f84cc62e;size=1",
-            ],
-        ),
-    ];
-    for (option, [first, second]) in cases {
-        let expected = fasta(&[(first, "ACGT"), (second, "TTTT")]);
-        assert_eq!(derep(&[option], &input), expected, "{option}");
-    }
-}
-
-#[test]
-fn keeps_old_labels_after_new_ones() {
-    let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "ACGT"), ("c", "TTTT")]);
-    let expected = fasta(&[("U1;size=5 a;size=3", "ACGT"), ("U2;size=1 c", "TTTT")]);
-    assert_eq!(
-        derep(&["--relabel", "U", "--relabel-keep"], &input),
-        expected
-    );
-}
-
-#[test]
-fn rewrites_annotations() {
-    let input = fasta(&[("a;ee=0.5;size=3", "ACGT"), ("b", "ACGT")]);
-    let args = [
-        "--xee",
-        "--lengthout",
-        "--sample",
-        "S",
-        "--label-suffix",
-        ";x",
-    ];
-    let expected = fasta(&[("a;x;sample=S;size=4;length=4", "ACGT")]);
-    assert_eq!(derep(&args, &input), expected);
-}
-
-#[test]
-fn keeps_whole_headers_with_full_labels() {
-    // vsearch --notrunclabels: a size followed by a description is not read
-    let input = fasta(&[("a;size=3 one", "ACGT"), ("b two", "ACGT")]);
-    let expected = fasta(&[("a;size=3 one;size=2", "ACGT")]);
-    assert_eq!(derep(&["--full-labels"], &input), expected);
-}
-
-#[test]
-fn filters_input_by_length() {
-    let input = fasta(&[("a", "ACG"), ("b", "ACGT"), ("c", "ACGTA")]);
-    let args = ["--min-len", "4", "--max-len", "4"];
-    assert_eq!(derep(&args, &input), fasta(&[("b;size=1", "ACGT")]));
-}
-
-#[test]
-fn writes_fastq_input_as_fasta() {
-    let input = fastq(&[("a;size=2", "ACGT", "IIII"), ("b", "ACGT", "IIII")]);
-    assert_eq!(derep(&["--fasta"], &input), fasta(&[("a;size=3", "ACGT")]));
 }
 
 #[test]
@@ -532,10 +409,6 @@ fn writes_uc_and_tables_of_every_cluster() {
     let output = derep(
         &[
             "--strand",
-            "--min",
-            "2",
-            "--relabel",
-            "U",
             "--uc",
             uc.to_str().unwrap(),
             "--tabbedout",
@@ -549,8 +422,7 @@ fn writes_uc_and_tables_of_every_cluster() {
     );
     std::fs::remove_file(uc).unwrap();
     std::fs::remove_file(table).unwrap();
-    assert_eq!(output, fasta(&[("U1;size=4", "AACC")]));
-    // clusters that are not written are listed too
+    assert_eq!(output, fasta(&[("a;size=4", "AACC"), ("c;size=1", "TTTT")]));
     assert_eq!(
         uc_text,
         "S\t0\t4\t*\t*\t*\t*\t*\ta;size=2\t*\n\
@@ -560,24 +432,60 @@ fn writes_uc_and_tables_of_every_cluster() {
          C\t0\t4\t*\t*\t*\t*\t*\ta;size=2\t*\n\
          C\t1\t1\t*\t*\t*\t*\t*\tc\t*\n"
     );
+    // the second column is the label of the cluster's first sequence
     assert_eq!(
         table_text,
-        "a;size=2\tU1\t0\t0\t3\ta;size=2\n\
-         b\tU1\t0\t1\t3\ta;size=2\n\
-         d\tU1\t0\t2\t3\ta;size=2\n\
-         c\tU2\t1\t0\t1\tc\n"
+        "a;size=2\ta;size=2\t0\t0\t3\ta;size=2\n\
+         b\ta;size=2\t0\t1\t3\ta;size=2\n\
+         d\ta;size=2\t0\t2\t3\ta;size=2\n\
+         c\tc\t1\t0\t1\tc\n"
+    );
+}
+
+#[test]
+fn writes_whole_headers_in_uc_and_tables() {
+    let (uc, table) = (temp_path("blanks.uc"), temp_path("blanks.tsv"));
+    let input = fasta(&[("a d1", "AACC"), ("b d2", "AACC")]);
+    let output = derep(
+        &[
+            "--uc",
+            uc.to_str().unwrap(),
+            "--tabbedout",
+            table.to_str().unwrap(),
+        ],
+        &input,
+    );
+    let (uc_text, table_text) = (
+        std::fs::read_to_string(&uc).unwrap(),
+        std::fs::read_to_string(&table).unwrap(),
+    );
+    std::fs::remove_file(uc).unwrap();
+    std::fs::remove_file(table).unwrap();
+    assert_eq!(output, fasta(&[("a d1;size=2", "AACC")]));
+    assert_eq!(
+        uc_text,
+        "S\t0\t4\t*\t*\t*\t*\t*\ta d1\t*\n\
+         H\t0\t4\t100.0\t+\t0\t0\t*\tb d2\ta d1\n\
+         C\t0\t2\t*\t*\t*\t*\t*\ta d1\t*\n"
+    );
+    assert_eq!(
+        table_text,
+        "a d1\ta d1\t0\t0\t2\ta d1\nb d2\ta d1\t0\t1\t2\ta d1\n"
     );
 }
 
 #[test]
 fn merges_only_identical_labels_with_same_label() {
-    // vsearch --derep_id
+    // vsearch --derep_id: whole headers are compared
     let input = fasta(&[("a", "ACGT"), ("b", "ACGT"), ("a", "acgt"), ("a", "TTTT")]);
     let expected = fasta(&[
         ("a;size=2", "ACGT"),
         ("a;size=1", "TTTT"),
         ("b;size=1", "ACGT"),
     ]);
+    assert_eq!(derep(&["--same-label"], &input), expected);
+    let input = fasta(&[("a x", "ACGT"), ("a y", "ACGT"), ("a x", "acgt")]);
+    let expected = fasta(&[("a x;size=2", "ACGT"), ("a y;size=1", "ACGT")]);
     assert_eq!(derep(&["--same-label"], &input), expected);
 }
 
@@ -610,18 +518,24 @@ fn merges_prefixes_into_longer_sequences() {
          C\t0\t4\t*\t*\t*\t*\t*\ta\t*\n\
          C\t1\t1\t*\t*\t*\t*\t*\td\t*\n"
     );
-    // FASTQ input is written as FASTA
+    // an empty sequence is a prefix of every other
+    let input = fasta(&[("a", "AAAA"), ("e", ""), ("b;size=3", "CCCC"), ("f", "")]);
+    let expected = fasta(&[("b;size=5", "CCCC"), ("a;size=1", "AAAA")]);
+    assert_eq!(derep(&["--prefix"], &input), expected);
+}
+
+#[test]
+fn refuses_fastq_with_prefix() {
+    // vsearch --derep_prefix writes only FASTA, and changing the format is
+    // conv's job
     let input = fastq(&[("a", "ACGT", "IIII"), ("b", "AC", "II")]);
-    assert_eq!(derep(&["--prefix"], &input), fasta(&[("a;size=2", "ACGT")]));
+    assert!(!run(&["--prefix"], &input).status.success());
 }
 
 #[test]
 fn rejects_invalid_arguments() {
     for args in [
-        &["--min", "x"][..],
-        &["--top", "-1"],
-        &["--unknown"],
-        &["--relabel", "U", "--relabel-md5"],
+        &["--unknown"][..],
         &["--prefix", "--strand"],
         &["--prefix", "--same-label"],
     ] {
@@ -629,6 +543,36 @@ fn rejects_invalid_arguments() {
     }
 }
 
+#[test]
+fn leaves_other_jobs_to_other_tools() {
+    // filtering (sqfilt), topn, relabelling (relab), the output format
+    // (conv) and the map that --tabbedout covers
+    for args in [
+        &["--min", "2"][..],
+        &["--max", "2"],
+        &["--min-len", "4"],
+        &["--max-len", "4"],
+        &["--top", "2"],
+        &["--relabel", "U"],
+        &["--relabel-self"],
+        &["--relabel-sha1"],
+        &["--relabel-md5"],
+        &["--relabel-keep"],
+        &["--xsize"],
+        &["--xee"],
+        &["--lengthout"],
+        &["--xlength"],
+        &["--sample", "S"],
+        &["--label-suffix", "x"],
+        &["--fasta"],
+        &["--fasta-width", "80"],
+        &["--map", "map.tsv"],
+        &["--full-labels"],
+    ] {
+        let output = run(args, &fasta(&[("a", "ACGT")]));
+        assert!(!output.status.success(), "{args:?} should be refused");
+    }
+}
 #[test]
 fn accepts_empty_input() {
     assert_eq!(derep(&[], ""), "");

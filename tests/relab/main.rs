@@ -671,7 +671,9 @@ fn pipeline_fastq_convert() {
 
 #[test]
 fn pipeline_dereplication() {
-    // vsearch --fastx_uniques in --sizein --relabel U --sizeout
+    // vsearch --fastx_uniques in --sizein --notrunclabels --relabel U
+    // --sizeout: derep keeps whole headers, and the size before the
+    // description is not read
     let derep = env!("CARGO_BIN_EXE_derep");
     let input = fasta(&[
         ("a;size=2 x", "ACGT"),
@@ -684,13 +686,13 @@ fn pipeline_dereplication() {
     let cases: [(&[&str], [&str; 3]); 3] = [
         (
             &["--relabel", "U", "--sizeout"],
-            ["U1;size=6", "U2;size=4", "U3;size=1"],
+            ["U1;size=6", "U2;size=3", "U3;size=1"],
         ),
         (
             &["--sizeout", "--lengthout"],
             [
                 "c;size=6;length=4",
-                "a;size=4;length=4",
+                "a;size=2 x;size=3;length=4",
                 "f;size=1;length=2",
             ],
         ),
@@ -698,7 +700,7 @@ fn pipeline_dereplication() {
             &["--relabel-md5", "--sizeout", "--sample", "S"],
             [
                 "098890dde069e9abad63f19a0d9e1f32;sample=S;size=6",
-                "f1f8f4bf413b16ad135722aa4591043e;sample=S;size=4",
+                "f1f8f4bf413b16ad135722aa4591043e;sample=S;size=3",
                 "86d8d92aba9ecf9bbf89f69cb3e49588;sample=S;size=1",
             ],
         ),
