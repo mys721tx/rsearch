@@ -398,3 +398,39 @@ fn clips_only_sff() {
     let input = fastq(&[("a", "ACGT", "IIII")]);
     assert!(!run(&["--clip"], &input).status.success());
 }
+
+/// Runs conv on `input`, which must fail as vsearch does: exit code 1 and
+/// an error message, rather than a panic.
+fn assert_fails(args: &[&str], input: &[u8]) {
+    let output = run_bytes(args, input);
+    assert_eq!(output.status.code(), Some(1), "{input:?} should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("Error: "), "{input:?}: {stderr}");
+}
+
+#[test]
+fn rejects_unrecognised_input() {
+    // too short to be SFF, and neither FASTA nor FASTQ
+    for input in [&b"."[..], b".sf", b"xyz"] {
+        assert_fails(&[], input);
+    }
+}
+
+#[test]
+fn rejects_malformed_fastq() {
+    for input in [
+        // fewer scores than bases
+        &b"@a\nACGT\n+\nII\n"[..],
+        // no '+' line
+        b"@a\nACGT\n",
+    ] {
+        assert_fails(&[], input);
+    }
+}
+
+#[test]
+fn writes_reads_before_malformed_fastq() {
+    let output = run(&[], "@a\nAC\n+\nII\n@b\nACGT\n+\nII\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, fastq(&[("a", "AC", "II")]).as_bytes());
+}
