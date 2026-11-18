@@ -19,6 +19,10 @@ path = "src/lib/lib.rs"
 criterion = "0.8.2"
 
 [[bench]]
+name = "conv"
+harness = false
+
+[[bench]]
 name = "derep"
 harness = false
 
