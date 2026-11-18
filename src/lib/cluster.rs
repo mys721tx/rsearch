@@ -1,6 +1,7 @@
 use bio::io::fasta::Record;
 use bio::io::fastq;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 #[derive(Clone, Debug, Default)]
 /// A struct to store the size and annotation of sequences.
@@ -30,12 +31,27 @@ fn error_probability(symbol: u8) -> f64 {
         .min(MAX_ERROR)
 }
 
+/// `error_probability` of every byte, computed once: merging looks up two
+/// probabilities per position of every merged read.
+static ERROR_PROBABILITY: LazyLock<[f64; 256]> =
+    LazyLock::new(|| std::array::from_fn(|symbol| error_probability(symbol as u8)));
+
+/// The quality symbol of an error probability: the Phred score
+/// `trunc(-10 log10(p))`, limited to `MIN_QUALITY..=MAX_QUALITY`.
 fn quality_symbol(probability: f64) -> u8 {
     let q = (-10.0 * probability.log10())
         .trunc()
         .clamp(f64::from(MIN_QUALITY), MAX_QUALITY);
     q as u8 + PHRED_OFFSET
 }
+
+/// Below this score a quality carries too little information to keep
+/// against a better read.
+const MIN_KEPT_QUALITY: u8 = 2;
+/// A read that much less abundant than its cluster cannot raise a score.
+const NEGLIGIBLE_SIZE_RATIO: u64 = 4;
+/// Up to this cluster size, the abundance weights are exact in an `f64`.
+const RESOLVABLE_SIZE: u64 = 1 << 40;
 
 impl Cluster {
     /// returns a Cluster from a `bio::io::fastq::Record`.
@@ -72,17 +88,26 @@ impl Cluster {
     /// merged names and combines the quality scores as the size-weighted
     /// average of the error probabilities. `reverse` tells that `other` is
     /// the reverse complement of this cluster's sequence.
+    ///
+    /// As in vsearch, a better score from a read at most a quarter of the
+    /// cluster's size leaves an informative score unchanged. Such a read
+    /// moves the average by less than one, and computing it could still
+    /// lower the score by one through rounding.
     pub fn merge(&mut self, other: Cluster, reverse: bool) {
         if let (Some(q1), Some(q2)) = (&mut self.qual, &other.qual) {
+            let negligible =
+                other.size <= self.size / NEGLIGIBLE_SIZE_RATIO && self.size < RESOLVABLE_SIZE;
             let (s1, s2) = (self.size as f64, other.size as f64);
+            let probability = &*ERROR_PROBABILITY;
             let len = q1.len();
             for (i, q) in q1.iter_mut().enumerate() {
                 let p = q2[if reverse { len - 1 - i } else { i }];
-                if *q != p {
-                    let mixed =
-                        (error_probability(*q) * s1 + error_probability(p) * s2) / (s1 + s2);
-                    *q = quality_symbol(mixed);
+                if *q == p || (negligible && p > *q && *q >= PHRED_OFFSET + MIN_KEPT_QUALITY) {
+                    continue;
                 }
+                let mixed = (probability[usize::from(*q)] * s1 + probability[usize::from(p)] * s2)
+                    / (s1 + s2);
+                *q = quality_symbol(mixed);
             }
         }
         self.size += other.size;
