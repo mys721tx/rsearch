@@ -415,12 +415,190 @@ fn writes_fastq_input_as_fasta() {
 }
 
 #[test]
+fn reads_phred64_and_writes_phred33() {
+    let input = fastq(&[("a", "ACGT", "h@Jh"), ("b", "ACGT", "hhJ`")]);
+    let expected = fastq(&[("a;size=2", "ACGT", "I%+C")]);
+    assert_eq!(derep(&["--ascii", "64"], &input), expected);
+    let expected = fastq(&[("a;size=2", "ACGT", "hDJb")]);
+    assert_eq!(
+        derep(&["--ascii", "64", "--ascii-out", "64"], &input),
+        expected
+    );
+}
+
+#[test]
+fn limits_written_qualities() {
+    let input = fastq(&[("a", "ACGTA", "!+5?I"), ("b", "ACGTA", "5++5~")]);
+    let expected = fastq(&[("a;size=2", "ACGTA", "&+-7?")]);
+    let args = ["--qmin-out", "5", "--qmax-out", "30"];
+    assert_eq!(derep(&args, &input), expected);
+}
+
+#[test]
+fn keeps_the_best_quality() {
+    let input = fastq(&[("a", "ACGTA", "!+5?I"), ("b", "ACGTA", "5++5~")]);
+    let expected = fastq(&[("a;size=2", "ACGTA", "5+5?~")]);
+    assert_eq!(derep(&["--best-qual"], &input), expected);
+}
+
+#[test]
+fn rejects_qualities_out_of_range() {
+    let input = fastq(&[("a", "ACGT", "II5I")]);
+    for (args, message) in [
+        (
+            &["--qmax", "30"][..],
+            "quality score 40 above the maximum 30 in read a",
+        ),
+        (
+            &["--qmin", "25"],
+            "quality score 20 below the minimum 25 in read a",
+        ),
+        (
+            &["--ascii", "64"],
+            "quality score -11 below the minimum 0 in read a",
+        ),
+    ] {
+        let output = run(args, &input);
+        assert!(!output.status.success(), "{args:?} should fail");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(message),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_quality_ranges() {
+    let input = fastq(&[("a", "ACGT", "IIII")]);
+    for args in [
+        &["--qmin", "10", "--qmax", "5"][..],
+        &["--ascii", "64", "--qmin", "-32"],
+        &["--ascii", "64", "--qmax", "63"],
+        &["--qmin-out", "10", "--qmax-out", "5"],
+        &["--ascii-out", "64", "--qmax-out", "63"],
+        &["--ascii", "40"],
+    ] {
+        assert!(!run(args, &input).status.success(), "{args:?} should fail");
+    }
+}
+
+#[test]
+fn rejects_quality_options_with_fasta() {
+    let input = fasta(&[("a", "ACGT")]);
+    for args in [
+        &["--ascii", "64"][..],
+        &["--qmin", "0"],
+        &["--qmax-out", "41"],
+        &["--best-qual"],
+    ] {
+        assert!(!run(args, &input).status.success(), "{args:?} should fail");
+    }
+}
+
+#[test]
+fn writes_uc_and_tables_of_every_cluster() {
+    let (uc, table) = (temp_path("clusters.uc"), temp_path("clusters.tsv"));
+    let input = fasta(&[
+        ("a;size=2", "AACC"),
+        ("b", "GGTT"),
+        ("c", "TTTT"),
+        ("d", "aacc"),
+    ]);
+    let output = derep(
+        &[
+            "--strand",
+            "--min",
+            "2",
+            "--relabel",
+            "U",
+            "--uc",
+            uc.to_str().unwrap(),
+            "--tabbedout",
+            table.to_str().unwrap(),
+        ],
+        &input,
+    );
+    let (uc_text, table_text) = (
+        std::fs::read_to_string(&uc).unwrap(),
+        std::fs::read_to_string(&table).unwrap(),
+    );
+    std::fs::remove_file(uc).unwrap();
+    std::fs::remove_file(table).unwrap();
+    assert_eq!(output, fasta(&[("U1;size=4", "AACC")]));
+    // clusters that are not written are listed too
+    assert_eq!(
+        uc_text,
+        "S\t0\t4\t*\t*\t*\t*\t*\ta;size=2\t*\n\
+         H\t0\t4\t100.0\t-\t0\t0\t*\tb\ta;size=2\n\
+         H\t0\t4\t100.0\t+\t0\t0\t*\td\ta;size=2\n\
+         S\t1\t4\t*\t*\t*\t*\t*\tc\t*\n\
+         C\t0\t4\t*\t*\t*\t*\t*\ta;size=2\t*\n\
+         C\t1\t1\t*\t*\t*\t*\t*\tc\t*\n"
+    );
+    assert_eq!(
+        table_text,
+        "a;size=2\tU1\t0\t0\t3\ta;size=2\n\
+         b\tU1\t0\t1\t3\ta;size=2\n\
+         d\tU1\t0\t2\t3\ta;size=2\n\
+         c\tU2\t1\t0\t1\tc\n"
+    );
+}
+
+#[test]
+fn merges_only_identical_labels_with_same_label() {
+    // vsearch --derep_id
+    let input = fasta(&[("a", "ACGT"), ("b", "ACGT"), ("a", "acgt"), ("a", "TTTT")]);
+    let expected = fasta(&[
+        ("a;size=2", "ACGT"),
+        ("a;size=1", "TTTT"),
+        ("b;size=1", "ACGT"),
+    ]);
+    assert_eq!(derep(&["--same-label"], &input), expected);
+}
+
+#[test]
+fn merges_prefixes_into_longer_sequences() {
+    // vsearch --derep_prefix
+    let uc = temp_path("prefix.uc");
+    let input = fasta(&[
+        ("a", "ACGTAC"),
+        ("b", "ACG"),
+        ("c", "acgt"),
+        ("d", "TTT"),
+        ("e", "ACGTAC"),
+    ]);
+    let output = derep(&["--prefix", "--uc", uc.to_str().unwrap()], &input);
+    let uc_text = std::fs::read_to_string(&uc).unwrap();
+    std::fs::remove_file(uc).unwrap();
+    assert_eq!(
+        output,
+        fasta(&[("a;size=4", "ACGTAC"), ("d;size=1", "TTT")])
+    );
+    // members keep their own lengths
+    assert_eq!(
+        uc_text,
+        "S\t0\t6\t*\t*\t*\t*\t*\ta\t*\n\
+         H\t0\t4\t100.0\t+\t0\t0\t*\tc\ta\n\
+         H\t0\t3\t100.0\t+\t0\t0\t*\tb\ta\n\
+         H\t0\t6\t100.0\t+\t0\t0\t*\te\ta\n\
+         S\t1\t3\t*\t*\t*\t*\t*\td\t*\n\
+         C\t0\t4\t*\t*\t*\t*\t*\ta\t*\n\
+         C\t1\t1\t*\t*\t*\t*\t*\td\t*\n"
+    );
+    // FASTQ input is written as FASTA
+    let input = fastq(&[("a", "ACGT", "IIII"), ("b", "AC", "II")]);
+    assert_eq!(derep(&["--prefix"], &input), fasta(&[("a;size=2", "ACGT")]));
+}
+
+#[test]
 fn rejects_invalid_arguments() {
     for args in [
         &["--min", "x"][..],
         &["--top", "-1"],
         &["--unknown"],
         &["--relabel", "U", "--relabel-md5"],
+        &["--prefix", "--strand"],
+        &["--prefix", "--same-label"],
     ] {
         assert!(!run(args, "").status.success(), "{args:?} should fail");
     }
