@@ -321,8 +321,107 @@ fn raises_quality_zero_to_one() {
 }
 
 #[test]
+fn counts_each_read_once_without_sizein() {
+    // vsearch without --sizein
+    let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "ACGT"), ("c", "TTTT")]);
+    let expected = fasta(&[("a;size=2", "ACGT"), ("c;size=1", "TTTT")]);
+    assert_eq!(derep(&["--no-sizein"], &input), expected);
+    // a zero size is only refused when sizes are read
+    let input = fasta(&[("a;size=0", "ACGT")]);
+    assert_eq!(
+        derep(&["--no-sizein"], &input),
+        fasta(&[("a;size=1", "ACGT")])
+    );
+}
+
+#[test]
+fn keeps_labels_without_sizeout() {
+    // vsearch without --sizeout
+    let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "ACGT"), ("c", "TTTT")]);
+    let expected = fasta(&[("a;size=3", "ACGT"), ("c", "TTTT")]);
+    assert_eq!(derep(&["--no-sizeout"], &input), expected);
+}
+
+#[test]
+fn relabels_with_the_sequence_or_its_digest() {
+    let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "acgt"), ("c", "TTTT")]);
+    let cases = [
+        ("--relabel-self", ["ACGT;size=5", "TTTT;size=1"]),
+        (
+            "--relabel-sha1",
+            [
+                "2108994e17f6cca9ff2352ada92b6511db076034;size=5",
+                "0e8ada676dce4baf343bdfc44e064b21ed551816;size=1",
+            ],
+        ),
+        (
+            "--relabel-md5",
+            [
+                "f1f8f4bf413b16ad135722aa4591043e;size=5",
+                "2f803268a6367d0943978eb5f84cc62e;size=1",
+            ],
+        ),
+    ];
+    for (option, [first, second]) in cases {
+        let expected = fasta(&[(first, "ACGT"), (second, "TTTT")]);
+        assert_eq!(derep(&[option], &input), expected, "{option}");
+    }
+}
+
+#[test]
+fn keeps_old_labels_after_new_ones() {
+    let input = fasta(&[("a;size=3", "ACGT"), ("b;size=2", "ACGT"), ("c", "TTTT")]);
+    let expected = fasta(&[("U1;size=5 a;size=3", "ACGT"), ("U2;size=1 c", "TTTT")]);
+    assert_eq!(
+        derep(&["--relabel", "U", "--relabel-keep"], &input),
+        expected
+    );
+}
+
+#[test]
+fn rewrites_annotations() {
+    let input = fasta(&[("a;ee=0.5;size=3", "ACGT"), ("b", "ACGT")]);
+    let args = [
+        "--xee",
+        "--lengthout",
+        "--sample",
+        "S",
+        "--label-suffix",
+        ";x",
+    ];
+    let expected = fasta(&[("a;x;sample=S;size=4;length=4", "ACGT")]);
+    assert_eq!(derep(&args, &input), expected);
+}
+
+#[test]
+fn keeps_whole_headers_with_full_labels() {
+    // vsearch --notrunclabels: a size followed by a description is not read
+    let input = fasta(&[("a;size=3 one", "ACGT"), ("b two", "ACGT")]);
+    let expected = fasta(&[("a;size=3 one;size=2", "ACGT")]);
+    assert_eq!(derep(&["--full-labels"], &input), expected);
+}
+
+#[test]
+fn filters_input_by_length() {
+    let input = fasta(&[("a", "ACG"), ("b", "ACGT"), ("c", "ACGTA")]);
+    let args = ["--min-len", "4", "--max-len", "4"];
+    assert_eq!(derep(&args, &input), fasta(&[("b;size=1", "ACGT")]));
+}
+
+#[test]
+fn writes_fastq_input_as_fasta() {
+    let input = fastq(&[("a;size=2", "ACGT", "IIII"), ("b", "ACGT", "IIII")]);
+    assert_eq!(derep(&["--fasta"], &input), fasta(&[("a;size=3", "ACGT")]));
+}
+
+#[test]
 fn rejects_invalid_arguments() {
-    for args in [&["--min", "x"][..], &["--top", "-1"], &["--unknown"]] {
+    for args in [
+        &["--min", "x"][..],
+        &["--top", "-1"],
+        &["--unknown"],
+        &["--relabel", "U", "--relabel-md5"],
+    ] {
         assert!(!run(args, "").status.success(), "{args:?} should fail");
     }
 }
