@@ -10,7 +10,7 @@ use std::io::{BufReader, Read, Write};
 use bio::io::{fasta, fastq};
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 
-use rsearch::fastq::Reader;
+use rsearch::fastq::{Reader, Record};
 use rsearch::filter::{Filter, abundance, annotate_ee};
 
 /// parses a non-negative number of expected errors.
@@ -232,7 +232,7 @@ fn main() {
         None => Box::new(io::stdin()),
     };
 
-    let reader = Reader::new(BufReader::new(fin));
+    let mut reader = Reader::new(BufReader::new(fin));
 
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => Box::new(File::create(f).unwrap()),
@@ -251,24 +251,24 @@ fn main() {
 
     let filter = filter_from(&matches);
 
-    for record in reader.records() {
+    let mut r = Record::new();
+
+    loop {
         // Since FASTQ uses '@' for both the description header and a quality symbol, there is no
         // reliable way to recover from a malformed record.
         // Panics if a FASTQ record cannot be read.
-        let r = record.unwrap();
+        reader.read(&mut r).unwrap();
+
+        if r.is_empty() {
+            break;
+        }
 
         if r.check().is_err() {
             continue;
         }
 
-        // the whole header, built only when an option needs it
-        let header = || match r.desc() {
-            Some(desc) => format!("{} {}", r.id(), desc),
-            None => r.id().to_string(),
-        };
-
         let size = if filter.uses_size() {
-            abundance(&header())
+            abundance(r.header())
         } else {
             1
         };
@@ -287,7 +287,7 @@ fn main() {
         let (seq, qual) = (outcome.trim(r.seq()), outcome.trim(r.qual()));
 
         if annotate {
-            out.write(&annotate_ee(&header(), outcome.ee), None, seq, qual);
+            out.write(&annotate_ee(r.header(), outcome.ee), None, seq, qual);
         } else {
             out.write(r.id(), r.desc(), seq, qual);
         }

@@ -14,10 +14,9 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use bio::io::fastq::Record;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
-use rsearch::fastq::Reader;
+use rsearch::fastq::{Reader, Record};
 use rsearch::filter::{Filter, abundance, expected_errors};
 
 /// Reads of `LENGTH` nucleotides.
