@@ -313,6 +313,10 @@ fn rejects_invalid_arguments() {
         &["--min-upper-pct", "-1"],
         &["--max-upper-pct", "101"],
         &["--min-non-n-pct", "x"],
+        // vsearch refuses a lowest share above the highest, though not
+        // inverted lengths or sizes
+        &["--min-upper-pct", "100", "--max-upper-pct", "95"],
+        &["--min-non-n-pct", "60", "--max-non-n-pct", "50"],
         &["--ascii", "40"],
         &["--qmin", "10", "--qmax", "5"],
         &["--rev-out", "r.fq"],
