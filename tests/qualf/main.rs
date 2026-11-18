@@ -51,7 +51,13 @@ fn temp_path(name: &str) -> PathBuf {
 
 /// Runs qualf on `input` and returns the kept and the discarded reads.
 fn qualf(args: &[&str], input: &str) -> (String, String) {
-    let discard = temp_path(&format!("discard-{}", args.join("_")));
+    // a file name unique to the arguments
+    let name: String = args
+        .join("_")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let discard = temp_path(&format!("discard-{name}"));
     let mut all_args = args.to_vec();
     all_args.extend(["--discard", discard.to_str().unwrap()]);
     let output = run(&all_args, input);
@@ -269,11 +275,22 @@ fn rejects_invalid_arguments() {
     }
 }
 
+/// FASTA reads: an abundance, two Ns with a description, stale size and
+/// length annotations, and an empty sequence.
+const FASTA: &str =
+    ">f1;size=3\nACGTACGTAC\n>f2 desc\nACGNNACGT\n>f3;size=2;length=5\nACG\n>f4\n\n";
+
 #[test]
-fn rejects_fasta_input() {
-    let output = run(&[], ">r1\nACGT\n");
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+fn filters_fasta_by_length_ns_and_size() {
+    // FASTA output, with the length, N and abundance filters
+    let (out, dis) = qualf(&["--min", "4", "--bad", "1"], FASTA);
+    assert_eq!(out, ">f1;size=3\nACGTACGTAC\n");
+    assert_eq!(
+        dis,
+        ">f2 desc\nACGNNACGT\n>f3;size=2;length=5\nACG\n>f4\n\n"
+    );
+    let (out, _) = qualf(&["--min-size", "2"], FASTA);
+    assert_eq!(out, ">f1;size=3\nACGTACGTAC\n>f3;size=2;length=5\nACG\n");
 }
 
 #[test]
@@ -281,4 +298,165 @@ fn rejects_malformed_input() {
     for input in ["r1\nACGT\n+\nIIII\n", "@r1\nACGT\n+\nIII\n", "@r1\nACGT\n"] {
         assert!(!run(&[], input).status.success(), "{input:?} should fail");
     }
+}
+
+#[test]
+fn rejects_quality_options_with_fasta() {
+    for option in [
+        &["--prob", "1"][..],
+        &["--prob-rate", "0.1"],
+        &["--min-qual", "5"],
+        &["--trunc-qual", "5"],
+        &["--trunc-prob", "1"],
+        &["--trunc-rate", "0.1"],
+        &["--ee"],
+    ] {
+        let output = run(option, FASTA);
+        assert!(!output.status.success(), "{option:?} should fail");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn annotates_size_and_length() {
+    // the old annotations are replaced
+    let (out, _) = qualf(&["--sizeout", "--lengthout"], FASTA);
+    let expected = ">f1;size=3;length=10\nACGTACGTAC\n>f2 desc;size=1;length=9\nACGNNACGT\n\
+                    >f3;size=2;length=3\nACG\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn removes_annotations_and_adds_sample_and_suffix() {
+    let (out, _) = qualf(
+        &[
+            "--xsize",
+            "--xlength",
+            "--sample",
+            "S",
+            "--label-suffix",
+            "_x",
+        ],
+        FASTA,
+    );
+    let expected =
+        ">f1_x;sample=S\nACGTACGTAC\n>f2 desc_x;sample=S\nACGNNACGT\n>f3_x;sample=S\nACG\n";
+    assert_eq!(out, expected);
+
+    let input = "@q;ee=9;size=4\nACGT\n+\nIIII\n";
+    let (out, _) = qualf(&["--xee", "--sizeout"], input);
+    assert_eq!(out, fastq(&[("q;size=4", "ACGT", "IIII")]));
+}
+
+#[test]
+fn relabels_by_position() {
+    // kept and discarded sequences are numbered separately
+    let (out, dis) = qualf(&["--relabel", "R", "--relabel-keep"], FASTA);
+    let expected = ">R1 f1;size=3\nACGTACGTAC\n>R2 f2 desc\nACGNNACGT\n\
+                    >R3 f3;size=2;length=5\nACG\n";
+    assert_eq!(out, expected);
+    assert_eq!(dis, ">R1 f4\n\n");
+}
+
+#[test]
+fn relabels_by_sequence() {
+    let (out, _) = qualf(&["--relabel-self", "--sizeout"], FASTA);
+    let expected =
+        ">ACGTACGTAC;size=3\nACGTACGTAC\n>ACGNNACGT;size=1\nACGNNACGT\n>ACG;size=2\nACG\n";
+    assert_eq!(out, expected);
+
+    let (out, _) = qualf(&["--relabel-sha1"], FASTA);
+    let expected = ">e8e5136aebc65f03c77c95fb40e0e2502de7e9a8\nACGTACGTAC\n\
+                    >d6a1ef23383fc7561ed765f9a6545c1f5b748b7e\nACGNNACGT\n\
+                    >b88cad96aeb0ad3b4a10da7d0372a759067df35e\nACG\n";
+    assert_eq!(out, expected);
+
+    let (out, _) = qualf(&["--relabel-md5"], FASTA);
+    let expected = ">45aff2fecf7615d56bc0567dffab9fa8\nACGTACGTAC\n\
+                    >0a659c2752840dd0e3cd2aab30accdbf\nACGNNACGT\n\
+                    >33f786e15eb427ffd3edec16cfdc0cd2\nACG\n";
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn rejects_more_than_one_relabelling() {
+    let output = run(&["--relabel", "R", "--relabel-md5"], FASTA);
+    assert!(!output.status.success());
+}
+
+/// Paired reads: p1's reverse read fails --prob 0.5, p2's fails badly,
+/// p3 passes in both directions.
+const FORWARD: &str =
+    "@p1\nACGTACGTAC\n+\nIIIIIIIIII\n@p2\nACGTACGTAC\n+\nIIIIIIIIII\n@p3\nACGT\n+\nIIII\n";
+const REVERSE: &str =
+    "@p1\nGTACGTACGT\n+\nIIIII+++++\n@p2\nGTACGTACGT\n+\n##########\n@p3\nACGT\n+\nIIII\n";
+
+#[test]
+fn filters_pairs_together() {
+    let paths = ["rev.fq", "rev-out.fq", "rev-dis.fq"].map(temp_path);
+    let [rev, rev_out, rev_dis] = paths.each_ref().map(|p| p.to_str().unwrap());
+    std::fs::write(rev, REVERSE).unwrap();
+    let args = [
+        "--prob",
+        "0.5",
+        "--relabel",
+        "P",
+        "--reverse",
+        rev,
+        "--rev-out",
+        rev_out,
+        "--rev-discard",
+        rev_dis,
+    ];
+    let (out, dis) = qualf(&args, FORWARD);
+    let (kept_rev, dis_rev) = (
+        std::fs::read_to_string(rev_out).unwrap(),
+        std::fs::read_to_string(rev_dis).unwrap(),
+    );
+    for path in &paths {
+        std::fs::remove_file(path).unwrap();
+    }
+    // a pair is discarded when either read is; both reads get the same number
+    assert_eq!(out, fastq(&[("P1", "ACGT", "IIII")]));
+    assert_eq!(kept_rev, fastq(&[("P1", "ACGT", "IIII")]));
+    assert_eq!(
+        dis,
+        fastq(&[
+            ("P1", "ACGTACGTAC", "IIIIIIIIII"),
+            ("P2", "ACGTACGTAC", "IIIIIIIIII")
+        ])
+    );
+    assert_eq!(
+        dis_rev,
+        fastq(&[
+            ("P1", "GTACGTACGT", "IIIII+++++"),
+            ("P2", "GTACGTACGT", "##########")
+        ])
+    );
+}
+
+#[test]
+fn rejects_unpaired_reads() {
+    let rev = temp_path("short-rev.fq");
+    let rev_str = rev.to_str().unwrap();
+    std::fs::write(&rev, "@p1\nACGT\n+\nIIII\n").unwrap();
+    let more_forward = run(&["--reverse", rev_str], FORWARD);
+    std::fs::write(&rev, format!("{REVERSE}@p4\nA\n+\nI\n")).unwrap();
+    let more_reverse = run(&["--reverse", rev_str], FORWARD);
+    std::fs::write(&rev, ">p1\nACGT\n").unwrap();
+    let other_format = run(&["--reverse", rev_str], FORWARD);
+    std::fs::remove_file(rev).unwrap();
+    assert!(!more_forward.status.success());
+    assert!(!more_reverse.status.success());
+    assert!(!other_format.status.success());
+}
+
+#[test]
+fn needs_reverse_reads_for_reverse_outputs() {
+    assert!(!run(&["--rev-out", "/dev/null"], FORWARD).status.success());
+    assert!(
+        !run(&["--rev-discard", "/dev/null"], FORWARD)
+            .status
+            .success()
+    );
 }
