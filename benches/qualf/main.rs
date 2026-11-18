@@ -2,9 +2,9 @@
 //!
 //! `filter` measures `Filter::apply` and `label` measures `Label::format`
 //! on parsed reads; `binary` runs the qualf program end to end on files:
-//! FASTQ filtering, relabelling, paired reads and FASTA input. Set
-//! `VSEARCH` to a vsearch executable to time `vsearch --fastq_filter` on
-//! the same files for comparison:
+//! FASTQ filtering, relabelling, paired reads, FASTA input, Phred+64 input
+//! and wrapped FASTA output. Set `VSEARCH` to a vsearch executable to time
+//! `vsearch --fastq_filter` on the same files for comparison:
 //!
 //! ```sh
 //! VSEARCH=/path/to/vsearch cargo bench --bench qualf
@@ -111,6 +111,21 @@ fn filters() -> [(&'static str, Filter); 3] {
     ]
 }
 
+/// Re-encodes Phred+33 FASTQ text as Phred+64.
+fn to_phred64(fastq: &str) -> String {
+    fastq
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i % 4 == 3 {
+                line.bytes().map(|q| char::from(q + 31)).collect::<String>() + "\n"
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect()
+}
+
 /// Converts FASTQ text to FASTA.
 fn to_fasta(fastq: &str) -> String {
     fastq
@@ -205,6 +220,7 @@ struct Inputs {
     forward: PathBuf,
     reverse: PathBuf,
     fasta: PathBuf,
+    phred64: PathBuf,
 }
 
 fn input_files() -> Inputs {
@@ -213,9 +229,11 @@ fn input_files() -> Inputs {
         forward: dir.join("qualf-bench.fq"),
         reverse: dir.join("qualf-bench-rev.fq"),
         fasta: dir.join("qualf-bench.fa"),
+        phred64: dir.join("qualf-bench-64.fq"),
     };
     let forward = generate(FORWARD_SEED);
     std::fs::write(&inputs.fasta, to_fasta(&forward)).unwrap();
+    std::fs::write(&inputs.phred64, to_phred64(&forward)).unwrap();
     std::fs::write(&inputs.forward, forward).unwrap();
     std::fs::write(&inputs.reverse, generate(REVERSE_SEED)).unwrap();
     inputs
@@ -237,6 +255,7 @@ fn cases(inputs: &Inputs) -> Vec<Case> {
     let fq = inputs.forward.to_str().unwrap();
     let rev = inputs.reverse.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
+    let fq64 = inputs.phred64.to_str().unwrap();
     // filtering the forward reads, written as FASTQ
     let fastq = |name, qualf: &[&str], vsearch: &[&str]| Case {
         name,
@@ -360,6 +379,51 @@ fn cases(inputs: &Inputs) -> Vec<Case> {
                 "0",
                 "--minsize",
                 "2",
+            ]),
+        },
+        Case {
+            name: "phred64",
+            qualf: args(&[
+                "-i",
+                fq64,
+                "-o",
+                "/dev/null",
+                "--ascii",
+                "64",
+                "--prob",
+                "1",
+            ]),
+            vsearch: args(&[
+                "--fastq_filter",
+                fq64,
+                "--fastqout",
+                "/dev/null",
+                "--quiet",
+                "--fastq_ascii",
+                "64",
+                "--fastq_maxee",
+                "1",
+            ]),
+        },
+        Case {
+            name: "wrap",
+            qualf: args(&[
+                "-i",
+                fq,
+                "-o",
+                "/dev/null",
+                "--fasta",
+                "--fasta-width",
+                "80",
+            ]),
+            vsearch: args(&[
+                "--fastq_filter",
+                fq,
+                "--fastaout",
+                "/dev/null",
+                "--quiet",
+                "--fasta_width",
+                "80",
             ]),
         },
     ]
