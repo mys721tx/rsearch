@@ -12,3 +12,10 @@ mimalloc = "0.1.52"
 [lib]
 name = "rsearch"
 path = "src/lib/lib.rs"
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "derep"
+harness = false
