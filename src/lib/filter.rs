@@ -75,8 +75,6 @@ pub struct Filter {
     pub strip_left: usize,
     /// Bases removed from the 3' end.
     pub strip_right: usize,
-    /// Truncate to this length, and discard shorter reads.
-    pub trunc_len: Option<usize>,
     /// Truncate to this length, keeping shorter reads.
     pub trunc_keep: Option<usize>,
     /// Truncate at the first base with a quality score at or below this.
@@ -144,7 +142,6 @@ impl Default for Filter {
         Filter {
             strip_left: 0,
             strip_right: 0,
-            trunc_len: None,
             trunc_keep: None,
             trunc_qual: None,
             trunc_ee: None,
@@ -242,9 +239,6 @@ impl Filter {
         let seqlen = seq.len();
         let start = self.strip_left.min(seqlen);
         let mut len = (seqlen - start).saturating_sub(self.strip_right);
-        if let Some(n) = self.trunc_len {
-            len = len.min(n);
-        }
         if let Some(n) = self.trunc_keep {
             len = len.min(n);
         }
@@ -307,7 +301,6 @@ impl Filter {
             || ee.is_some_and(|ee| {
                 len > 0 && self.max_rate.is_some_and(|max| ee / len as f64 > max)
             })
-            || self.trunc_len.is_some_and(|n| len < n)
             || len < self.min_len
             || self.max_len.is_some_and(|max| len > max)
             || self

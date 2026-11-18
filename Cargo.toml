@@ -27,10 +27,6 @@ name = "derep"
 harness = false
 
 [[bench]]
-name = "qualf"
-harness = false
-
-[[bench]]
 name = "relab"
 harness = false
 
