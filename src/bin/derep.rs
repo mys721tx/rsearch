@@ -15,8 +15,7 @@ use rsearch::cluster::{
 };
 use rsearch::fastx::{Format, Reader, Record};
 use rsearch::filter::QualityError;
-use rsearch::label::{Label, Relabel, abundance, size_annotation};
-use rsearch::options;
+use rsearch::label::{AbundanceError, Label, abundance, checked_abundance};
 use rsearch::writer::Writer;
 
 /// Options that need quality scores, which cannot be used with FASTA input.
@@ -116,26 +115,22 @@ fn write_uc(out: &mut impl Write, clusters: &[Cluster]) -> io::Result<()> {
 }
 
 /// writes vsearch's tab-separated cluster table: for each member, its
-/// label, the cluster's label (or PREFIX and the cluster's number with
-/// `--relabel PREFIX`), the cluster's index, the member's index in it, the
-/// number of members and the label of the first.
-fn write_tabbed(out: &mut impl Write, clusters: &[Cluster], relabel: &Relabel) -> io::Result<()> {
+/// label, the cluster's label, the cluster's index, the member's index in
+/// it, the number of members and the label of the first. As derep never
+/// relabels, the cluster's label is that of its first member.
+fn write_tabbed(out: &mut impl Write, clusters: &[Cluster]) -> io::Result<()> {
     for (i, c) in clusters.iter().enumerate() {
         let head = &c.merged[0];
-        let name = match relabel {
-            Relabel::Prefix(prefix) => format!("{prefix}{}", i + 1),
-            _ => head.clone(),
-        };
         let count = c.merged.len();
         for (j, member) in c.merged.iter().enumerate() {
-            writeln!(out, "{member}\t{name}\t{i}\t{j}\t{count}\t{head}")?;
+            writeln!(out, "{member}\t{head}\t{i}\t{j}\t{count}\t{head}")?;
         }
     }
     out.flush()
 }
 
 fn main() {
-    let command = Command::new("DeRep")
+    let mut command = Command::new("DeRep")
         .about("Remove duplications in FASTA or FASTQ sequences.")
         .arg(
             Arg::new("in")
@@ -171,41 +166,14 @@ fn main() {
                 .conflicts_with_all(["strand", "same-label"])
                 .help(
                     "Merge sequences into the longest sequence they are a prefix of; \
-                     writes FASTA",
+                     FASTA only",
                 ),
-        )
-        .arg(
-            Arg::new("min")
-                .long("min")
-                .value_name("MIN_SIZE")
-                .value_parser(value_parser!(u64))
-                .help("Minimum size of output sequences, disabled by default"),
-        )
-        .arg(
-            Arg::new("max")
-                .long("max")
-                .value_name("MAX_SIZE")
-                .value_parser(value_parser!(u64))
-                .help("Maximum size of output sequences, disabled by default"),
-        )
-        .arg(
-            Arg::new("top")
-                .long("top")
-                .value_name("TOP")
-                .value_parser(value_parser!(usize))
-                .help("Number of sequences to output, disabled by default"),
         )
         .arg(
             Arg::new("unsorted")
                 .long("unsorted")
                 .action(ArgAction::SetTrue)
                 .help("Output in order of first appearance instead of decreasing size"),
-        )
-        .arg(
-            Arg::new("map")
-                .long("map")
-                .value_name("MAP")
-                .help("Output file mapping each merged sequence to its output sequence"),
         )
         .arg(
             Arg::new("uc")
@@ -220,33 +188,6 @@ fn main() {
                 .help("Output file of every cluster's members, tab-separated"),
         )
         .arg(
-            Arg::new("fasta-width")
-                .long("fasta-width")
-                .value_name("WIDTH")
-                .value_parser(value_parser!(usize))
-                .help("Wrap FASTA sequence lines at this width, default to 0 (no wrapping)"),
-        )
-        .arg(
-            Arg::new("fasta")
-                .long("fasta")
-                .action(ArgAction::SetTrue)
-                .help("Write output in FASTA format"),
-        )
-        .arg(
-            Arg::new("min-len")
-                .long("min-len")
-                .value_name("MIN_LEN")
-                .value_parser(value_parser!(usize))
-                .help("Minimum length of input sequences, default to 1"),
-        )
-        .arg(
-            Arg::new("max-len")
-                .long("max-len")
-                .value_name("MAX_LEN")
-                .value_parser(value_parser!(usize))
-                .help("Maximum length of input sequences, disabled by default"),
-        )
-        .arg(
             Arg::new("no-sizein")
                 .long("no-sizein")
                 .action(ArgAction::SetTrue)
@@ -257,12 +198,6 @@ fn main() {
                 .long("no-sizeout")
                 .action(ArgAction::SetTrue)
                 .help("Do not annotate output labels with abundance (;size=)"),
-        )
-        .arg(
-            Arg::new("full-labels")
-                .long("full-labels")
-                .action(ArgAction::SetTrue)
-                .help("Keep whole headers as labels instead of cutting them at the first space"),
         )
         .arg(
             Arg::new("ascii")
@@ -317,7 +252,6 @@ fn main() {
                      their error probabilities",
                 ),
         );
-    let mut command = options::label_args(command);
     let matches = command.get_matches_mut();
 
     let range = ScoreRange {
@@ -384,18 +318,20 @@ fn main() {
 
     let strand = matches.get_flag("strand");
     let prefix = matches.get_flag("prefix");
+    if prefix && is_fastq {
+        // vsearch --derep_prefix writes only FASTA, and changing the format
+        // is conv's job
+        command
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--prefix cannot be used with FASTQ input",
+            )
+            .exit();
+    }
 
     let sizein = !matches.get_flag("no-sizein");
-    let full_labels = matches.get_flag("full-labels");
-    let min_len = matches.get_one::<usize>("min-len").copied().unwrap_or(1);
-    let max_len = matches
-        .get_one::<usize>("max-len")
-        .copied()
-        .unwrap_or(usize::MAX);
 
-    let as_fasta = !is_fastq || prefix || matches.get_flag("fasta");
-
-    let mut seqs = if as_fasta {
+    let mut seqs = if !is_fastq {
         Clusters::without_qualities()
     } else {
         Clusters::default().with_quality(quality)
@@ -418,28 +354,15 @@ fn main() {
             break;
         }
 
-        let label = if full_labels {
-            record.header()
-        } else {
-            record.id()
-        };
+        // whole headers, as vsearch --notrunclabels
+        let label = record.header();
 
         let size = if sizein {
-            match size_annotation(label) {
-                Some(0) => fail(&format!(
-                    "invalid (zero) abundance annotation in read {label}"
-                )),
-                Some(size) => size,
-                None => 1,
-            }
+            checked_abundance(label)
+                .unwrap_or_else(|e: AbundanceError| fail(&format!("{e} in read {label}")))
         } else {
             1
         };
-
-        let len = record.seq().len();
-        if len < min_len || len > max_len {
-            continue;
-        }
 
         if is_fastq && let Err(e) = range.check(record.qual()) {
             fail(&format!("{e} in read {}", record.id()));
@@ -471,75 +394,34 @@ fn main() {
         sort_by_size(&mut clusters);
     }
 
-    let min = matches.get_one::<u64>("min").copied().unwrap_or(0);
-    let max = matches.get_one::<u64>("max").copied().unwrap_or(u64::MAX);
-    let top = matches
-        .get_one::<usize>("top")
-        .copied()
-        .unwrap_or(usize::MAX);
-
-    let selected = clusters
-        .iter()
-        .filter(|c| c.size >= min && c.size <= max)
-        .take(top);
-
-    // the written label: that of the first merged sequence, rewritten
+    // the written label: that of the first merged sequence, with its size
     let written = Label {
         sizeout: !matches.get_flag("no-sizeout"),
-        ..options::label_from(&matches)
+        ..Label::default()
     };
-    let label =
-        |i: usize, c: &Cluster| written.format(&c.merged[0], &c.seq, c.size, i as u64 + 1, None);
 
     let fout: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => Box::new(File::create(f).unwrap()),
         None => Box::new(io::stdout()),
     };
 
-    let width = matches
-        .get_one::<usize>("fasta-width")
-        .copied()
-        .unwrap_or(0);
-    let mut writer = Writer::new(fout, as_fasta, width);
+    let mut writer = Writer::new(fout, !is_fastq, 0);
     let table = quality.output_table();
     let mut qual = Vec::new();
-    for (i, c) in selected.clone().enumerate() {
+    for c in &clusters {
         qual.clear();
         if let Some(q) = &c.qual {
             qual.extend(q.iter().map(|&q| table[usize::from(q)]));
         }
-        writer.write(&label(i, c), None, &c.seq, &qual).unwrap();
+        let label = written.format(&c.merged[0], &c.seq, c.size, 0, None);
+        writer.write(&label, None, &c.seq, &qual).unwrap();
     }
     writer.flush().unwrap();
 
-    if let Some(f) = matches.get_one::<String>("map") {
-        // labels without their size annotations
-        let unsized_member = Label {
-            xsize: true,
-            ..Label::default()
-        };
-        let unsized_written = Label {
-            sizeout: false,
-            xsize: true,
-            keep: false,
-            ..written.clone()
-        };
-        let mut map = create(f);
-        for (i, c) in selected.enumerate() {
-            let name = unsized_written.format(&c.merged[0], &c.seq, c.size, i as u64 + 1, None);
-            for member in &c.merged {
-                let member = unsized_member.format(member, &c.seq, c.size, 0, None);
-                writeln!(map, "{member}\t{name}").unwrap();
-            }
-        }
-        map.flush().unwrap();
-    }
-
-    // unlike the output, these list every cluster, as vsearch does
     if let Some(f) = matches.get_one::<String>("uc") {
         write_uc(&mut create(f), &clusters).unwrap();
     }
     if let Some(f) = matches.get_one::<String>("tabbedout") {
-        write_tabbed(&mut create(f), &clusters, &written.relabel).unwrap();
+        write_tabbed(&mut create(f), &clusters).unwrap();
     }
 }
