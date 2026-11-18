@@ -7,15 +7,16 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Write};
 
-use bio::io::{fasta, fastq};
 use clap::{Arg, ArgAction, Command, value_parser};
 
 use rsearch::cluster::{Cluster, Clusters, sort_by_size};
 use rsearch::fastx::{Format, Reader, Record};
-use rsearch::label::{Label, Relabel, size_annotation};
+use rsearch::label::{Label, size_annotation};
+use rsearch::options;
+use rsearch::writer::Writer;
 
 fn main() {
-    let matches = Command::new("DeRep")
+    let command = Command::new("DeRep")
         .about("Remove duplications in FASTA or FASTQ sequences.")
         .arg(
             Arg::new("in")
@@ -66,12 +67,6 @@ fn main() {
                 .help("Output in order of first appearance instead of decreasing size"),
         )
         .arg(
-            Arg::new("relabel")
-                .long("relabel")
-                .value_name("PREFIX")
-                .help("Relabel output sequences as PREFIX1, PREFIX2, ..."),
-        )
-        .arg(
             Arg::new("map")
                 .long("map")
                 .value_name("MAP")
@@ -84,7 +79,45 @@ fn main() {
                 .value_parser(value_parser!(usize))
                 .help("Wrap FASTA sequence lines at this width, default to 0 (no wrapping)"),
         )
-        .get_matches();
+        .arg(
+            Arg::new("fasta")
+                .long("fasta")
+                .action(ArgAction::SetTrue)
+                .help("Write output in FASTA format"),
+        )
+        .arg(
+            Arg::new("min-len")
+                .long("min-len")
+                .value_name("MIN_LEN")
+                .value_parser(value_parser!(usize))
+                .help("Minimum length of input sequences, default to 1"),
+        )
+        .arg(
+            Arg::new("max-len")
+                .long("max-len")
+                .value_name("MAX_LEN")
+                .value_parser(value_parser!(usize))
+                .help("Maximum length of input sequences, disabled by default"),
+        )
+        .arg(
+            Arg::new("no-sizein")
+                .long("no-sizein")
+                .action(ArgAction::SetTrue)
+                .help("Count each input sequence once, ignoring abundances (;size=)"),
+        )
+        .arg(
+            Arg::new("no-sizeout")
+                .long("no-sizeout")
+                .action(ArgAction::SetTrue)
+                .help("Do not annotate output labels with abundance (;size=)"),
+        )
+        .arg(
+            Arg::new("full-labels")
+                .long("full-labels")
+                .action(ArgAction::SetTrue)
+                .help("Keep whole headers as labels instead of cutting them at the first space"),
+        );
+    let matches = options::label_args(command).get_matches();
 
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => Box::new(File::open(f).unwrap()),
@@ -97,7 +130,21 @@ fn main() {
 
     let strand = matches.get_flag("strand");
 
-    let mut seqs = Clusters::default();
+    let sizein = !matches.get_flag("no-sizein");
+    let full_labels = matches.get_flag("full-labels");
+    let min_len = matches.get_one::<usize>("min-len").copied().unwrap_or(1);
+    let max_len = matches
+        .get_one::<usize>("max-len")
+        .copied()
+        .unwrap_or(usize::MAX);
+
+    let as_fasta = !is_fastq || matches.get_flag("fasta");
+
+    let mut seqs = if as_fasta {
+        Clusters::without_qualities()
+    } else {
+        Clusters::default()
+    };
 
     let mut record = Record::new();
 
@@ -108,16 +155,28 @@ fn main() {
             break;
         }
 
-        if size_annotation(record.id()) == Some(0) {
-            eprintln!(
-                "Error: invalid (zero) abundance annotation in read {}",
-                record.id()
-            );
-            std::process::exit(1);
-        }
+        let label = if full_labels {
+            record.header()
+        } else {
+            record.id()
+        };
 
-        if !record.seq().is_empty() {
-            seqs.add_fastx(&record, strand);
+        let size = if sizein {
+            match size_annotation(label) {
+                Some(0) => {
+                    eprintln!("Error: invalid (zero) abundance annotation in read {label}");
+                    std::process::exit(1);
+                }
+                Some(size) => size,
+                None => 1,
+            }
+        } else {
+            1
+        };
+
+        let len = record.seq().len();
+        if len >= min_len && len <= max_len {
+            seqs.add_read(label, size, &record, strand);
         }
     }
 
@@ -139,17 +198,10 @@ fn main() {
         .filter(|c| c.size >= min && c.size <= max)
         .take(top);
 
-    let relabel = match matches.get_one::<String>("relabel") {
-        Some(prefix) => Relabel::Prefix(prefix.clone()),
-        None => Relabel::None,
-    };
-
-    // the written label: the first merged label with its size replaced,
-    // or the new label, as vsearch --sizeout writes it
+    // the written label: that of the first merged sequence, rewritten
     let written = Label {
-        relabel: relabel.clone(),
-        sizeout: true,
-        ..Label::default()
+        sizeout: !matches.get_flag("no-sizeout"),
+        ..options::label_from(&matches)
     };
     let label =
         |i: usize, c: &Cluster| written.format(&c.merged[0], &c.seq, c.size, i as u64 + 1, None);
@@ -159,25 +211,16 @@ fn main() {
         None => Box::new(io::stdout()),
     };
 
-    if is_fastq {
-        let mut writer = fastq::Writer::new(fout);
-        for (i, c) in selected.clone().enumerate() {
-            let qual = c.qual.as_deref().unwrap_or_default();
-            writer.write(&label(i, c), None, &c.seq, qual).unwrap();
-        }
-        writer.flush().unwrap();
-    } else {
-        let width = matches
-            .get_one::<usize>("fasta-width")
-            .copied()
-            .unwrap_or(0);
-        let mut writer = fasta::Writer::new(fout);
-        writer.set_linewrap((width > 0).then_some(width));
-        for (i, c) in selected.clone().enumerate() {
-            writer.write(&label(i, c), None, &c.seq).unwrap();
-        }
-        writer.flush().unwrap();
+    let width = matches
+        .get_one::<usize>("fasta-width")
+        .copied()
+        .unwrap_or(0);
+    let mut writer = Writer::new(fout, as_fasta, width);
+    for (i, c) in selected.clone().enumerate() {
+        let qual = c.qual.as_deref().unwrap_or_default();
+        writer.write(&label(i, c), None, &c.seq, qual).unwrap();
     }
+    writer.flush().unwrap();
 
     if let Some(f) = matches.get_one::<String>("map") {
         // labels without their size annotations
@@ -186,9 +229,10 @@ fn main() {
             ..Label::default()
         };
         let unsized_written = Label {
-            relabel,
+            sizeout: false,
             xsize: true,
-            ..Label::default()
+            keep: false,
+            ..written.clone()
         };
         let mut map = io::BufWriter::new(File::create(f).unwrap());
         for (i, c) in selected.enumerate() {

@@ -216,9 +216,30 @@ pub struct Clusters {
     /// The normalized sequence being added, and its reverse complement.
     key: Vec<u8>,
     reverse: Vec<u8>,
+    /// Leave out qualities, which are only needed to write FASTQ.
+    no_qualities: bool,
 }
 
 impl Clusters {
+    /// returns empty clusters that leave out the qualities of FASTQ
+    /// records, skipping the work of merging them.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::cluster::Clusters;
+    /// # use rsearch::fastx::Record;
+    /// let mut clusters = Clusters::without_qualities();
+    /// clusters.add_fastx(&Record::with_attrs("a", None, b"ACGT", b"IIII"), false);
+    ///
+    /// assert_eq!(clusters.into_clusters()[0].qual, None);
+    /// ```
+    pub fn without_qualities() -> Clusters {
+        Clusters {
+            no_qualities: true,
+            ..Clusters::default()
+        }
+    }
+
     /// finds the cluster of `seq` by its normalized sequence, or with
     /// `strand`, its reverse complement; returns its index and whether it
     /// matched the reverse complement. Leaves the normalized sequence in
@@ -268,12 +289,36 @@ impl Clusters {
     /// assert_eq!(clusters[0].merged, ["a", "b", "c"]);
     /// ```
     pub fn add_fastx(&mut self, record: &fastx::Record, strand: bool) {
+        self.add_read(record.id(), abundance(record.id()), record, strand);
+    }
+
+    /// adds a record as `add_fastx` does, under the given label and
+    /// abundance instead of its id and `;size=` annotation.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::cluster::Clusters;
+    /// # use rsearch::fastx::Record;
+    /// let mut clusters = Clusters::default();
+    /// for header in ["a;size=3 one", "b;size=5 two"] {
+    ///     let record = Record::fasta_with_attrs(header, None, b"ACGT");
+    ///     clusters.add_read(record.header(), 1, &record, false);
+    /// }
+    ///
+    /// let clusters = clusters.into_clusters();
+    /// assert_eq!(clusters[0].size, 2);
+    /// assert_eq!(clusters[0].merged, ["a;size=3 one", "b;size=5 two"]);
+    /// ```
+    pub fn add_read(&mut self, label: &str, size: u64, record: &fastx::Record, strand: bool) {
+        let qual = (record.is_fastq() && !self.no_qualities).then(|| record.qual());
         match self.find(record.seq(), strand) {
-            Some((i, reverse)) => {
-                let qual = record.is_fastq().then(|| record.qual());
-                self.clusters[i].merge_read(record.id(), abundance(record.id()), qual, reverse);
-            }
-            None => self.push(Cluster::build_from_fastx(record)),
+            Some((i, reverse)) => self.clusters[i].merge_read(label, size, qual, reverse),
+            None => self.push(Cluster {
+                size,
+                merged: vec![label.to_string()],
+                seq: record.seq().to_vec(),
+                qual: qual.map(floor_quality),
+            }),
         }
     }
 

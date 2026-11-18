@@ -7,13 +7,14 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read, Write};
 
-use bio::io::{fasta, fastq};
 use clap::parser::ValueSource;
-use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command, value_parser};
+use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 
 use rsearch::fastx::{Format, Reader, Record};
 use rsearch::filter::{Filter, Outcome};
-use rsearch::label::{Label, Relabel, abundance};
+use rsearch::label::{Label, abundance};
+use rsearch::options;
+use rsearch::writer::Writer;
 
 /// Options that need quality scores, which cannot be used with FASTA input.
 const QUALITY_OPTIONS: [&str; 10] = [
@@ -42,39 +43,6 @@ fn positive(s: &str) -> Result<f64, String> {
     match s.parse::<f64>() {
         Ok(x) if x > 0.0 => Ok(x),
         _ => Err(format!("`{s}` is not a positive number")),
-    }
-}
-
-/// Writes records as FASTA or FASTQ.
-enum Writer {
-    Fasta(fasta::Writer<Box<dyn Write>>),
-    Fastq(fastq::Writer<Box<dyn Write>>),
-}
-
-impl Writer {
-    /// `width` wraps FASTA sequence lines; 0 writes each on one line.
-    fn new(fout: Box<dyn Write>, as_fasta: bool, width: usize) -> Writer {
-        if as_fasta {
-            let mut writer = fasta::Writer::new(fout);
-            writer.set_linewrap((width > 0).then_some(width));
-            Writer::Fasta(writer)
-        } else {
-            Writer::Fastq(fastq::Writer::new(fout))
-        }
-    }
-
-    fn write(&mut self, id: &str, desc: Option<&str>, seq: &[u8], qual: &[u8]) {
-        match self {
-            Writer::Fasta(w) => w.write(id, desc, seq).unwrap(),
-            Writer::Fastq(w) => w.write(id, desc, seq, qual).unwrap(),
-        }
-    }
-
-    fn flush(&mut self) {
-        match self {
-            Writer::Fasta(w) => w.flush().unwrap(),
-            Writer::Fastq(w) => w.flush().unwrap(),
-        }
     }
 }
 
@@ -121,28 +89,10 @@ fn max_score(matches: &ArgMatches) -> i16 {
 }
 
 fn label_from(matches: &ArgMatches) -> Label {
-    let relabel = if let Some(prefix) = matches.get_one::<String>("relabel") {
-        Relabel::Prefix(prefix.clone())
-    } else if matches.get_flag("relabel-self") {
-        Relabel::Sequence
-    } else if matches.get_flag("relabel-sha1") {
-        Relabel::Sha1
-    } else if matches.get_flag("relabel-md5") {
-        Relabel::Md5
-    } else {
-        Relabel::None
-    };
     Label {
-        relabel,
-        keep: matches.get_flag("relabel-keep"),
         sizeout: matches.get_flag("sizeout"),
-        xsize: matches.get_flag("xsize"),
         eeout: matches.get_flag("ee"),
-        xee: matches.get_flag("xee"),
-        lengthout: matches.get_flag("lengthout"),
-        xlength: matches.get_flag("xlength"),
-        sample: matches.get_one::<String>("sample").cloned(),
-        suffix: matches.get_one::<String>("label-suffix").cloned(),
+        ..options::label_from(matches)
     }
 }
 
@@ -185,7 +135,7 @@ impl Qualf {
     /// writes the trimmed record, as the `ordinal`th of its output.
     fn write(
         &self,
-        out: Option<&mut Writer>,
+        out: Option<&mut Writer<Box<dyn Write>>>,
         r: &Record,
         outcome: &Outcome,
         size: u64,
@@ -201,12 +151,12 @@ impl Qualf {
             &[]
         };
         if self.label.is_identity() {
-            out.write(r.id(), r.desc(), seq, qual);
+            out.write(r.id(), r.desc(), seq, qual).unwrap();
         } else {
             let header = self
                 .label
                 .format(r.header(), seq, size, ordinal, outcome.ee);
-            out.write(&header, None, seq, qual);
+            out.write(&header, None, seq, qual).unwrap();
         }
     }
 }
@@ -376,84 +326,13 @@ fn main() {
                 .value_name("DISCARD")
                 .requires("reverse")
                 .help("Output file for discarded reverse reads, disabled by default"),
-        )
-        .arg(
-            Arg::new("relabel")
-                .long("relabel")
-                .value_name("PREFIX")
-                .help("Relabel sequences as PREFIX1, PREFIX2, ..."),
-        )
-        .arg(
-            Arg::new("relabel-self")
-                .long("relabel-self")
-                .action(ArgAction::SetTrue)
-                .help("Relabel sequences with the sequence itself"),
-        )
-        .arg(
-            Arg::new("relabel-sha1")
-                .long("relabel-sha1")
-                .action(ArgAction::SetTrue)
-                .help("Relabel sequences with the SHA1 digest of the sequence"),
-        )
-        .arg(
-            Arg::new("relabel-md5")
-                .long("relabel-md5")
-                .action(ArgAction::SetTrue)
-                .help("Relabel sequences with the MD5 digest of the sequence"),
-        )
-        .group(ArgGroup::new("relabeling").args([
-            "relabel",
-            "relabel-self",
-            "relabel-sha1",
-            "relabel-md5",
-        ]))
-        .arg(
-            Arg::new("relabel-keep")
-                .long("relabel-keep")
-                .action(ArgAction::SetTrue)
-                .help("Append the old label after the new one when relabelling"),
-        )
+        );
+    command = options::label_args(command)
         .arg(
             Arg::new("sizeout")
                 .long("sizeout")
                 .action(ArgAction::SetTrue)
                 .help("Annotate output labels with abundance (;size=)"),
-        )
-        .arg(
-            Arg::new("xsize")
-                .long("xsize")
-                .action(ArgAction::SetTrue)
-                .help("Remove abundance annotations (;size=)"),
-        )
-        .arg(
-            Arg::new("xee")
-                .long("xee")
-                .action(ArgAction::SetTrue)
-                .help("Remove expected error annotations (;ee=)"),
-        )
-        .arg(
-            Arg::new("lengthout")
-                .long("lengthout")
-                .action(ArgAction::SetTrue)
-                .help("Annotate output labels with sequence length (;length=)"),
-        )
-        .arg(
-            Arg::new("xlength")
-                .long("xlength")
-                .action(ArgAction::SetTrue)
-                .help("Remove length annotations (;length=)"),
-        )
-        .arg(
-            Arg::new("sample")
-                .long("sample")
-                .value_name("SAMPLE")
-                .help("Annotate output labels with a sample name (;sample=)"),
-        )
-        .arg(
-            Arg::new("label-suffix")
-                .long("label-suffix")
-                .value_name("SUFFIX")
-                .help("Append this text to output labels"),
         )
         .arg(
             Arg::new("ascii")
@@ -643,7 +522,7 @@ fn main() {
     .into_iter()
     .flatten()
     {
-        w.flush();
+        w.flush().unwrap();
     }
 
     if !matches.get_flag("quiet") {
