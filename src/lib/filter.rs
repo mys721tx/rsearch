@@ -1,11 +1,13 @@
 //! Trimming and filtering of FASTQ reads, after vsearch's `--fastq_filter`.
 
+use std::fmt;
 use std::sync::LazyLock;
 
-/// ASCII offset of Phred quality scores.
+/// ASCII offset of Phred+33 quality scores.
 const PHRED_OFFSET: u8 = 33;
 
-/// The error probability of every quality symbol, `10^(-Q/10)`.
+/// The error probability of every Phred+33 quality symbol, `10^(-Q/10)`.
+/// A symbol of another offset is looked up shifted to Phred+33.
 static ERROR_PROBABILITY: LazyLock<[f64; 256]> = LazyLock::new(|| {
     std::array::from_fn(|symbol| {
         let q = symbol as f64 - f64::from(PHRED_OFFSET);
@@ -41,7 +43,7 @@ pub struct Filter {
     /// Truncate to this length, keeping shorter reads.
     pub trunc_keep: Option<usize>,
     /// Truncate at the first base with a quality score at or below this.
-    pub trunc_qual: Option<u8>,
+    pub trunc_qual: Option<i16>,
     /// Truncate before the expected errors exceed this.
     pub trunc_ee: Option<f64>,
     /// Truncate before the expected errors per base exceed this.
@@ -57,12 +59,46 @@ pub struct Filter {
     /// Discard reads with more expected errors per base than this.
     pub max_rate: Option<f64>,
     /// Discard reads with any quality score below this.
-    pub min_qual: u8,
+    pub min_qual: i16,
     /// Discard reads with an abundance below this.
     pub min_size: u64,
     /// Discard reads with an abundance above this.
     pub max_size: Option<u64>,
+    /// ASCII offset of quality symbols: 33 (Phred+33) or 64 (Phred+64).
+    pub offset: u8,
+    /// Lowest quality score accepted in the input.
+    pub min_score: i16,
+    /// Highest quality score accepted in the input.
+    pub max_score: i16,
 }
+
+/// A quality score outside the accepted range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QualityError {
+    pub score: i16,
+    pub min_score: i16,
+    pub max_score: i16,
+}
+
+impl fmt::Display for QualityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.score < self.min_score {
+            write!(
+                f,
+                "quality score {} below the minimum {}",
+                self.score, self.min_score
+            )
+        } else {
+            write!(
+                f,
+                "quality score {} above the maximum {}",
+                self.score, self.max_score
+            )
+        }
+    }
+}
+
+impl std::error::Error for QualityError {}
 
 impl Default for Filter {
     /// No trimming; only empty reads are discarded.
@@ -83,6 +119,9 @@ impl Default for Filter {
             min_qual: 0,
             min_size: 1,
             max_size: None,
+            offset: PHRED_OFFSET,
+            min_score: 0,
+            max_score: 93,
         }
     }
 }
@@ -115,8 +154,23 @@ impl Filter {
         self.min_size > 1 || self.max_size.is_some()
     }
 
+    /// the score of a quality symbol, or an error outside the accepted range.
+    fn score(&self, symbol: u8) -> Result<i16, QualityError> {
+        let score = i16::from(symbol) - i16::from(self.offset);
+        if score < self.min_score || score > self.max_score {
+            return Err(QualityError {
+                score,
+                min_score: self.min_score,
+                max_score: self.max_score,
+            });
+        }
+        Ok(score)
+    }
+
     /// trims and filters a read of abundance `size`. `qual` is `None` for a
     /// FASTA read, which only the length, N and abundance filters apply to.
+    /// As in vsearch, the scores of the bases left after trimming must be in
+    /// the accepted range.
     ///
     /// # Example
     /// ```rust
@@ -128,15 +182,25 @@ impl Filter {
     /// };
     ///
     /// // truncated before the first base with a score of 10 or less ('+')
-    /// let outcome = filter.apply(b"ACGTA", Some(b"IIII+"), 1);
+    /// let outcome = filter.apply(b"ACGTA", Some(b"IIII+"), 1).unwrap();
     /// assert_eq!(outcome.trim(b"ACGTA"), b"ACGT");
     /// assert!(outcome.truncated && !outcome.discarded);
     ///
-    /// let outcome = filter.apply(b"ACGTA", Some(b"II+II"), 1);
+    /// let outcome = filter.apply(b"ACGTA", Some(b"II+II"), 1).unwrap();
     /// assert_eq!(outcome.len, 2);
     /// assert!(outcome.discarded);
+    ///
+    /// // '~' is score 93, above an accepted maximum of 41
+    /// let strict = Filter { max_score: 41, ..Filter::default() };
+    /// let error = strict.apply(b"A", Some(b"~"), 1).unwrap_err();
+    /// assert_eq!((error.score, error.max_score), (93, 41));
     /// ```
-    pub fn apply(&self, seq: &[u8], qual: Option<&[u8]>, size: u64) -> Outcome {
+    pub fn apply(
+        &self,
+        seq: &[u8],
+        qual: Option<&[u8]>,
+        size: u64,
+    ) -> Result<Outcome, QualityError> {
         let seqlen = seq.len();
         let start = self.strip_left.min(seqlen);
         let mut len = (seqlen - start).saturating_sub(self.strip_right);
@@ -154,21 +218,19 @@ impl Filter {
         let per_base = self.trunc_qual.is_some()
             || self.trunc_ee.is_some()
             || self.trunc_rate.is_some()
-            || self.min_qual > 0;
+            || self.min_qual > self.min_score;
         let window = qual.map(|qual| &qual[start..start + len]);
+        let probability = &*ERROR_PROBABILITY;
+        // shifts a symbol of this offset to Phred+33
+        let shift = usize::from(self.offset - PHRED_OFFSET);
         if let (true, Some(window)) = (per_base, window) {
-            let probability = &*ERROR_PROBABILITY;
-            // scores are at least 0, so -1 never truncates
-            let trunc_qual = self.trunc_qual.map_or(-1, i16::from);
+            let trunc_qual = self.trunc_qual.unwrap_or(i16::MIN);
             for (i, &symbol) in window.iter().enumerate() {
-                let score = symbol.saturating_sub(PHRED_OFFSET);
-                let error = probability[usize::from(symbol)];
+                let score = self.score(symbol)?;
+                let error = probability[usize::from(symbol) - shift];
                 ee += error;
                 // as vsearch: add, then take back the base that crosses a limit
-                if i16::from(score) <= trunc_qual
-                    || ee > trunc_ee
-                    || ee > trunc_rate * (i + 1) as f64
-                {
+                if score <= trunc_qual || ee > trunc_ee || ee > trunc_rate * (i + 1) as f64 {
                     ee -= error;
                     len = i;
                     break;
@@ -178,8 +240,18 @@ impl Filter {
                 }
             }
         } else if let Some(window) = window {
-            // nothing to check base by base: just add up the errors
-            ee = expected_errors(window);
+            // nothing to check base by base: check the range, add up errors
+            let lowest = i16::from(self.offset) + self.min_score;
+            let highest = i16::from(self.offset) + self.max_score;
+            if let Some(&symbol) = window
+                .iter()
+                .find(|&&q| !(lowest..=highest).contains(&i16::from(q)))
+            {
+                self.score(symbol)?;
+            }
+            ee = window
+                .iter()
+                .fold(0.0, |ee, &q| ee + probability[usize::from(q) - shift]);
         }
 
         let kept = &seq[start..start + len];
@@ -197,12 +269,12 @@ impl Filter {
             || size < self.min_size
             || self.max_size.is_some_and(|max| size > max);
 
-        Outcome {
+        Ok(Outcome {
             start,
             len,
             ee,
             truncated: len < seqlen,
             discarded,
-        }
+        })
     }
 }

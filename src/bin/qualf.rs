@@ -16,7 +16,10 @@ use rsearch::filter::{Filter, Outcome};
 use rsearch::label::{Label, Relabel, abundance};
 
 /// Options that need quality scores, which cannot be used with FASTA input.
-const QUALITY_OPTIONS: [&str; 7] = [
+const QUALITY_OPTIONS: [&str; 10] = [
+    "ascii",
+    "qmin",
+    "qmax",
     "prob",
     "prob-rate",
     "min-qual",
@@ -49,9 +52,12 @@ enum Writer {
 }
 
 impl Writer {
-    fn new(fout: Box<dyn Write>, as_fasta: bool) -> Writer {
+    /// `width` wraps FASTA sequence lines; 0 writes each on one line.
+    fn new(fout: Box<dyn Write>, as_fasta: bool, width: usize) -> Writer {
         if as_fasta {
-            Writer::Fasta(fasta::Writer::new(fout))
+            let mut writer = fasta::Writer::new(fout);
+            writer.set_linewrap((width > 0).then_some(width));
+            Writer::Fasta(writer)
         } else {
             Writer::Fastq(fastq::Writer::new(fout))
         }
@@ -79,7 +85,7 @@ fn filter_from(matches: &ArgMatches) -> Filter {
         strip_right: length("strip-right").unwrap_or(0),
         trunc_len: length("trunc-len"),
         trunc_keep: length("trunc-keep"),
-        trunc_qual: matches.get_one::<u8>("trunc-qual").copied(),
+        trunc_qual: matches.get_one::<u8>("trunc-qual").map(|&q| i16::from(q)),
         trunc_ee: matches.get_one::<f64>("trunc-prob").copied(),
         trunc_rate: matches.get_one::<f64>("trunc-rate").copied(),
         min_len: length("min").unwrap_or(1),
@@ -87,10 +93,31 @@ fn filter_from(matches: &ArgMatches) -> Filter {
         max_ns: length("bad"),
         max_ee: matches.get_one::<f64>("prob").copied(),
         max_rate: matches.get_one::<f64>("prob-rate").copied(),
-        min_qual: matches.get_one::<u8>("min-qual").copied().unwrap_or(0),
+        min_qual: matches
+            .get_one::<u8>("min-qual")
+            .map_or(0, |&q| i16::from(q)),
         min_size: matches.get_one::<u64>("min-size").copied().unwrap_or(1),
         max_size: matches.get_one::<u64>("max-size").copied(),
+        offset: ascii(matches),
+        min_score: matches.get_one::<i16>("qmin").copied().unwrap_or(0),
+        max_score: max_score(matches),
     }
+}
+
+/// the ASCII offset of quality symbols.
+fn ascii(matches: &ArgMatches) -> u8 {
+    matches
+        .get_one::<String>("ascii")
+        .map_or(33, |a| a.parse().unwrap())
+}
+
+/// the highest accepted quality score: by default the highest the offset
+/// can encode in printable ASCII.
+fn max_score(matches: &ArgMatches) -> i16 {
+    matches
+        .get_one::<i16>("qmax")
+        .copied()
+        .unwrap_or(126 - i16::from(ascii(matches)))
 }
 
 fn label_from(matches: &ArgMatches) -> Label {
@@ -148,7 +175,11 @@ impl Qualf {
             1
         };
         let qual = r.is_fastq().then(|| r.qual());
-        (self.filter.apply(r.seq(), qual, size), size)
+        let outcome = self
+            .filter
+            .apply(r.seq(), qual, size)
+            .unwrap_or_else(|e| fail(&format!("{e} in read {}", r.id())));
+        (outcome, size)
     }
 
     /// writes the trimmed record, as the `ordinal`th of its output.
@@ -423,9 +454,66 @@ fn main() {
                 .long("label-suffix")
                 .value_name("SUFFIX")
                 .help("Append this text to output labels"),
+        )
+        .arg(
+            Arg::new("ascii")
+                .long("ascii")
+                .value_name("OFFSET")
+                .value_parser(["33", "64"])
+                .help("ASCII offset of quality scores, default to 33"),
+        )
+        .arg(
+            Arg::new("qmin")
+                .long("qmin")
+                .value_name("QUAL")
+                .allow_negative_numbers(true)
+                .value_parser(value_parser!(i16))
+                .help("Minimum quality score accepted in the input, default to 0"),
+        )
+        .arg(
+            Arg::new("qmax")
+                .long("qmax")
+                .value_name("QUAL")
+                .allow_negative_numbers(true)
+                .value_parser(value_parser!(i16))
+                .help("Maximum quality score accepted in the input, default to 126 - ascii"),
+        )
+        .arg(
+            Arg::new("fasta-width")
+                .long("fasta-width")
+                .value_name("WIDTH")
+                .value_parser(value_parser!(usize))
+                .help("Wrap FASTA sequence lines at this width, default to 0 (no wrapping)"),
+        )
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .action(ArgAction::SetTrue)
+                .help("Do not print the summary of kept and discarded sequences"),
         );
 
     let matches = command.get_matches_mut();
+
+    let (offset, min_score, max_score) = (
+        i16::from(ascii(&matches)),
+        matches.get_one::<i16>("qmin").copied().unwrap_or(0),
+        max_score(&matches),
+    );
+    let range_error = if min_score > max_score {
+        Some("--qmin cannot be greater than --qmax")
+    } else if offset + min_score < 33 {
+        Some("the sum of --ascii and --qmin must be at least 33")
+    } else if offset + max_score > 126 {
+        Some("the sum of --ascii and --qmax must be at most 126")
+    } else {
+        None
+    };
+    if let Some(message) = range_error {
+        command
+            .error(clap::error::ErrorKind::ValueValidation, message)
+            .exit();
+    }
 
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => open(f),
@@ -470,12 +558,17 @@ fn main() {
         None => Box::new(io::stdout()),
     };
 
-    let mut writer = Writer::new(fout, as_fasta);
+    let width = matches
+        .get_one::<usize>("fasta-width")
+        .copied()
+        .unwrap_or(0);
+
+    let mut writer = Writer::new(fout, as_fasta, width);
 
     let optional = |name: &str| {
         matches
             .get_one::<String>(name)
-            .map(|f| Writer::new(create(f), as_fasta))
+            .map(|f| Writer::new(create(f), as_fasta, width))
     };
 
     let mut discard = optional("discard");
@@ -491,6 +584,9 @@ fn main() {
 
     // ordinals of kept and discarded sequences, for --relabel
     let (mut kept, mut discarded) = (0, 0);
+
+    // kept sequences (or pairs) with bases removed
+    let mut truncated = 0;
 
     loop {
         // Since FASTQ uses '@' for both the description header and a quality symbol, there is no
@@ -528,6 +624,9 @@ fn main() {
             }
         } else {
             kept += 1;
+            if outcome.truncated || rev.as_ref().is_some_and(|(o, _)| o.truncated) {
+                truncated += 1;
+            }
             qualf.write(Some(&mut writer), &r, &outcome, size, kept);
             if let Some((o, s)) = &rev {
                 qualf.write(rev_writer.as_mut(), &r2, o, *s, kept);
@@ -545,5 +644,11 @@ fn main() {
     .flatten()
     {
         w.flush();
+    }
+
+    if !matches.get_flag("quiet") {
+        eprintln!(
+            "{kept} sequences kept (of which {truncated} truncated), {discarded} sequences discarded."
+        );
     }
 }

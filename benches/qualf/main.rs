@@ -134,6 +134,7 @@ fn bench_filter(c: &mut Criterion) {
                     .filter(|r| {
                         !filter
                             .apply(r.seq(), Some(r.qual()), abundance(r.id()))
+                            .unwrap()
                             .discarded
                     })
                     .count()
