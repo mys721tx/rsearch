@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "sqtrim"
 harness = false
+
+[[bench]]
+name = "sqfilt"
+harness = false
