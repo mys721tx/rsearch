@@ -334,7 +334,7 @@ fn limits_differences() {
         ),
         (&["--max-diff-pct", "9"], true, ""),
     ] {
-        let merged = merge_ok("diffs", args, &fwd, &rev);
+        let merged = merge_ok("limits", args, &fwd, &rev);
         if merges {
             assert_eq!(merged.merged, expected, "{args:?}");
             assert_eq!(merged.ee_table, "0.007000\t0.007000\t3\t0\n");
