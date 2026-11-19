@@ -351,3 +351,34 @@ fn pipeline_expected_errors_of_trimmed_reads() {
         expected
     );
 }
+
+#[test]
+fn rejects_invalid_abundances() {
+    // vsearch --fastx_filter reads the abundance of every read, and writes
+    // the reads before the one that fails, trimmed: here kept and
+    // discarded together
+    for (bad, message) in [
+        ("z;size=0", "zero"),
+        ("z;size=9223372036854775808", "range"),
+    ] {
+        let input = fastq(&[
+            ("a;size=1", "ACGT", "IIII"),
+            ("b", "AC", "II"),
+            (bad, "ACGT", "IIII"),
+            ("c", "ACGT", "IIII"),
+        ]);
+        let output = run(&["--strip-left", "2"], &input);
+        assert_eq!(output.status.code(), Some(1), "{bad}");
+        let expected = fastq(&[("a;size=1", "GT", "II"), ("b", "", "")]);
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{bad}: {stderr}");
+    }
+    let input = fasta(&[("a;size=1", "ACGT"), ("z;size=0", "AC")]);
+    let output = run(&["--len", "2"], &input);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        fasta(&[("a;size=1", "AC")])
+    );
+}
