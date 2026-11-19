@@ -85,3 +85,7 @@ harness = false
 [[bench]]
 name = "fqstat"
 harness = false
+
+[[bench]]
+name = "eestat"
+harness = false
