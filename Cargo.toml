@@ -117,3 +117,7 @@ harness = false
 [[bench]]
 name = "udbinfo"
 harness = false
+
+[[bench]]
+name = "udbstat"
+harness = false
