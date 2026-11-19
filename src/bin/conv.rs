@@ -11,6 +11,7 @@ use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
 
 use rsearch::fastx::{Format, Reader, Record};
+use rsearch::label::checked_abundance;
 use rsearch::quality::Conversion;
 use rsearch::sff;
 use rsearch::writer::Writer;
@@ -336,6 +337,12 @@ fn convert_fastx<R: BufRead>(
                 warn(&warning);
             }
             break;
+        }
+
+        // vsearch reads, and checks, the abundance of every read, before
+        // its scores; it reads none from SFF
+        if let Err(e) = checked_abundance(record.header()) {
+            out.fail(&format!("{e} in read {}", record.header()));
         }
 
         if is_fasta {
