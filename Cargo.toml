@@ -57,3 +57,7 @@ harness = false
 [[bench]]
 name = "getseq"
 harness = false
+
+[[bench]]
+name = "subseq"
+harness = false
