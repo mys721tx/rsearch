@@ -6,6 +6,7 @@ pub mod label;
 pub mod options;
 pub mod quality;
 pub mod random;
+pub mod report;
 pub mod scramble;
 pub mod select;
 pub mod sff;
