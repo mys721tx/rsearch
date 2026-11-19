@@ -216,10 +216,10 @@ fn joins_empty_input() {
 
 #[test]
 fn rejects_fasta() {
-    let fasta = ">a\nAC\n";
+    let (fasta, forward, reverse) = (">a\nAC\n", self::forward(), self::reverse());
     for (forward, reverse) in [
-        (fasta, &self::reverse()),
-        (&self::forward(), fasta),
+        (fasta, reverse.as_str()),
+        (forward.as_str(), fasta),
         ("", fasta),
     ] {
         let output = run("fasta", &[], forward, reverse);
