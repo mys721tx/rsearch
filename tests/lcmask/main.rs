@@ -86,7 +86,7 @@ fn long() -> String {
         (
             "h",
             "CCGTAATGCCTTTCCCTAACAGAGTTTTTCGAACTCGTGTATATATATATATATATATATATAT\
-             ATATATATTGTCGAGCGACGGAATTAGATCAGTTAAATGGCAGAAAACTGGCAGGGCT",
+             ATATATTGTCGAGCGACGGAATTAGATCAGTTAAATGGCAGAAAACTGGCAGGGCT",
         ),
         ("i", &"A".repeat(100)),
         (
@@ -147,7 +147,7 @@ fn masks_across_windows() {
         (
             "h",
             "CCGTAATGCCTTTCCCTAACAGAGTTTTTCGAACTCGTGtatatatatatatatatatatatat\
-             atatatatTGTCGAGCGACGGAATTAGATCAGTTAAATGGCAGAAAACTGGCAGGGCT",
+             atatatTGTCGAGCGACGGAATTAGATCAGTTAAATGGCAGAAAACTGGCAGGGCT",
         ),
         ("i", &"a".repeat(100)),
         (
