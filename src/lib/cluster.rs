@@ -733,6 +733,19 @@ pub fn reverse_complement_keeping_case(dest: &mut Vec<u8>, seq: &[u8]) {
     dest.extend(seq.iter().rev().map(|&c| COMPLEMENT[usize::from(c)]));
 }
 
+/// The complement of a base, keeping its case, as vsearch's.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::cluster::complement;
+/// assert_eq!(complement(b'U'), b'A');
+/// assert_eq!(complement(b'r'), b'y');
+/// assert_eq!(complement(b'X'), b'N');
+/// ```
+pub fn complement(base: u8) -> u8 {
+    COMPLEMENT[usize::from(base)]
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

@@ -3,6 +3,7 @@ pub mod dust;
 pub mod fastx;
 pub mod filter;
 pub mod label;
+pub mod merge;
 pub mod options;
 pub mod quality;
 pub mod random;
