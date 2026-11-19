@@ -81,3 +81,7 @@ harness = false
 [[bench]]
 name = "lcmask"
 harness = false
+
+[[bench]]
+name = "fqstat"
+harness = false
