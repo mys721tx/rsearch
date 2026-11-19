@@ -736,3 +736,52 @@ fn pipeline_fastx_filter_relabel() {
     let args = ["--relabel", "R", "--sizeout"];
     assert_eq!(pipe(relab, &args, &["--fasta"], &input), expected);
 }
+
+#[test]
+fn rejects_invalid_abundances() {
+    // vsearch --fastq_convert and --fasta2fastq read the abundance of every
+    // read, before its scores, and write the reads before the one that fails
+    for (bad, message) in [
+        ("z;size=0", "zero"),
+        ("z;size=9223372036854775808", "range"),
+    ] {
+        let input = fastq(&[("a;size=1", "ACGT", "IIII"), (bad, "ACGT", "II~I")]);
+        for (args, expected) in [
+            (
+                &["--qmax", "41"][..],
+                fastq(&[("a;size=1", "ACGT", "IIII")]),
+            ),
+            (&["--qmax", "41", "--fasta"], fasta(&[("a;size=1", "ACGT")])),
+        ] {
+            let output = run(args, &input);
+            assert_eq!(output.status.code(), Some(1), "{bad} {args:?}");
+            assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(message), "{bad} {args:?}: {stderr}");
+        }
+        let input = fasta(&[("a;size=1", "ACGT"), (bad, "AC")]);
+        let output = run(&[], &input);
+        assert_eq!(output.status.code(), Some(1), "{bad}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            fastq(&[("a;size=1", "ACGT", "JJJJ")])
+        );
+    }
+}
+
+#[test]
+fn reads_no_abundance_from_sff() {
+    // vsearch --sff_convert reads no abundance from read names
+    let read = SffRead {
+        name: "r1;size=0",
+        bases: "ACGT",
+        quals: vec![40, 30, 20, 10],
+        clip_qual: (0, 0),
+        clip_adapter: (0, 0),
+    };
+    let input = sff_file(&[read], false, 1, b".sff");
+    assert_eq!(
+        conv_sff(&[], &input),
+        fastq(&[("r1;size=0", "ACGT", "I?5+")])
+    );
+}
