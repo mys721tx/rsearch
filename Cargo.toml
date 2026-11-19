@@ -105,3 +105,7 @@ harness = false
 [[bench]]
 name = "mergpa"
 harness = false
+
+[[bench]]
+name = "redig"
+harness = false
