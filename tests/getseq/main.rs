@@ -282,3 +282,31 @@ fn reads_and_writes_files() {
     assert_eq!(stdout, "");
     assert_eq!(written, pick(&[0, 2, 6]));
 }
+
+#[test]
+fn rejects_invalid_abundances() {
+    // vsearch reads the abundance of every record, selected or not, and
+    // writes the records before the one that fails
+    for (bad, message) in [
+        ("z;size=0", "zero"),
+        ("z;size=9223372036854775808", "range"),
+    ] {
+        let input = fasta(&[("a;size=1", "AC"), ("b", "GG"), (bad, "TT"), ("c", "CC")]);
+        let path = temp_path(&format!("abundance-{message}"));
+        let args = ["--label", "b", "--discarded", path.to_str().unwrap()];
+        let output = run(&args, &input);
+        let discarded = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{bad}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            fasta(&[("b", "GG")])
+        );
+        assert_eq!(discarded, fasta(&[("a;size=1", "AC")]));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{bad}: {stderr}");
+        // whatever the selection
+        let output = run(&["--word", "x"], &input);
+        assert_eq!(output.status.code(), Some(1), "{bad}");
+    }
+}
