@@ -92,7 +92,18 @@ impl Grid {
 
     /// counts a read, or fails at its first score out of range.
     fn add(&mut self, qual: &[u8]) -> Result<(), QualityError> {
-        if let Some(&symbol) = qual.iter().find(|&&q| !self.accepted[usize::from(q)]) {
+        // the lowest and highest symbols, in a fold that vectorizes; the
+        // first symbol out of range is looked for only when there is one
+        let (low, high) = qual
+            .iter()
+            .fold((u8::MAX, 0), |(low, high), &q| (low.min(q), high.max(q)));
+        if !qual.is_empty()
+            && !(self.accepted[usize::from(low)] && self.accepted[usize::from(high)])
+        {
+            let symbol = *qual
+                .iter()
+                .find(|&&q| !self.accepted[usize::from(q)])
+                .unwrap();
             return Err(QualityError {
                 score: (i64::from(symbol) - self.offset) as i16,
                 min_score: self.min_score as i16,
