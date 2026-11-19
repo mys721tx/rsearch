@@ -121,3 +121,7 @@ harness = false
 [[bench]]
 name = "udbstat"
 harness = false
+
+[[bench]]
+name = "dbornt"
+harness = false
