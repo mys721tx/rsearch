@@ -93,3 +93,7 @@ harness = false
 [[bench]]
 name = "eegrid"
 harness = false
+
+[[bench]]
+name = "syncpa"
+harness = false
