@@ -65,3 +65,7 @@ harness = false
 [[bench]]
 name = "fqchar"
 harness = false
+
+[[bench]]
+name = "shufl"
+harness = false
