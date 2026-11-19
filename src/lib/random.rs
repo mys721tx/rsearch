@@ -143,6 +143,43 @@ pub fn shuffle<T>(data: &mut [T], generator: &mut impl Generator) {
     }
 }
 
+/// draws `n` of the reads that `masses` count per record, as vsearch's
+/// `--fastx_subsample`. It uses selection sampling over the reads in order,
+/// each kept when a draw from the reads left falls below the number still
+/// wanted. Returns how many reads of each record were drawn. `n` must not
+/// exceed the total; when it equals it, every read is drawn without a draw.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::random::{Mt19937_64, draw};
+/// // vsearch --fastx_subsample --sizein --randseed 1 --sample_size 3
+/// let drawn = draw(&[5, 1, 1, 2, 10, 1], 3, &mut Mt19937_64::new(1));
+/// assert_eq!(drawn, [2, 0, 0, 1, 0, 0]);
+/// ```
+pub fn draw(masses: &[u64], n: u64, generator: &mut impl Generator) -> Vec<u64> {
+    let total: u64 = masses.iter().sum();
+    assert!(n <= total, "cannot draw more reads than there are");
+    if n == total {
+        return masses.to_vec();
+    }
+    let mut drawn = vec![0; masses.len()];
+    let (mut left, mut checked) = (n, 0);
+    let (mut record, mut in_record) = (0, 0);
+    while left > 0 {
+        if bounded(generator, total - checked) < left {
+            drawn[record] += 1;
+            left -= 1;
+        }
+        checked += 1;
+        in_record += 1;
+        if in_record >= masses[record] {
+            record += 1;
+            in_record = 0;
+        }
+    }
+    drawn
+}
+
 /// returns the seed of a run: the one given, used as its unsigned bit
 /// pattern as vsearch does, or for none or 0 one from the system.
 pub fn seed(given: Option<i64>) -> u64 {
