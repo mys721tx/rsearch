@@ -105,17 +105,20 @@ pub struct Merged {
     pub reverse_errors: usize,
 }
 
+/// The pairs of quality symbols, 128 by 128.
+const CELLS: usize = 128 * 128;
+
 /// Scores per pair of quality symbols, indexed by symbol.
 struct Tables {
     /// The error probability of each symbol.
     error: [f64; 128],
     /// The merged symbol when two bases agree, and when they differ (the
     /// higher symbol first).
-    same: Vec<u8>,
-    diff: Vec<u8>,
+    same: Box<[u8; CELLS]>,
+    diff: Box<[u8; CELLS]>,
     /// The alignment score of a match and of a mismatch, in bits.
-    match_score: Vec<f64>,
-    mismatch_score: Vec<f64>,
+    match_score: Box<[f64; CELLS]>,
+    mismatch_score: Box<[f64; CELLS]>,
 }
 
 /// The error probability of a symbol: 10^(-Q/10), and 0.75 below Q2.
@@ -148,10 +151,10 @@ impl Tables {
     fn new(settings: &Settings) -> Tables {
         let mut tables = Tables {
             error: [0.0; 128],
-            same: vec![0; 128 * 128],
-            diff: vec![0; 128 * 128],
-            match_score: vec![0.0; 128 * 128],
-            mismatch_score: vec![0.0; 128 * 128],
+            same: Box::new([0; CELLS]),
+            diff: Box::new([0; CELLS]),
+            match_score: Box::new([0.0; CELLS]),
+            mismatch_score: Box::new([0.0; CELLS]),
         };
         for x in 33..=126u8 {
             let px = probability(x, settings.offset);
@@ -173,22 +176,24 @@ impl Tables {
     }
 }
 
-/// The 2-bit code of a base: A 0, C 1, G 2, T and U 3, others 0.
-fn two_bit(base: u8) -> u32 {
-    match base {
-        b'C' | b'c' => 1,
-        b'G' | b'g' => 2,
-        b'T' | b't' | b'U' | b'u' => 3,
-        _ => 0,
+/// The code of each base for 5-mers: A 0, C 1, G 2, T and U 3, and 4 for
+/// the ambiguous bases no 5-mer may cover.
+const CODE: [u8; 256] = {
+    let mut code = [4u8; 256];
+    let bases = [(b'A', 0), (b'C', 1), (b'G', 2), (b'T', 3), (b'U', 3)];
+    let mut i = 0;
+    while i < bases.len() {
+        let (base, value) = bases[i];
+        code[base as usize] = value;
+        code[base.to_ascii_lowercase() as usize] = value;
+        i += 1;
     }
-}
+    code
+};
 
-/// Whether a base is ambiguous, so no 5-mer covers it.
-fn ambiguous(base: u8) -> u32 {
-    u32::from(!matches!(
-        base,
-        b'A' | b'C' | b'G' | b'T' | b'U' | b'a' | b'c' | b'g' | b't' | b'u'
-    ))
+/// The cell of a pair of quality symbols in the score tables.
+fn cell(forward: u8, reverse: u8) -> usize {
+    (usize::from(forward & 127) << 7) | usize::from(reverse & 127)
 }
 
 /// Merges pairs, reusing its buffers from pair to pair.
@@ -198,6 +203,9 @@ pub struct Merger {
     /// The pair being merged, upper-cased, N scored 0.
     forward: (Vec<u8>, Vec<u8>),
     reverse: (Vec<u8>, Vec<u8>),
+    /// The reverse complement of the reverse read and its scores reversed,
+    /// so that both reads run the same way.
+    rc: (Vec<u8>, Vec<u8>),
     /// The forward positions of each 5-mer, chained and biased by one.
     chain_head: Vec<u32>,
     chain_next: Vec<u32>,
@@ -213,6 +221,7 @@ impl Merger {
             settings,
             forward: (Vec::new(), Vec::new()),
             reverse: (Vec::new(), Vec::new()),
+            rc: (Vec::new(), Vec::new()),
             chain_head: vec![0; 1 << (2 * K)],
             chain_next: Vec::new(),
             diagonals: Vec::new(),
@@ -264,6 +273,11 @@ impl Merger {
                 }
             }
         }
+        let (rc, rc_qual) = &mut self.rc;
+        rc.clear();
+        rc.extend(self.reverse.0.iter().rev().map(|&base| complement(base)));
+        rc_qual.clear();
+        rc_qual.extend(self.reverse.1.iter().rev());
         match self.overlap() {
             Ok(overlap) => {
                 self.join(overlap);
@@ -302,17 +316,19 @@ impl Merger {
 
     /// counts the 5-mers shared on each diagonal.
     fn count_diagonals(&mut self) {
-        let (fwd, rev) = (&self.forward.0, &self.reverse.0);
+        let (fwd, rc) = (&self.forward.0, &self.rc.0);
         let mask = (1u32 << (2 * K)) - 1;
         self.chain_head.fill(0);
         if self.chain_next.len() <= fwd.len() {
             self.chain_next.resize(fwd.len() + 1, 0);
         }
-        let (mut bad, mut kmer) = (mask, 0u32);
+        // the bases since the last ambiguous one, and the last 5-mer
+        let (mut run, mut kmer) = (0, 0u32);
         for (pos, &base) in fwd.iter().enumerate() {
-            bad = ((bad << 2) | ambiguous(base)) & mask;
-            kmer = ((kmer << 2) | two_bit(base)) & mask;
-            if bad == 0 {
+            let code = CODE[usize::from(base)];
+            run = if code == 4 { 0 } else { run + 1 };
+            kmer = ((kmer << 2) | u32::from(code & 3)) & mask;
+            if run >= K {
                 // the start of the 5-mer, biased by one
                 let entry = (pos + 2 - K) as u32;
                 self.chain_next[entry as usize] = self.chain_head[kmer as usize];
@@ -321,20 +337,18 @@ impl Merger {
         }
 
         self.diagonals.clear();
-        self.diagonals.resize(fwd.len() + rev.len(), 0);
-        let length = rev.len() as i64;
-        let (mut bad, mut kmer) = (mask, 0u32);
-        for (pos, &base) in rev.iter().rev().enumerate() {
-            bad = ((bad << 2) | ambiguous(base)) & mask;
-            kmer = ((kmer << 2) | two_bit(complement(base))) & mask;
-            if bad == 0 {
-                let base_diagonal = length - (pos as i64 + 1 - K as i64);
+        self.diagonals.resize(fwd.len() + rc.len(), 0);
+        let (mut run, mut kmer) = (0, 0u32);
+        for (pos, &base) in rc.iter().enumerate() {
+            let code = CODE[usize::from(base)];
+            run = if code == 4 { 0 } else { run + 1 };
+            kmer = ((kmer << 2) | u32::from(code & 3)) & mask;
+            if run >= K {
+                // the diagonal less the forward start, biased by one
+                let base_diagonal = rc.len() + K - 2 - pos;
                 let mut entry = self.chain_head[kmer as usize];
                 while entry != 0 {
-                    let diagonal = base_diagonal + i64::from(entry) - 1;
-                    if diagonal >= 0 {
-                        self.diagonals[diagonal as usize] += 1;
-                    }
+                    self.diagonals[base_diagonal + entry as usize] += 1;
                     entry = self.chain_next[entry as usize];
                 }
             }
@@ -351,8 +365,10 @@ impl Merger {
         };
         self.count_diagonals();
         let (fwd, fwd_qual) = (&self.forward.0, &self.forward.1);
-        let (rev, rev_qual) = (&self.reverse.0, &self.reverse.1);
-        let (fwd_len, rev_len) = (fwd.len(), rev.len());
+        let (rc, rc_qual) = (&self.rc.0, &self.rc.1);
+        let (fwd_len, rev_len) = (fwd.len(), rc.len());
+        let (match_score, mismatch_score) =
+            (&*self.tables.match_score, &*self.tables.mismatch_score);
 
         let (mut best_score, mut best_i, mut best_diffs) = (0.0, 0, 0);
         let (mut hits, mut kmers) = (0, false);
@@ -364,18 +380,20 @@ impl Merger {
             let fwd_overhang = i.saturating_sub(rev_len);
             let rev_overhang = i.saturating_sub(fwd_len);
             let overlap = i - fwd_overhang - rev_overhang;
-            let fwd_start = fwd_len - fwd_overhang - 1;
-            let rev_start = rev_len - rev_overhang - overlap;
+            // both run back from the 3' end of the forward read's overlap
+            let fwd_end = fwd_len - fwd_overhang;
+            let f = fwd[fwd_end - overlap..fwd_end].iter().rev();
+            let fq = fwd_qual[fwd_end - overlap..fwd_end].iter().rev();
+            let r = rc[rev_overhang..rev_overhang + overlap].iter().rev();
+            let rq = rc_qual[rev_overhang..rev_overhang + overlap].iter().rev();
             let (mut score, mut high, mut drop) = (0.0, 0.0f64, 0.0);
             let mut diffs = 0;
-            for j in 0..overlap {
-                let (f, r) = (fwd_start - j, rev_start + j);
-                let cell = usize::from(fwd_qual[f]) * 128 + usize::from(rev_qual[r]);
-                if fwd[f] == complement(rev[r]) {
-                    score += self.tables.match_score[cell];
+            for (((&f, &fq), &r), &rq) in f.zip(fq).zip(r).zip(rq) {
+                if f == r {
+                    score += match_score[cell(fq, rq)];
                     high = high.max(score);
                 } else {
-                    score += self.tables.mismatch_score[cell];
+                    score += mismatch_score[cell(fq, rq)];
                     diffs += 1;
                     if score < high - drop {
                         drop = high - score;
@@ -417,9 +435,9 @@ impl Merger {
     /// builds the merged read from the overlap.
     fn join(&mut self, overlap: usize) {
         let (fwd, fwd_qual) = (&self.forward.0, &self.forward.1);
-        let (rev, rev_qual) = (&self.reverse.0, &self.reverse.1);
+        let (rc, rc_qual) = (&self.rc.0, &self.rc.1);
         let tables = &self.tables;
-        let error = |symbol: u8| tables.error[usize::from(symbol)];
+        let error = |symbol: u8| tables.error[usize::from(symbol & 127)];
         let m = &mut self.merged;
         m.seq.clear();
         m.qual.clear();
@@ -428,64 +446,49 @@ impl Merger {
 
         // the forward read before the overlap
         let fwd_overhang = fwd.len().saturating_sub(overlap);
-        for f in 0..fwd_overhang {
-            m.seq.push(fwd[f]);
-            m.qual.push(fwd_qual[f]);
-            m.ee_merged += error(fwd_qual[f]);
-            m.ee_forward += error(fwd_qual[f]);
+        m.seq.extend_from_slice(&fwd[..fwd_overhang]);
+        m.qual.extend_from_slice(&fwd_qual[..fwd_overhang]);
+        for &symbol in &fwd_qual[..fwd_overhang] {
+            m.ee_merged += error(symbol);
+            m.ee_forward += error(symbol);
         }
 
         // the overlap, after any reverse bases past the end of the forward
         // read
         let rev_overhang = overlap.saturating_sub(fwd.len());
-        let mut r = rev.len() as i64 - 1 - rev_overhang as i64;
-        let mut f = fwd_overhang;
-        while f < fwd.len() && r >= 0 {
-            let (fwd_base, fq) = (fwd[f], fwd_qual[f]);
-            let (rev_base, rq) = (complement(rev[r as usize]), rev_qual[r as usize]);
+        let length = (fwd.len() - fwd_overhang).min(rc.len() - rev_overhang);
+        let f = fwd[fwd_overhang..][..length].iter();
+        let fq = fwd_qual[fwd_overhang..][..length].iter();
+        let r = rc[rev_overhang..][..length].iter();
+        let rq = rc_qual[rev_overhang..][..length].iter();
+        for (((&fwd_base, &fq), &rev_base), &rq) in f.zip(fq).zip(r).zip(rq) {
             let (base, symbol) = if rev_base == b'N' {
                 (fwd_base, fq)
             } else if fwd_base == b'N' {
                 (rev_base, rq)
             } else if fwd_base == rev_base {
-                (
-                    fwd_base,
-                    tables.same[usize::from(fq) * 128 + usize::from(rq)],
-                )
+                (fwd_base, tables.same[cell(fq, rq)])
             } else if fq > rq {
-                (
-                    fwd_base,
-                    tables.diff[usize::from(fq) * 128 + usize::from(rq)],
-                )
+                (fwd_base, tables.diff[cell(fq, rq)])
             } else {
-                (
-                    rev_base,
-                    tables.diff[usize::from(rq) * 128 + usize::from(fq)],
-                )
+                (rev_base, tables.diff[cell(rq, fq)])
             };
-            if base != fwd_base {
-                m.forward_errors += 1;
-            }
-            if base != rev_base {
-                m.reverse_errors += 1;
-            }
+            m.forward_errors += usize::from(base != fwd_base);
+            m.reverse_errors += usize::from(base != rev_base);
             m.seq.push(base);
             m.qual.push(symbol);
             m.ee_merged += error(symbol);
             m.ee_forward += error(fq);
             m.ee_reverse += error(rq);
-            f += 1;
-            r -= 1;
         }
 
         // the reverse read after the overlap
-        while r >= 0 {
-            let symbol = rev_qual[r as usize];
-            m.seq.push(complement(rev[r as usize]));
-            m.qual.push(symbol);
+        let rest = rev_overhang + length;
+        m.seq.extend_from_slice(&rc[rest..]);
+        m.qual.extend_from_slice(&rc_qual[rest..]);
+        for &symbol in &rc_qual[rest..] {
             m.ee_merged += error(symbol);
             m.ee_reverse += error(symbol);
-            r -= 1;
         }
     }
 }
