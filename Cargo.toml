@@ -77,3 +77,7 @@ harness = false
 [[bench]]
 name = "scrmbl"
 harness = false
+
+[[bench]]
+name = "lcmask"
+harness = false
