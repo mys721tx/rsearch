@@ -217,3 +217,49 @@ impl Index {
         self.without_words
     }
 }
+
+/// counts, for each word, the sequences of `seqs` holding it, as vsearch's
+/// database index does; and the sequences holding no word.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::words::word_counts;
+/// let (counts, without) = word_counts(3, [&b"ACGTACG"[..], b"ACG", b"AC"]);
+/// // ACG (6) in two sequences, CGT (27) in one
+/// assert_eq!((counts[6], counts[27], without), (2, 1, 1));
+/// ```
+pub fn word_counts<'a>(word_len: u32, seqs: impl IntoIterator<Item = &'a [u8]>) -> (Vec<u32>, u64) {
+    let mut uniquer = Uniquer::new(word_len);
+    let mut counts = vec![0u32; 1 << (2 * word_len)];
+    let mut without_words = 0;
+    for seq in seqs {
+        let list = uniquer.words(seq);
+        if list.is_empty() {
+            without_words += 1;
+        }
+        for &word in list {
+            counts[word as usize] += 1;
+        }
+    }
+    (counts, without_words)
+}
+
+/// the reverse complement of `word`, of `word_len` residues.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::words::reverse_complement;
+/// // AAC and GTT
+/// assert_eq!(reverse_complement(0b000001, 3), 0b101111);
+/// // ACGT is its own
+/// assert_eq!(reverse_complement(0b00011011, 4), 0b00011011);
+/// ```
+pub fn reverse_complement(word: u32, word_len: u32) -> u32 {
+    let mut word = word;
+    let mut reverse = 0;
+    for _ in 0..word_len {
+        reverse = (reverse << 2) | (3 - (word & 3));
+        word >>= 2;
+    }
+    reverse
+}

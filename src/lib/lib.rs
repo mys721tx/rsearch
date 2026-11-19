@@ -5,6 +5,7 @@ pub mod filter;
 pub mod label;
 pub mod merge;
 pub mod options;
+pub mod orient;
 pub mod quality;
 pub mod random;
 pub mod report;
