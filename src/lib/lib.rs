@@ -1,7 +1,9 @@
+pub mod accept;
 pub mod cluster;
 pub mod dust;
 pub mod fastx;
 pub mod filter;
+pub mod hits;
 pub mod label;
 pub mod merge;
 pub mod options;
