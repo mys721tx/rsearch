@@ -109,3 +109,7 @@ harness = false
 [[bench]]
 name = "redig"
 harness = false
+
+[[bench]]
+name = "mkudb"
+harness = false
