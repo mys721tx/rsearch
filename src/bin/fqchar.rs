@@ -38,10 +38,10 @@ struct Counts {
     reads: u64,
     residues: u64,
     /// Per residue, upper-cased: count and longest run.
-    letters: [u64; 256],
+    letters: [[u64; 256]; 4],
     max_run: [u64; 256],
     /// Per score symbol: count and reads ending in a run of it.
-    scores: [u64; 256],
+    scores: [[u64; 256]; 4],
     tails: [u64; 256],
     /// Lowest and highest score symbol of an N.
     n_scores: (u8, u8),
@@ -52,9 +52,9 @@ impl Counts {
         Counts {
             reads: 0,
             residues: 0,
-            letters: [0; 256],
+            letters: [[0; 256]; 4],
             max_run: [0; 256],
-            scores: [0; 256],
+            scores: [[0; 256]; 4],
             tails: [0; 256],
             n_scores: (u8::MAX, 0),
         }
@@ -65,24 +65,30 @@ impl Counts {
     fn add(&mut self, seq: &[u8], qual: &[u8], tail: usize) {
         self.reads += 1;
         self.residues += seq.len() as u64;
-        // as vsearch, a run's length is its number of repeats
-        let mut run: Option<(u8, u64)> = None;
-        for (&base, &score) in seq.iter().zip(qual) {
+        let (mut n_low, mut n_high) = self.n_scores;
+        // the base of the current run, upper-cased, and its repeats
+        let (mut base_run, mut repeats) = (0u8, 0u64);
+        for (i, (&base, &score)) in seq.iter().zip(qual).enumerate() {
+            // four tables in turn, so that consecutive increments rarely
+            // wait on the same counter
+            self.letters[i & 3][usize::from(base)] += 1;
+            self.scores[i & 3][usize::from(score)] += 1;
             let base = base.to_ascii_uppercase();
-            self.letters[usize::from(base)] += 1;
-            self.scores[usize::from(score)] += 1;
-            if base == b'N' {
-                self.n_scores = (self.n_scores.0.min(score), self.n_scores.1.max(score));
-            }
-            run = match run {
-                Some((b, n)) if b == base => Some((b, n + 1)),
-                previous => {
-                    self.end_run(previous);
-                    Some((base, 0))
-                }
+            let is_n = base == b'N';
+            n_low = n_low.min(if is_n { score } else { u8::MAX });
+            n_high = n_high.max(if is_n { score } else { 0 });
+            // as vsearch, a run's length is its number of repeats; the
+            // longest is updated at every base, without a branch
+            repeats = if i > 0 && base == base_run {
+                repeats + 1
+            } else {
+                0
             };
+            base_run = base;
+            let longest = &mut self.max_run[usize::from(base)];
+            *longest = (*longest).max(repeats);
         }
-        self.end_run(run);
+        self.n_scores = (n_low, n_high);
         if qual.len() >= tail
             && let Some(&last) = qual.last()
             && qual[qual.len() - tail..].iter().all(|&s| s == last)
@@ -91,23 +97,24 @@ impl Counts {
         }
     }
 
-    fn end_run(&mut self, run: Option<(u8, u64)>) {
-        if let Some((base, n)) = run
-            && n > 0
-        {
-            let longest = &mut self.max_run[usize::from(base)];
-            *longest = (*longest).max(n);
-        }
-    }
-
     /// the report, as vsearch prints it.
     fn report(&self) -> String {
+        let sum = |tables: &[[u64; 256]; 4]| -> [u64; 256] {
+            std::array::from_fn(|c| tables.iter().map(|t| t[c]).sum())
+        };
+        let scores = sum(&self.scores);
+        // residues are counted as read, and reported upper-cased
+        let mut letters = sum(&self.letters);
+        for c in b'a'..=b'z' {
+            letters[usize::from(c.to_ascii_uppercase())] += letters[usize::from(c)];
+            letters[usize::from(c)] = 0;
+        }
         let mut out = format!("Read {} sequences.\n", self.reads);
         if self.reads == 0 {
             return out;
         }
-        let lowest = present(&self.scores).next().unwrap_or(0);
-        let highest = present(&self.scores).last().unwrap_or(0);
+        let lowest = present(&scores).next().unwrap_or(0);
+        let highest = present(&scores).last().unwrap_or(0);
         let encoding = Encoding::guess(lowest, highest);
         let offset = i16::from(encoding.offset());
         let (lowest_i, highest_i) = (i16::from(lowest), i16::from(highest));
@@ -136,8 +143,8 @@ impl Counts {
         });
         out.push_str("\nLetter          N   Freq MaxRun\n------ ---------- ------ ------\n");
         let percent = |count: u64| 100.0 * count as f64 / self.residues as f64;
-        for c in present(&self.letters) {
-            let count = self.letters[usize::from(c)];
+        for c in present(&letters) {
+            let count = letters[usize::from(c)];
             write!(
                 out,
                 "     {} {count:>10} {:>5.1}% {:>6}",
@@ -157,12 +164,12 @@ impl Counts {
             out.push('\n');
         }
         out.push_str("\nChar  ASCII    Freq       Tails\n----  -----  ------  ----------\n");
-        for c in present(&self.scores) {
+        for c in present(&scores) {
             writeln!(
                 out,
                 " '{}'  {c:>5}  {:>5.1}%  {:>10}",
                 char::from(c),
-                percent(self.scores[usize::from(c)]),
+                percent(scores[usize::from(c)]),
                 self.tails[usize::from(c)]
             )
             .unwrap();
