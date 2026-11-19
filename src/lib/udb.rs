@@ -15,7 +15,7 @@
 //! - the offset of each header, the headers each ended by a zero, the
 //!   length of each sequence, and the sequences, unpadded.
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 
 use crate::words::Index;
 
@@ -110,21 +110,38 @@ pub fn write<H: AsRef<[u8]>, S: AsRef<[u8]>>(
     Ok(())
 }
 
-/// Why a UDB file was refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a UDB file was refused, in vsearch's terms.
+#[derive(Debug)]
 pub enum UdbError {
     /// The file is shorter than the first header.
     Short,
-    /// A field of the first header is wrong, or the file is too short for
-    /// its number of sequences.
+    /// The file ends inside a part.
+    Truncated,
+    /// A field is wrong: a magic number, a count, an offset or a length.
     Invalid,
+    /// The file goes on after the sequences.
+    Trailing,
+    /// A header or a sequence longer than vsearch can hold.
+    TooLong(&'static str),
+    /// Reading failed.
+    Io(io::Error),
+}
+
+impl PartialEq for UdbError {
+    fn eq(&self, other: &UdbError) -> bool {
+        self.to_string() == other.to_string()
+    }
 }
 
 impl std::fmt::Display for UdbError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             UdbError::Short => write!(f, "invalid UDB file: shorter than its header"),
+            UdbError::Truncated => write!(f, "invalid UDB file: truncated"),
             UdbError::Invalid => write!(f, "invalid UDB file"),
+            UdbError::Trailing => write!(f, "invalid UDB file: data after its end"),
+            UdbError::TooLong(what) => write!(f, "invalid UDB file: a {what} too long"),
+            UdbError::Io(e) => write!(f, "cannot read: {e}"),
         }
     }
 }
@@ -228,5 +245,177 @@ impl Header {
             self.db_step(),
             self.db_accel(),
         )
+    }
+}
+
+/// The bytes vsearch reads at a time. The word list is checked a block at a
+/// time, and an invalid entry is thus found before a truncation further on.
+const BLOCK_BYTES: usize = 4096 * 4096;
+
+/// The longest header or sequence vsearch holds: `INT_MAX` less its
+/// buffer headroom.
+const MAX_LENGTH: u32 = i32::MAX as u32 - 2001;
+
+/// reads exactly `buf.len()` bytes.
+fn fill(input: &mut impl Read, buf: &mut [u8]) -> Result<(), UdbError> {
+    let mut done = 0;
+    while done < buf.len() {
+        match input.read(&mut buf[done..]) {
+            Ok(0) => return Err(UdbError::Truncated),
+            Ok(n) => done += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(UdbError::Io(e)),
+        }
+    }
+    Ok(())
+}
+
+/// reads exactly `n` bytes, allocating only as they arrive, so that a
+/// length spoiled in the file cannot ask for more memory than it holds.
+fn bytes(input: &mut impl Read, n: u64) -> Result<Vec<u8>, UdbError> {
+    let mut out = Vec::new();
+    loop {
+        match input.take(n - out.len() as u64).read_to_end(&mut out) {
+            Ok(_) => break,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(UdbError::Io(e)),
+        }
+    }
+    if (out.len() as u64) < n {
+        return Err(UdbError::Truncated);
+    }
+    Ok(out)
+}
+
+/// reads `n` 32-bit words.
+fn words(input: &mut impl Read, n: usize) -> Result<Vec<u32>, UdbError> {
+    let mut bytes = vec![0u8; 4 * n];
+    fill(input, &mut bytes)?;
+    Ok(bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w))
+        .collect())
+}
+
+/// A UDB file read whole but for its word list, which is checked and
+/// handed out a block at a time.
+pub struct Udb {
+    pub header: Header,
+    /// The number of sequences holding each word.
+    pub counts: Vec<u32>,
+    /// The number of entries in the word list.
+    pub words: u64,
+    /// Where each header starts in `headers`, and one more entry where the
+    /// headers end.
+    pub header_starts: Vec<u32>,
+    /// The headers, each ended by a zero.
+    pub headers: Vec<u8>,
+    pub lengths: Vec<u32>,
+    /// The sequences, one after the other.
+    pub sequences: Vec<u8>,
+}
+
+impl Udb {
+    /// reads a UDB file of `size` bytes, with vsearch's checks in vsearch's
+    /// order. `entries` gets the counts, the number of the first entry of a
+    /// block of the word list, and the block, once it is checked.
+    pub fn read(
+        input: &mut impl Read,
+        size: u64,
+        mut entries: impl FnMut(&[u32], u64, &[u32]),
+    ) -> Result<Udb, UdbError> {
+        let mut first = vec![0u8; 4 * HEADER_WORDS];
+        fill(input, &mut first).map_err(|e| match e {
+            UdbError::Truncated => UdbError::Short,
+            e => e,
+        })?;
+        let header = Header::parse(&first, size)?;
+        let sequences = header.sequences();
+
+        let counts = words(input, 1 << (2 * header.word_len()))?;
+        if counts.iter().any(|&c| c > sequences) {
+            return Err(UdbError::Invalid);
+        }
+        let total: u64 = counts.iter().map(|&c| u64::from(c)).sum();
+        if total > size / 4 {
+            return Err(UdbError::Invalid);
+        }
+        if words(input, 1)?[0] != MAGIC_WORDS {
+            return Err(UdbError::Invalid);
+        }
+        let block = (BLOCK_BYTES as u64 / 4).min(total) as usize;
+        let mut done = 0;
+        while done < total {
+            let n = block.min((total - done) as usize);
+            let list = words(input, n)?;
+            if list.iter().any(|&s| s >= sequences) {
+                return Err(UdbError::Invalid);
+            }
+            entries(&counts, done, &list);
+            done += n as u64;
+        }
+
+        let second = words(input, 8)?;
+        if second[0] != MAGIC_SEQUENCES
+            || second[1] != MAGIC_SEQUENCES_2
+            || second[2] != sequences
+            || second[7] != MAGIC_SEQUENCES_3
+        {
+            return Err(UdbError::Invalid);
+        }
+        let residues = u64::from(second[3]) | (u64::from(second[4]) << 32);
+        let header_bytes = u64::from(second[5]) | (u64::from(second[6]) << 32);
+
+        let mut header_starts = words(input, sequences as usize)?;
+        // the end of the last header, as vsearch keeps it: 32 bits
+        header_starts.push(header_bytes as u32);
+        let mut last = 0;
+        for pair in header_starts.windows(2) {
+            let (current, next) = (pair[0], pair[1]);
+            if current < last || u64::from(current) >= header_bytes || next <= current {
+                return Err(UdbError::Invalid);
+            }
+            if next - current - 1 > MAX_LENGTH {
+                return Err(UdbError::TooLong("header"));
+            }
+            last = current;
+        }
+        let headers = bytes(input, header_bytes)?;
+
+        let lengths = words(input, sequences as usize)?;
+        let mut sum = 0u64;
+        for &length in &lengths {
+            if length > MAX_LENGTH {
+                return Err(UdbError::TooLong("sequence"));
+            }
+            sum += u64::from(length);
+            if sum > residues {
+                return Err(UdbError::Invalid);
+            }
+        }
+        if sum != residues {
+            return Err(UdbError::Invalid);
+        }
+        let seqs = bytes(input, residues)?;
+        let mut rest = [0u8; 1];
+        loop {
+            match input.read(&mut rest) {
+                Ok(0) => break,
+                Ok(_) => return Err(UdbError::Trailing),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(UdbError::Io(e)),
+            }
+        }
+        Ok(Udb {
+            header,
+            counts,
+            words: total,
+            header_starts,
+            headers,
+            lengths,
+            sequences: seqs,
+        })
     }
 }
