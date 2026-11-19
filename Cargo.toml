@@ -101,3 +101,7 @@ harness = false
 [[bench]]
 name = "joinpa"
 harness = false
+
+[[bench]]
+name = "mergpa"
+harness = false
