@@ -69,3 +69,7 @@ harness = false
 [[bench]]
 name = "shufl"
 harness = false
+
+[[bench]]
+name = "subsmp"
+harness = false
