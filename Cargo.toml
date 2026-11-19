@@ -125,3 +125,7 @@ harness = false
 [[bench]]
 name = "dbornt"
 harness = false
+
+[[bench]]
+name = "sintax"
+harness = false
