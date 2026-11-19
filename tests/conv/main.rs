@@ -785,3 +785,165 @@ fn reads_no_abundance_from_sff() {
         fastq(&[("r1;size=0", "ACGT", "I?5+")])
     );
 }
+
+// UDB input: vsearch --udb2fasta, and --fasta2fastq on its output for
+// FASTQ. A UDB file holds FASTA sequences and takes FASTA input's options.
+// Its headers and sequences are written as stored.
+
+/// A sequence DUST masked, and an empty one.
+const MASKED: &str = "ACGTACGTaaaaaaaaaaaaaaaaaaaaaaaaaaaaCGTACGTACGTAGCATCGATCGATCGATCG\
+                      ACTAGCATCGACTAGCATCGACTGACTAGCTAGCATCGATCGACTAGCTAG";
+
+/// The UDB file mkudb writes for `fasta`.
+fn udb_file(fasta: &str) -> Vec<u8> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mkudb"))
+        .args(["--word-len", "3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("mkudb should start");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(fasta.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    output.stdout
+}
+
+fn masked_udb() -> Vec<u8> {
+    udb_file(&fasta(&[("e", ""), ("s desc;size=4", MASKED)]))
+}
+
+/// Runs conv on a UDB file, which must succeed.
+fn conv_udb(args: &[&str], input: &[u8]) -> String {
+    let output = run_bytes(args, input);
+    assert!(
+        output.status.success(),
+        "conv failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn converts_udb_to_fasta() {
+    // vsearch --udb2fasta: lines of 80, no line for an empty sequence
+    assert_eq!(
+        conv_udb(&["--fasta"], &masked_udb()),
+        format!(">e\n>s desc;size=4\n{}\n{}\n", &MASKED[..80], &MASKED[80..])
+    );
+    assert_eq!(
+        conv_udb(&["--fasta", "--fasta-width", "0"], &masked_udb()),
+        format!(">e\n\n>s desc;size=4\n{MASKED}\n")
+    );
+}
+
+#[test]
+fn converts_udb_to_fastq() {
+    // with --fasta2fastq's score of 41
+    assert_eq!(
+        conv_udb(&[], &masked_udb()),
+        format!(
+            "@e\n\n+\n\n@s desc;size=4\n{MASKED}\n+\n{}\n",
+            "J".repeat(MASKED.len())
+        )
+    );
+    assert_eq!(
+        conv_udb(&["--qmax-out", "30"], &masked_udb()),
+        format!(
+            "@e\n\n+\n\n@s desc;size=4\n{MASKED}\n+\n{}\n",
+            "?".repeat(MASKED.len())
+        )
+    );
+}
+
+#[test]
+fn writes_udb_headers_as_stored() {
+    // vsearch reads no abundance from a UDB file, and writes control
+    // characters and zeros in headers as they are
+    let mut udb = masked_udb();
+    let at = udb
+        .windows(16)
+        .position(|w| w == b"e\0s desc;size=4\0")
+        .unwrap();
+    udb[at] = 0x01;
+    udb[at + 3] = 0;
+    udb[at + 14] = b'0';
+    assert_eq!(
+        conv_udb(&["--fasta", "--fasta-width", "0"], &udb),
+        format!(">\x01\n\n>s\0desc;size=0\n{MASKED}\n")
+    );
+}
+
+#[test]
+fn rejects_invalid_udb_files() {
+    let udb = masked_udb();
+    // vsearch reads the whole file first and writes nothing
+    for (input, message) in [
+        (&udb[..udb.len() - 1], "invalid UDB file: truncated"),
+        (&udb[..100], "invalid UDB file: shorter than its header"),
+    ] {
+        let output = run_bytes(&["--fasta"], input);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("Error: {message}\n")
+        );
+    }
+    let mut longer = udb.clone();
+    longer.push(b'A');
+    let output = run_bytes(&["--fasta"], &longer);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    // headers that are not UTF-8 are refused, as from FASTA files
+    let mut udb = udb;
+    let at = udb.windows(2).position(|w| w == b"e\0").unwrap();
+    udb[at] = 0xe9;
+    let output = run_bytes(&["--fasta"], &udb);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn rejects_input_score_options_with_udb() {
+    for args in [
+        &["--ascii", "64"][..],
+        &["--qmin", "2"],
+        &["--qmax", "40"],
+        &["--solexa"],
+        &["--qmin-out", "2"],
+        &["--clip"],
+    ] {
+        let output = run_bytes(args, &masked_udb());
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn reads_udb_files() {
+    let input = temp_path("in.udb");
+    std::fs::write(&input, masked_udb()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_conv"))
+        .args([
+            "-i",
+            input.to_str().unwrap(),
+            "--fasta",
+            "--fasta-width",
+            "0",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&input);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!(">e\n\n>s desc;size=4\n{MASKED}\n")
+    );
+}
