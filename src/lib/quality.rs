@@ -131,3 +131,58 @@ impl Converter {
         })
     }
 }
+
+/// The quality encodings vsearch tells apart by the lowest and highest
+/// score symbols of a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    /// Phred+33, scores up to 40 ('I').
+    Sanger,
+    /// Phred+33, scores above 40.
+    Illumina18,
+    /// Solexa+64, scores below 0.
+    Solexa,
+    /// Phred+64, scores from 0.
+    Illumina13,
+    /// Phred+64, scores from 2 ('B').
+    Illumina15,
+}
+
+impl Encoding {
+    /// guesses the encoding from the lowest and highest score symbols, as
+    /// vsearch's `--fastq_chars` does.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::quality::Encoding;
+    /// assert_eq!(Encoding::guess(b'!', b'I'), Encoding::Sanger);
+    /// assert_eq!(Encoding::guess(b'I', b'J'), Encoding::Illumina18);
+    /// assert_eq!(Encoding::guess(b';', b'h'), Encoding::Solexa);
+    /// assert_eq!(Encoding::guess(b'@', b'h'), Encoding::Illumina13);
+    /// assert_eq!(Encoding::guess(b'B', b'h'), Encoding::Illumina15);
+    /// ```
+    pub fn guess(lowest: u8, highest: u8) -> Encoding {
+        // a low lowest or a low highest rules out the +64 offset
+        if lowest < b';' || highest < b'K' {
+            if highest > b'I' {
+                Encoding::Illumina18
+            } else {
+                Encoding::Sanger
+            }
+        } else if lowest < b'@' {
+            Encoding::Solexa
+        } else if lowest < b'B' {
+            Encoding::Illumina13
+        } else {
+            Encoding::Illumina15
+        }
+    }
+
+    /// the ASCII offset of the encoding.
+    pub fn offset(self) -> u8 {
+        match self {
+            Encoding::Sanger | Encoding::Illumina18 => 33,
+            Encoding::Solexa | Encoding::Illumina13 | Encoding::Illumina15 => 64,
+        }
+    }
+}
