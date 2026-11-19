@@ -14,6 +14,7 @@ use rsearch::fastx::{Format, Reader, Record};
 use rsearch::label::checked_abundance;
 use rsearch::quality::Conversion;
 use rsearch::sff;
+use rsearch::udb::{self, Udb};
 use rsearch::writer::Writer;
 
 /// Options about input scores, which cannot be used with SFF input, as it
@@ -112,13 +113,14 @@ fn main() {
             .help(help)
     };
     let mut command = Command::new("Conv")
-        .about("Convert between FASTQ, FASTA and SFF, and between quality encodings.")
+        .about("Convert between FASTQ, FASTA, SFF and UDB, and between quality encodings.")
         .long_about(
-            "Convert between FASTQ, FASTA and SFF, and between quality encodings.\n\n\
+            "Convert between FASTQ, FASTA, SFF and UDB, and between quality encodings.\n\n\
              FASTQ scores are read with the input encoding, converted from the Solexa \
              scale if asked, limited to the output range and written with the output \
              offset. FASTA sequences get the highest output score at every base. SFF \
-             reads keep their Phred scores, written with the output encoding. With \
+             reads keep their Phred scores, written with the output encoding. UDB files \
+             are read as FASTA, their sequences and headers as stored. With \
              --fasta, any input is written as FASTA, its scores checked and dropped. \
              Headers are written unchanged.",
         )
@@ -127,7 +129,7 @@ fn main() {
                 .short('i')
                 .long("in")
                 .value_name("INPUT")
-                .help("Input FASTQ or FASTA file, default to stdin"),
+                .help("Input FASTQ, FASTA, SFF or UDB file, default to stdin"),
         )
         .arg(
             Arg::new("out")
@@ -197,20 +199,31 @@ fn main() {
     let matches = command.get_matches_mut();
     let as_fasta = matches.get_flag("fasta");
 
+    // the size of a regular file, which a UDB file is checked against
+    let mut size = None;
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => {
-            Box::new(File::open(f).unwrap_or_else(|e| fail(&format!("cannot open {f}: {e}"))))
+            let file = File::open(f).unwrap_or_else(|e| fail(&format!("cannot open {f}: {e}")));
+            size = file
+                .metadata()
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len());
+            Box::new(file)
         }
         None => Box::new(io::stdin()),
     };
     let mut fin = BufReader::new(fin);
-    let is_sff = fin
+    let start = fin
         .fill_buf()
-        .unwrap_or_else(|e| fail(&format!("cannot read the input: {e}")))
-        .starts_with(sff::MAGIC);
+        .unwrap_or_else(|e| fail(&format!("cannot read the input: {e}")));
+    let is_sff = start.starts_with(sff::MAGIC);
+    let is_udb = start.starts_with(udb::MAGIC);
 
     let mut input = if is_sff {
         Input::Sff(fin)
+    } else if is_udb {
+        Input::Udb(fin, size)
     } else {
         Input::Fastx(Reader::new(fin))
     };
@@ -222,6 +235,8 @@ fn main() {
             format == Some(Format::Fasta)
         }
         Input::Sff(_) => false,
+        // a UDB file holds FASTA sequences
+        Input::Udb(..) => true,
     };
 
     // options about input scores
@@ -232,7 +247,13 @@ fn main() {
     } else {
         &[]
     };
-    let kind = if is_sff { "SFF" } else { "FASTA" };
+    let kind = if is_sff {
+        "SFF"
+    } else if is_udb {
+        "UDB"
+    } else {
+        "FASTA"
+    };
     let given = |id: &&&str| matches.value_source(id) == Some(ValueSource::CommandLine);
     if let Some(option) = refused.iter().find(given) {
         command
@@ -284,14 +305,17 @@ fn main() {
     match input {
         Input::Sff(fin) => convert_sff(fin, &mut out, &conversion, matches.get_flag("clip")),
         Input::Fastx(reader) => convert_fastx(reader, &mut out, &conversion, is_fasta),
+        Input::Udb(fin, size) => convert_udb(fin, size, &mut out, &conversion),
     }
 
     out.writer.flush().unwrap();
 }
 
-/// The input: SFF, or FASTA or FASTQ.
+/// The input: SFF, UDB (with the size of its file, if known), or FASTA or
+/// FASTQ.
 enum Input<R: BufRead> {
     Sff(R),
+    Udb(R, Option<u64>),
     Fastx(Reader<R>),
 }
 
@@ -398,5 +422,44 @@ fn convert_sff<R: BufRead>(input: R, out: &mut Output, conversion: &Conversion, 
             0..read.bases.len()
         };
         out.write(&read.name, &read.bases[kept.clone()], &qual[kept]);
+    }
+}
+
+/// writes the sequences of a UDB file, as vsearch's `--udb2fasta`, with
+/// the highest score as for FASTA. The whole file is read and checked
+/// first; stdin is read whole, for its size.
+fn convert_udb<R: BufRead>(
+    mut fin: R,
+    size: Option<u64>,
+    out: &mut Output,
+    conversion: &Conversion,
+) {
+    let ignore = |_: &[u32], _: u64, _: &[u32]| {};
+    let read = match size {
+        Some(size) => Udb::read(&mut fin, size, ignore),
+        None => {
+            let mut bytes = Vec::new();
+            fin.read_to_end(&mut bytes)
+                .unwrap_or_else(|e| fail(&format!("cannot read the input: {e}")));
+            Udb::read(&mut &bytes[..], bytes.len() as u64, ignore)
+        }
+    };
+    let udb = read.unwrap_or_else(|e| fail(&e.to_string()));
+    let symbol = (i16::from(conversion.offset_out) + conversion.max_out) as u8;
+    let mut qual = Vec::new();
+    let mut at = 0;
+    for (i, &length) in udb.lengths.iter().enumerate() {
+        let (from, to) = (
+            udb.header_starts[i] as usize,
+            udb.header_starts[i + 1] as usize,
+        );
+        // headers are written as stored, but must be UTF-8, as from FASTA
+        let header = std::str::from_utf8(&udb.headers[from..to - 1])
+            .unwrap_or_else(|_| out.fail("header is not valid UTF-8"));
+        let seq = &udb.sequences[at..at + length as usize];
+        at += length as usize;
+        qual.clear();
+        qual.resize(seq.len(), symbol);
+        out.write(header, seq, &qual);
     }
 }

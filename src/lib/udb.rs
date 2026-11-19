@@ -20,6 +20,8 @@ use std::io::{self, Read, Write};
 use crate::words::Index;
 
 const MAGIC_HEADER: u32 = 0x5544_4246;
+/// The first bytes of a UDB file.
+pub const MAGIC: &[u8; 4] = b"FBDU";
 const MAGIC_HEADER_END: u32 = 0x5544_4266;
 const MAGIC_WORDS: u32 = 0x5544_4233;
 const MAGIC_SEQUENCES: u32 = 0x5544_4234;
