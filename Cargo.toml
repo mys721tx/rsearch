@@ -89,3 +89,7 @@ harness = false
 [[bench]]
 name = "eestat"
 harness = false
+
+[[bench]]
+name = "eegrid"
+harness = false
