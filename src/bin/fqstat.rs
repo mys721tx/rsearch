@@ -36,6 +36,26 @@ const Q_CUTOFFS: [i64; 4] = [5, 10, 15, 20];
 /// far are at most the cutoff. Descending, likewise.
 const EE_CUTOFFS: [f64; 4] = [1.0, 0.5, 0.25, 0.1];
 
+/// The number of printable symbols, from `!` to `~`.
+const PRINTABLE: usize = 94;
+
+/// the position of the first symbol at most `limit`, searched a chunk at a
+/// time so that the scan vectorizes.
+fn first_at_most(symbols: &[u8], limit: u8) -> Option<usize> {
+    const CHUNK: usize = 16;
+    let (chunks, rest) = symbols.as_chunks::<CHUNK>();
+    for (i, chunk) in chunks.iter().enumerate() {
+        if chunk.iter().fold(u8::MAX, |low, &q| low.min(q)) <= limit {
+            return chunk
+                .iter()
+                .position(|&q| q <= limit)
+                .map(|at| i * CHUNK + at);
+        }
+    }
+    let done = chunks.len() * CHUNK;
+    rest.iter().position(|&q| q <= limit).map(|at| done + at)
+}
+
 /// The error probability of a quality score, as vsearch computes it.
 fn probability(score: f64) -> f64 {
     10f64.powf(-score / 10.0)
@@ -46,6 +66,8 @@ struct Stats {
     /// The score and error probability of each symbol.
     score: [i64; 256],
     error: [f64; 256],
+    /// The offset of scores.
+    offset: u8,
     /// The lowest and highest scores accepted.
     min_score: i64,
     max_score: i64,
@@ -54,6 +76,11 @@ struct Stats {
     /// Per position, the count of each score symbol and the sum over reads
     /// of the expected errors up to it.
     symbols: Vec<[u64; 256]>,
+    /// The latest counts of score symbols, which are all printable (from
+    /// `!` on), in narrow counters that fit the cache; added to `symbols`
+    /// before they can overflow.
+    pending: Vec<[u16; PRINTABLE]>,
+    pending_reads: u16,
     sum_ee: Vec<f64>,
     /// Per position and cutoff, the reads whose last passing position it
     /// is; turned into the reads passing there by `spread`.
@@ -72,10 +99,13 @@ impl Stats {
         Stats {
             score,
             error,
+            offset,
             min_score,
             max_score,
             lengths: Vec::new(),
             symbols: Vec::new(),
+            pending: Vec::new(),
+            pending_reads: 0,
             sum_ee: Vec::new(),
             ee_pass: Vec::new(),
             q_pass: Vec::new(),
@@ -85,9 +115,14 @@ impl Stats {
     /// checks the lowest and highest score of a read against the range
     /// accepted, as vsearch does before counting it.
     fn check(&self, qual: &[u8]) -> Result<(), QualityError> {
-        let (Some(&lowest), Some(&highest)) = (qual.iter().min(), qual.iter().max()) else {
+        if qual.is_empty() {
             return Ok(());
-        };
+        }
+        // a fold over values, which vectorizes where min() and max() over
+        // references do not
+        let (lowest, highest) = qual
+            .iter()
+            .fold((u8::MAX, 0), |(low, high), &q| (low.min(q), high.max(q)));
         for symbol in [lowest, highest] {
             let score = self.score[usize::from(symbol)];
             if score < self.min_score || score > self.max_score {
@@ -107,30 +142,49 @@ impl Stats {
         if length + 1 > self.lengths.len() {
             self.lengths.resize(length + 1, 0);
             self.symbols.resize(length + 1, [0; 256]);
+            self.pending.resize(length + 1, [0; PRINTABLE]);
             self.sum_ee.resize(length + 1, 0.0);
             self.ee_pass.resize(length + 1, [0; 4]);
             self.q_pass.resize(length + 1, [0; 4]);
         }
         self.lengths[length] += 1;
 
-        let mut ee = 0.0;
-        let mut lowest = i64::MAX;
-        let (mut q_passing, mut ee_passing) = (Q_CUTOFFS.len(), EE_CUTOFFS.len());
-        for (i, &symbol) in qual.iter().enumerate() {
-            let symbol = usize::from(symbol);
-            self.symbols[i][symbol] += 1;
-            let score = self.score[symbol];
-            if score < lowest {
-                lowest = score;
-                while q_passing > 0 && lowest <= Q_CUTOFFS[q_passing - 1] {
-                    q_passing -= 1;
-                    if i > 0 {
-                        self.q_pass[i - 1][q_passing] += 1;
-                    }
-                }
+        // three passes, so that the counting, which has no dependencies
+        // between positions, is kept apart from the running sums
+        if self.pending_reads == u16::MAX {
+            self.flush();
+        }
+        self.pending_reads += 1;
+        for (row, &symbol) in self.pending.iter_mut().zip(qual) {
+            row[usize::from(symbol - b'!')] += 1;
+        }
+
+        // a read passes a quality cutoff up to its first score at or below
+        // it. The cutoffs fail in descending order, and each search starts
+        // where the one for the cutoff above it stopped
+        let mut q_passing = Q_CUTOFFS.len();
+        let mut from = 0;
+        while q_passing > 0 {
+            let cutoff = Q_CUTOFFS[q_passing - 1] + i64::from(self.offset);
+            // no symbol is below '!'
+            let Ok(limit) = u8::try_from(cutoff.max(0)) else {
+                break;
+            };
+            let Some(at) = first_at_most(&qual[from..], limit) else {
+                break;
+            };
+            from += at;
+            q_passing -= 1;
+            if from > 0 {
+                self.q_pass[from - 1][q_passing] += 1;
             }
-            ee += self.error[symbol];
-            self.sum_ee[i] += ee;
+        }
+
+        let mut ee = 0.0;
+        let mut ee_passing = EE_CUTOFFS.len();
+        for (i, (&symbol, sum)) in qual.iter().zip(self.sum_ee.iter_mut()).enumerate() {
+            ee += self.error[usize::from(symbol)];
+            *sum += ee;
             while ee_passing > 0 && ee > EE_CUTOFFS[ee_passing - 1] {
                 ee_passing -= 1;
                 if i > 0 {
@@ -149,8 +203,20 @@ impl Stats {
         }
     }
 
+    /// adds the pending counts of symbols to the totals.
+    fn flush(&mut self) {
+        for (total, pending) in self.symbols.iter_mut().zip(&mut self.pending) {
+            for (sum, count) in total[usize::from(b'!')..].iter_mut().zip(pending.iter()) {
+                *sum += u64::from(*count);
+            }
+            *pending = [0; PRINTABLE];
+        }
+        self.pending_reads = 0;
+    }
+
     /// writes the report.
     fn report(mut self) -> String {
+        self.flush();
         // a read passing up to a position passes at every one before it
         for table in [&mut self.ee_pass, &mut self.q_pass] {
             let mut passing = [0u64; 4];
