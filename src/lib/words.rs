@@ -42,6 +42,8 @@ pub struct Uniquer {
     /// For each word, the number of the last sequence it was found in,
     /// plus one; empty above `MAX_TABLE_WORD_LEN`.
     stamps: Vec<u32>,
+    /// The words seen in the last sequence, above `MAX_TABLE_WORD_LEN`.
+    seen: std::collections::HashSet<u32>,
     /// The number of sequences read, plus one.
     stamp: u32,
 }
@@ -58,6 +60,7 @@ impl Uniquer {
             word_len,
             list: Vec::new(),
             stamps,
+            seen: std::collections::HashSet::new(),
             stamp: 0,
         }
     }
@@ -66,8 +69,8 @@ impl Uniquer {
         self.word_len
     }
 
-    /// the distinct words of `seq`. Their order is that of their first
-    /// occurrence when the word length is at most 12, and increasing above.
+    /// the distinct words of `seq`, in the order of their first
+    /// occurrence, as vsearch lists them.
     pub fn words(&mut self, seq: &[u8]) -> &[u32] {
         self.list.clear();
         let k = self.word_len as usize;
@@ -84,12 +87,11 @@ impl Uniquer {
                 }
                 word = ((word << 2) | u32::from(code)) & mask;
                 run += 1;
-                if run >= k {
+                if run >= k && self.seen.insert(word) {
                     self.list.push(word);
                 }
             }
-            self.list.sort_unstable();
-            self.list.dedup();
+            self.seen.clear();
             return &self.list;
         }
         self.stamp = self.stamp.wrapping_add(1);
@@ -186,6 +188,24 @@ impl Index {
             starts,
             sequences,
             without_words,
+        }
+    }
+
+    /// rebuilds the index of a UDB file from its counts and its word list.
+    pub fn from_parts(word_len: u32, counts: &[u32], sequences: Vec<u32>) -> Index {
+        let mut starts = Vec::with_capacity(counts.len() + 1);
+        let mut sum = 0u64;
+        for &count in counts {
+            starts.push(sum);
+            sum += u64::from(count);
+        }
+        starts.push(sum);
+        assert_eq!(sum, sequences.len() as u64);
+        Index {
+            word_len,
+            starts,
+            sequences,
+            without_words: 0,
         }
     }
 

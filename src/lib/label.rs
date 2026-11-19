@@ -11,6 +11,21 @@ use crate::cluster::normalize_base;
 /// digits (and dots, if `dots`) that ends the header or is followed by a
 /// `;`. These are vsearch's rules.
 fn find_attribute(header: &[u8], name: &[u8], dots: bool) -> Option<(usize, usize)> {
+    let is_value = |c: u8| c.is_ascii_digit() || (dots && c == b'.');
+    find_attribute_with(header, name, is_value, false)
+}
+
+/// The `[start, end)` byte range of the first `name` annotation of a
+/// header, as vsearch's `header_find_attribute`: one that starts the
+/// header or follows a `;`, whose value is of the bytes `is_value` takes
+/// (empty only if `allow_empty`), and ends the header or is followed by a
+/// `;`.
+pub(crate) fn find_attribute_with(
+    header: &[u8],
+    name: &[u8],
+    is_value: impl Fn(u8) -> bool,
+    allow_empty: bool,
+) -> Option<(usize, usize)> {
     let mut offset = 0;
     while offset + name.len() <= header.len() {
         let hit = header[offset..]
@@ -23,11 +38,8 @@ fn find_attribute(header: &[u8], name: &[u8], dots: bool) -> Option<(usize, usiz
             continue;
         }
         let value = hit + name.len();
-        let length = header[value..]
-            .iter()
-            .take_while(|c| c.is_ascii_digit() || (dots && **c == b'.'))
-            .count();
-        if length == 0 {
+        let length = header[value..].iter().take_while(|&&c| is_value(c)).count();
+        if length == 0 && !allow_empty {
             offset += name.len() + 1;
             continue;
         }

@@ -12,6 +12,8 @@ pub mod report;
 pub mod scramble;
 pub mod select;
 pub mod sff;
+pub mod sintax;
+pub mod taxonomy;
 pub mod udb;
 pub mod words;
 pub mod writer;
