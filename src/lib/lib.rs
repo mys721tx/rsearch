@@ -11,4 +11,6 @@ pub mod report;
 pub mod scramble;
 pub mod select;
 pub mod sff;
+pub mod udb;
+pub mod words;
 pub mod writer;
