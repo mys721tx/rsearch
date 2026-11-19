@@ -8,6 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A source of 64-bit random numbers.
 pub trait Generator {
     fn next_u64(&mut self) -> u64;
+
+    /// steps past one number without using it, which some generators do
+    /// more cheaply than drawing it.
+    fn skip(&mut self) {
+        self.next_u64();
+    }
 }
 
 /// The 64-bit Mersenne Twister of C++'s `std::mt19937_64`.
@@ -99,6 +105,10 @@ impl SplitMix64 {
 }
 
 impl Generator for SplitMix64 {
+    fn skip(&mut self) {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    }
+
     fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.state;
@@ -113,6 +123,12 @@ impl Generator for SplitMix64 {
 /// not be 0.
 pub fn bounded(generator: &mut impl Generator, range: u64) -> u64 {
     assert!(range > 0, "a bounded draw needs a range");
+    // a range of 1 always gives 0, after exactly one number. No number
+    // below the threshold of 0 can ask for another
+    if range == 1 {
+        generator.skip();
+        return 0;
+    }
     let mut product = u128::from(generator.next_u64()) * u128::from(range);
     let mut low = product as u64;
     if low < range {

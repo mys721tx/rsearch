@@ -3,9 +3,63 @@
 //! words of k bases, a uniformly random sequence with the same count of
 //! every word of up to k bases (uShuffle, Jiang et al. 2008).
 
-use std::collections::HashMap;
-
 use crate::random::{Generator, bounded, shuffle};
+
+/// A slot of `Vertices`: live when its stamp is the current read's.
+#[derive(Clone, Copy, Default)]
+struct Slot {
+    stamp: u64,
+    key: u64,
+    id: u32,
+}
+
+/// The vertex numbers of a read's words: a flat table with linear
+/// probing, at most half full, invalidated between reads by a new stamp
+/// rather than cleared.
+#[derive(Default)]
+struct Vertices {
+    slots: Vec<Slot>,
+    mask: usize,
+    /// 64 less the number of bits of a slot's index.
+    shift: u32,
+    stamp: u64,
+}
+
+impl Vertices {
+    /// prepares for a read of at most `keys` distinct words.
+    fn next_read(&mut self, keys: usize) {
+        let size = (2 * keys).next_power_of_two().max(16);
+        if size > self.slots.len() {
+            self.slots.resize(size, Slot::default());
+        }
+        self.mask = size - 1;
+        self.shift = 64 - size.trailing_zeros();
+        // stamps start at 1, which leaves fresh slots, stamped 0, empty
+        self.stamp += 1;
+    }
+
+    /// returns the number of `key`, giving it `next` if it is new.
+    fn find_or_insert(&mut self, key: u64, next: u32) -> u32 {
+        // Fibonacci hashing: the high bits of the key times the golden
+        // ratio; the numbers given do not depend on the hash
+        let mut index = (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> self.shift) as usize;
+        loop {
+            let slot = &mut self.slots[index];
+            if slot.stamp != self.stamp {
+                *slot = Slot {
+                    stamp: self.stamp,
+                    key,
+                    id: next,
+                };
+                return next;
+            }
+            if slot.key == key {
+                return slot.id;
+            }
+            index = (index + 1) & self.mask;
+        }
+    }
+}
 
 /// The de Bruijn multigraph of a read: one vertex per distinct word of
 /// k - 1 bases, numbered by first appearance, and one edge per word of k
@@ -20,12 +74,13 @@ struct Graph {
     last_bases: Vec<u8>,
     /// The vertex of the word at each position.
     positions: Vec<u32>,
-    ids: HashMap<u64, u32>,
+    vertices: Vertices,
+    cursors: Vec<usize>,
 }
 
 impl Graph {
     fn build(&mut self, seq: &[u8], width: usize) {
-        self.ids.clear();
+        self.vertices.next_read(seq.len() + 1 - width);
         self.last_bases.clear();
         self.positions.clear();
         // words packed into a rolling key, a byte per base
@@ -41,7 +96,7 @@ impl Graph {
                 continue;
             }
             let next = self.last_bases.len() as u32;
-            let vertex = *self.ids.entry(key).or_insert(next);
+            let vertex = self.vertices.find_or_insert(key, next);
             if vertex == next {
                 self.last_bases.push(base);
             }
@@ -58,11 +113,12 @@ impl Graph {
         }
         self.targets.clear();
         self.targets.resize(self.positions.len() - 1, 0);
-        let mut cursors = self.offsets[..vertices].to_vec();
+        self.cursors.clear();
+        self.cursors.extend_from_slice(&self.offsets[..vertices]);
         for pair in self.positions.windows(2) {
             let source = pair[0] as usize;
-            self.targets[cursors[source]] = pair[1];
-            cursors[source] += 1;
+            self.targets[self.cursors[source]] = pair[1];
+            self.cursors[source] += 1;
         }
     }
 
