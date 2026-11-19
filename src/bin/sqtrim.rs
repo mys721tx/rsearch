@@ -12,6 +12,7 @@ use clap::{Arg, ArgMatches, Command, value_parser};
 
 use rsearch::fastx::{Format, Reader, Record};
 use rsearch::filter::Filter;
+use rsearch::label::checked_abundance;
 use rsearch::writer::Writer;
 
 /// Options that need quality scores, which cannot be used with FASTA input.
@@ -223,6 +224,11 @@ fn main() {
             Ok(outcome) => outcome,
             Err(e) => fail_after(&mut writer, &format!("{e} in read {}", record.id())),
         };
+        // vsearch reads, and checks, the abundance of every read, after its
+        // scores
+        if let Err(e) = checked_abundance(record.header()) {
+            fail_after(&mut writer, &format!("{e} in read {}", record.header()));
+        }
         let qual = qual.map_or(&[][..], |q| outcome.trim(q));
         writer
             .write(record.header(), None, outcome.trim(record.seq()), qual)
