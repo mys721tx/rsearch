@@ -3,9 +3,11 @@
 //! `converter` measures `Converter::convert` on parsed reads; `binary` runs
 //! the conv program end to end on files: Phred+33 to Phred+64 and back,
 //! Solexa scores, limited output scores, FASTA to FASTQ, SFF to FASTQ with
-//! and without clipping, and FASTQ and FASTA to wrapped or unwrapped FASTA.
-//! Set `VSEARCH` to a vsearch executable to time `vsearch --fastq_convert`,
-//! `--fasta2fastq`, `--sff_convert` and, for FASTA output,
+//! and without clipping, FASTQ and FASTA to wrapped or unwrapped FASTA, and
+//! UDB (written by mkudb from the FASTA reads) to FASTA. Set `VSEARCH` to a
+//! vsearch executable to time `vsearch --fastq_convert`, `--fasta2fastq`,
+//! `--sff_convert`, `--udb2fasta` (after checking that it writes conv's
+//! FASTA) and, for FASTA output,
 //! `--fastx_subsample --sample_pct 100`, which writes every read, on the
 //! same files for comparison:
 //!
@@ -181,6 +183,7 @@ struct Inputs {
     solexa: PathBuf,
     fasta: PathBuf,
     sff: PathBuf,
+    udb: PathBuf,
 }
 
 fn input_files() -> Inputs {
@@ -191,6 +194,7 @@ fn input_files() -> Inputs {
         solexa: dir.join("conv-bench-solexa.fq"),
         fasta: dir.join("conv-bench.fa"),
         sff: dir.join("conv-bench.sff"),
+        udb: dir.join("conv-bench.udb"),
     };
     let phred33 = generate(33, 0);
     std::fs::write(&inputs.sff, to_sff(&phred33)).unwrap();
@@ -198,6 +202,13 @@ fn input_files() -> Inputs {
     std::fs::write(&inputs.phred33, phred33).unwrap();
     std::fs::write(&inputs.phred64, generate(64, 0)).unwrap();
     std::fs::write(&inputs.solexa, generate(64, -5)).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_mkudb"))
+        .args(["-i", inputs.fasta.to_str().unwrap()])
+        .args(["-o", inputs.udb.to_str().unwrap()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
     inputs
 }
 
@@ -214,6 +225,7 @@ fn cases(inputs: &Inputs) -> Vec<Case<'_>> {
     let solexa = inputs.solexa.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
     let sff = inputs.sff.to_str().unwrap();
+    let udb = inputs.udb.to_str().unwrap();
     let case = |name, file, conv: &[&'static str], command, vsearch: &[&'static str]| Case {
         name,
         conv: [&["-i", file, "-o", "/dev/null"], conv].concat(),
@@ -296,6 +308,11 @@ fn cases(inputs: &Inputs) -> Vec<Case<'_>> {
             .concat(),
         }),
     )
+    .chain([Case {
+        name: "udb_to_fasta",
+        conv: vec!["-i", udb, "-o", "/dev/null", "--fasta"],
+        vsearch: vec!["--udb2fasta", udb, "--output", "/dev/null", "--quiet"],
+    }])
     .collect()
 }
 
@@ -308,6 +325,25 @@ fn bench_binary(c: &mut Criterion) {
     let inputs = input_files();
     let conv = env!("CARGO_BIN_EXE_conv");
     let vsearch = std::env::var("VSEARCH").ok();
+
+    // conv writes the FASTA vsearch --udb2fasta writes
+    if let Some(vsearch) = &vsearch {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let (r, v) = (dir.join("conv-bench-r.fa"), dir.join("conv-bench-v.fa"));
+        let udb = inputs.udb.to_str().unwrap();
+        run(conv, &["-i", udb, "--fasta", "-o", r.to_str().unwrap()]);
+        run(
+            vsearch,
+            &[
+                "--udb2fasta",
+                udb,
+                "--quiet",
+                "--output",
+                v.to_str().unwrap(),
+            ],
+        );
+        assert!(std::fs::read(&r).unwrap() == std::fs::read(&v).unwrap());
+    }
 
     let mut group = c.benchmark_group("conv/binary");
     group.throughput(Throughput::Elements(READS as u64));
