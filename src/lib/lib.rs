@@ -4,6 +4,7 @@ pub mod filter;
 pub mod label;
 pub mod options;
 pub mod quality;
+pub mod random;
 pub mod select;
 pub mod sff;
 pub mod writer;
