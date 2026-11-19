@@ -180,6 +180,20 @@ pub fn draw(masses: &[u64], n: u64, generator: &mut impl Generator) -> Vec<u64> 
     drawn
 }
 
+/// returns a well-separated seed for item `index` of a run seeded with
+/// `seed`, as vsearch's `RandomSeed::substream`, so that each item's
+/// numbers depend only on the seed and the item's number.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::random::{SplitMix64, Generator, substream};
+/// let mut mixer = SplitMix64::new(1 ^ 0x9E37_79B9_7F4A_7C15);
+/// assert_eq!(substream(1, 1), mixer.next_u64());
+/// ```
+pub fn substream(seed: u64, index: u64) -> u64 {
+    SplitMix64::new(seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15)).next_u64()
+}
+
 /// returns the seed of a run: the one given, used as its unsigned bit
 /// pattern as vsearch does, or for none or 0 one from the system.
 pub fn seed(given: Option<i64>) -> u64 {
