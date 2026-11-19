@@ -97,3 +97,7 @@ harness = false
 [[bench]]
 name = "syncpa"
 harness = false
+
+[[bench]]
+name = "joinpa"
+harness = false
