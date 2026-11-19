@@ -10,6 +10,7 @@ use std::io::{BufReader, Read, Write};
 use clap::{Arg, ArgAction, ArgGroup, Command};
 
 use rsearch::fastx::{Format, Reader, Record};
+use rsearch::label::checked_abundance;
 use rsearch::select::{Selector, labels_of};
 use rsearch::writer::Writer;
 
@@ -161,6 +162,11 @@ fn main() {
         }
         if record.is_empty() {
             break;
+        }
+        // vsearch reads, and checks, the abundance of every record
+        if let Err(e) = checked_abundance(record.header()) {
+            flush(&mut writer, &mut discarded);
+            fail(&format!("{e} in read {}", record.header()));
         }
         let out = if selector.matches(record.header()) != invert {
             Some(&mut writer)
