@@ -1,4 +1,5 @@
 pub mod accept;
+pub mod align16;
 pub mod alignment;
 pub mod cluster;
 pub mod database;
@@ -7,6 +8,7 @@ pub mod fastx;
 pub mod filter;
 pub mod hits;
 pub mod label;
+pub mod linmem;
 pub mod merge;
 pub mod options;
 pub mod orient;

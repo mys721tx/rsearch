@@ -153,6 +153,36 @@ impl Stats {
         Ok(s)
     }
 
+    /// the statistics of an alignment from its aligner's counts, as vsearch
+    /// keeps those of its 16-bit aligner (which counts every column of an
+    /// empty query's alignment as a gap), with `align_trim`'s derived ones.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_counts(
+        cigar: &str,
+        qlen: usize,
+        tlen: usize,
+        length: i64,
+        matches: i64,
+        mismatches: i64,
+        gaps: i64,
+        score: i64,
+    ) -> Result<Stats, String> {
+        let ops = parse_cigar(cigar)?;
+        let mut s = Stats {
+            score,
+            length,
+            matches,
+            mismatches,
+            gaps,
+            indels: length - matches - mismatches,
+            shortest: qlen.min(tlen) as i64,
+            longest: qlen.max(tlen) as i64,
+            ..Stats::default()
+        };
+        s.trim(cigar, &ops);
+        Ok(s)
+    }
+
     /// vsearch's `align_trim`: the terminal gaps, the internal counts and
     /// the identities.
     fn trim(&mut self, cigar: &str, ops: &[(u8, usize)]) {
