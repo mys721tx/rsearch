@@ -12,6 +12,7 @@ pub mod label;
 mod lanes;
 pub mod linmem;
 pub mod merge;
+pub mod msa;
 pub mod options;
 pub mod orient;
 pub mod otutable;

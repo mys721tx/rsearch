@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read};
 use clap::{Arg, Command};
 
 use rsearch::fastx::{Reader, Record};
+use rsearch::hits::ClusterRecord;
 use rsearch::writer::Writer;
 
 /// prints an error and exits.
@@ -18,31 +19,6 @@ struct Member {
     header: String,
     seq: Vec<u8>,
     qual: Vec<u8>,
-}
-
-/// the cluster of an S or H record of `line` and its query label, or
-/// `None` for a C record.
-fn cluster_record(line: &str, clusters: usize) -> Result<Option<(usize, &str)>, String> {
-    let fields: Vec<&str> = line.split('\t').collect();
-    if fields.len() != 10 {
-        return Err(format!("not a UC record: {line}"));
-    }
-    let kind = fields[0];
-    if kind == "C" {
-        return Ok(None);
-    }
-    let cluster: usize = fields[1]
-        .parse()
-        .map_err(|_| format!("invalid cluster number in UC record: {line}"))?;
-    match kind {
-        // a centroid opens the next cluster
-        "S" if cluster == clusters => Ok(Some((cluster, fields[8]))),
-        "H" if cluster < clusters => Ok(Some((cluster, fields[8]))),
-        "S" | "H" => Err(format!(
-            "cluster {cluster} out of order in UC record: {line}"
-        )),
-        _ => Err(format!("not a cluster record: {line}")),
-    }
 }
 
 fn main() {
@@ -100,8 +76,8 @@ fn main() {
     let mut is_fastq = false;
     for line in hits.lines() {
         let line = line.unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-        let Some((cluster, label)) =
-            cluster_record(&line, clusters.len()).unwrap_or_else(|e| fail(&e))
+        let Some(ClusterRecord { cluster, label, .. }) =
+            ClusterRecord::parse(&line, clusters.len()).unwrap_or_else(|e| fail(&e))
         else {
             continue;
         };

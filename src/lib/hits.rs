@@ -216,3 +216,58 @@ impl<R: std::io::BufRead> UcQueries<R> {
         Some(Ok((label, hits)))
     }
 }
+
+/// An S or H record of clustering hits: the cluster of a record, its
+/// label, and for a member its strand and its alignment to the centroid.
+pub struct ClusterRecord<'a> {
+    pub cluster: usize,
+    pub label: &'a str,
+    pub minus: bool,
+    /// the CIGAR, `=` for a perfect alignment; empty for a centroid.
+    pub cigar: &'a str,
+}
+
+impl<'a> ClusterRecord<'a> {
+    /// parses an S or H record of the clusters so far, `clusters` of them:
+    /// a centroid opens the next cluster, a member joins one of them. A C
+    /// record gives `None`.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::hits::ClusterRecord;
+    /// let s = ClusterRecord::parse("S\t0\t4\t*\t*\t*\t*\t*\ta\t*", 0).unwrap().unwrap();
+    /// assert_eq!((s.cluster, s.label, s.cigar), (0, "a", ""));
+    /// let h = ClusterRecord::parse("H\t0\t5\t80.0\t-\t0\t0\t4MD\tb\ta", 1).unwrap().unwrap();
+    /// assert_eq!((h.cluster, h.label, h.minus, h.cigar), (0, "b", true, "4MD"));
+    /// assert!(ClusterRecord::parse("C\t0\t2\t*\t*\t*\t*\t*\ta\t*", 1).unwrap().is_none());
+    /// assert!(ClusterRecord::parse("H\t1\t5\t80.0\t+\t0\t0\t5M\tb\ta", 1).is_err());
+    /// ```
+    pub fn parse(line: &'a str, clusters: usize) -> Result<Option<ClusterRecord<'a>>, String> {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 10 {
+            return Err(format!("not a UC record: {line}"));
+        }
+        if fields[0] == "C" {
+            return Ok(None);
+        }
+        let cluster: usize = fields[1]
+            .parse()
+            .map_err(|_| format!("invalid cluster number in UC record: {line}"))?;
+        let record = |minus, cigar| {
+            Ok(Some(ClusterRecord {
+                cluster,
+                label: fields[8],
+                minus,
+                cigar,
+            }))
+        };
+        match fields[0] {
+            "S" if cluster == clusters => record(false, ""),
+            "H" if cluster < clusters => record(fields[4] == "-", fields[7]),
+            "S" | "H" => Err(format!(
+                "cluster {cluster} out of order in UC record: {line}"
+            )),
+            _ => Err(format!("not a cluster record: {line}")),
+        }
+    }
+}

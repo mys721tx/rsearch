@@ -271,6 +271,8 @@ pub struct Label {
     pub xlength: bool,
     /// Add a sample annotation (`;sample=`).
     pub sample: Option<String>,
+    /// Add the number of sequences of a cluster (`;seqs=`).
+    pub cluster_size: Option<u64>,
     /// Append this text to the label.
     pub suffix: Option<String>,
 }
@@ -286,6 +288,7 @@ impl Label {
                 || self.lengthout
                 || self.xlength
                 || self.sample.is_some()
+                || self.cluster_size.is_some()
                 || self.suffix.is_some())
     }
 
@@ -337,6 +340,10 @@ impl Label {
             separator(&mut out);
             out.push_str("sample=");
             out.push_str(sample);
+        }
+        if let Some(n) = self.cluster_size {
+            separator(&mut out);
+            out.push_str(&format!("seqs={n}"));
         }
         if self.sizeout {
             separator(&mut out);
