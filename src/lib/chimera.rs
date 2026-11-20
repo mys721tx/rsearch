@@ -61,24 +61,26 @@ fn code(c: u8) -> u8 {
     FOUR_BIT[usize::from(c)]
 }
 
-/// The chimera detector.
-pub struct Uchime {
-    options: Options,
+/// The search for a query's candidate parents, and their alignments with
+/// it.
+struct Finder {
     searcher: Searcher,
     simd: Search16,
     fallback: LinearMemoryAligner,
 }
 
-impl Uchime {
-    /// a detector searching `db`, which de novo grows with the non-chimeras.
-    pub fn new(db: &Database, options: Options) -> Uchime {
+impl Finder {
+    /// a finder searching `db`, which de novo grows with the non-chimeras.
+    /// De novo, the parents are at least `abskew` times as abundant as the
+    /// query, and neither the query nor identical to it.
+    fn new(db: &Database, abskew: Option<f64>) -> Finder {
         let scoring = Scoring::default();
         let mut criteria = Criteria {
             id: 0.55,
             weak_id: 0.55,
             ..Criteria::default()
         };
-        if let Some(abskew) = options.abskew {
+        if let Some(abskew) = abskew {
             criteria.self_label = true;
             criteria.self_id = true;
             criteria.sizes.max_size_ratio = 1.0 / abskew;
@@ -90,25 +92,31 @@ impl Uchime {
             min_word_matches: MIN_WORD_MATCHES[8],
             top_hits: Some(20),
         };
-        Uchime {
-            options,
+        Finder {
             searcher: Searcher::new(db, criteria, scoring, limits),
             simd: Search16::new(&scoring),
             fallback: LinearMemoryAligner::new(&scoring),
         }
     }
 
-    /// the candidate parents of a query: the accepted hits of its parts,
-    /// best first, each once.
-    fn candidates(&mut self, db: &Database, label: &str, size: i64, query: &[u8]) -> Vec<usize> {
+    /// the candidate parents of a query searched in `parts`: the accepted
+    /// hits of its parts, best first, each once.
+    fn candidates(
+        &mut self,
+        db: &Database,
+        label: &str,
+        size: i64,
+        query: &[u8],
+        parts: usize,
+    ) -> Vec<usize> {
         let mut candidates: Vec<usize> = Vec::new();
-        if query.len() < PARTS {
+        if query.len() < parts {
             return candidates;
         }
         let mut hits_count = 0;
         let (mut rest, mut start) = (query.len(), 0);
-        for i in 0..PARTS {
-            let len = rest.div_ceil(PARTS - i);
+        for i in 0..parts {
+            let len = rest.div_ceil(parts - i);
             let part = &query[start..start + len];
             let mut hits = self.searcher.search_part(db, label, size, part, query);
             order(&mut hits, 2);
@@ -126,9 +134,13 @@ impl Uchime {
         candidates
     }
 
-    /// judges `query` against the parents of `db`.
-    pub fn evaluate(&mut self, db: &Database, label: &str, size: i64, query: &[u8]) -> Verdict {
-        let candidates = self.candidates(db, label, size, query);
+    /// the alignments of `query` with the candidates, as operations.
+    fn align(
+        &mut self,
+        db: &Database,
+        query: &[u8],
+        candidates: &[usize],
+    ) -> Vec<Vec<(u8, usize)>> {
         let mut cigars = Vec::with_capacity(candidates.len());
         if !candidates.is_empty() {
             self.simd.set_query(query);
@@ -141,10 +153,96 @@ impl Uchime {
                 });
             }
         }
-        let ops: Vec<Vec<(u8, usize)>> = cigars
+        cigars
             .iter()
             .map(|c| parse_cigar(c).expect("the aligners' CIGARs are valid"))
-            .collect();
+            .collect()
+    }
+}
+
+/// The longest insertion of the parents before each query position.
+fn insertions(qlen: usize, ops: &[Vec<(u8, usize)>], parents: &[usize]) -> Vec<usize> {
+    let mut maxi = vec![0usize; qlen + 1];
+    for &p in parents {
+        let mut pos = 0;
+        for &(op, run) in &ops[p] {
+            match op {
+                b'I' => maxi[pos] = maxi[pos].max(run),
+                _ => pos += run,
+            }
+        }
+    }
+    maxi
+}
+
+/// the row of a parent in the alignment, upper case, gapped by `maxi`.
+fn parent_row(target: &[u8], ops: &[(u8, usize)], maxi: &[usize]) -> Vec<u8> {
+    let mut row = Vec::new();
+    let (mut qpos, mut tpos) = (0usize, 0usize);
+    let mut inserted = false;
+    for &(op, run) in ops {
+        if op == b'I' {
+            for j in 0..maxi[qpos] {
+                if j < run {
+                    row.push(target[tpos].to_ascii_uppercase());
+                    tpos += 1;
+                } else {
+                    row.push(b'-');
+                }
+            }
+            inserted = true;
+        } else {
+            for _ in 0..run {
+                if !inserted {
+                    row.extend(std::iter::repeat_n(b'-', maxi[qpos]));
+                }
+                if op == b'M' {
+                    row.push(target[tpos].to_ascii_uppercase());
+                    tpos += 1;
+                } else {
+                    row.push(b'-');
+                }
+                qpos += 1;
+                inserted = false;
+            }
+        }
+    }
+    if !inserted {
+        row.extend(std::iter::repeat_n(b'-', maxi[qpos]));
+    }
+    row
+}
+
+/// the row of the query in the alignment, upper case, gapped by `maxi`.
+fn query_row(query: &[u8], maxi: &[usize]) -> Vec<u8> {
+    let mut row = Vec::new();
+    for (i, &c) in query.iter().enumerate() {
+        row.extend(std::iter::repeat_n(b'-', maxi[i]));
+        row.push(c.to_ascii_uppercase());
+    }
+    row.extend(std::iter::repeat_n(b'-', maxi[query.len()]));
+    row
+}
+
+/// The chimera detector.
+pub struct Uchime {
+    options: Options,
+    finder: Finder,
+}
+
+impl Uchime {
+    /// a detector searching `db`, which de novo grows with the non-chimeras.
+    pub fn new(db: &Database, options: Options) -> Uchime {
+        Uchime {
+            options,
+            finder: Finder::new(db, options.abskew),
+        }
+    }
+
+    /// judges `query` against the parents of `db`.
+    pub fn evaluate(&mut self, db: &Database, label: &str, size: i64, query: &[u8]) -> Verdict {
+        let candidates = self.finder.candidates(db, label, size, query, PARTS);
+        let ops = self.finder.align(db, query, &candidates);
         match best_parents(db, query, &candidates, &ops) {
             Some(parents) => self.eval_parents(db, label, query, &candidates, &ops, parents),
             None => Verdict {
@@ -168,60 +266,11 @@ impl Uchime {
     ) -> Verdict {
         let o = &self.options;
         let qlen = query.len();
-        // the longest insertion of a parent before each query position
-        let mut maxi = vec![0usize; qlen + 1];
-        for &p in &parents {
-            let mut pos = 0;
-            for &(op, run) in &ops[p] {
-                match op {
-                    b'I' => maxi[pos] = maxi[pos].max(run),
-                    _ => pos += run,
-                }
-            }
-        }
+        let maxi = insertions(qlen, ops, &parents);
         let alnlen = qlen + maxi.iter().sum::<usize>();
-        let mut paln: [Vec<u8>; 2] = [Vec::with_capacity(alnlen), Vec::with_capacity(alnlen)];
-        for (row, &p) in paln.iter_mut().zip(&parents) {
-            let target = &db.seqs[candidates[p]];
-            let (mut qpos, mut tpos) = (0usize, 0usize);
-            let mut inserted = false;
-            for &(op, run) in &ops[p] {
-                if op == b'I' {
-                    for j in 0..maxi[qpos] {
-                        if j < run {
-                            row.push(target[tpos].to_ascii_uppercase());
-                            tpos += 1;
-                        } else {
-                            row.push(b'-');
-                        }
-                    }
-                    inserted = true;
-                } else {
-                    for _ in 0..run {
-                        if !inserted {
-                            row.extend(std::iter::repeat_n(b'-', maxi[qpos]));
-                        }
-                        if op == b'M' {
-                            row.push(target[tpos].to_ascii_uppercase());
-                            tpos += 1;
-                        } else {
-                            row.push(b'-');
-                        }
-                        qpos += 1;
-                        inserted = false;
-                    }
-                }
-            }
-            if !inserted {
-                row.extend(std::iter::repeat_n(b'-', maxi[qpos]));
-            }
-        }
-        let mut qaln = Vec::with_capacity(alnlen);
-        for (i, &c) in query.iter().enumerate() {
-            qaln.extend(std::iter::repeat_n(b'-', maxi[i]));
-            qaln.push(c.to_ascii_uppercase());
-        }
-        qaln.extend(std::iter::repeat_n(b'-', maxi[qlen]));
+        let mut paln: [Vec<u8>; 2] =
+            parents.map(|p| parent_row(&db.seqs[candidates[p]], &ops[p], &maxi));
+        let qaln = query_row(query, &maxi);
 
         let mut ignore = vec![false; alnlen];
         let mut diffs = vec![b' '; alnlen];
@@ -584,5 +633,329 @@ fn best_parents(
     match best {
         [Some(a), Some(b)] => Some([a, b]),
         _ => None,
+    }
+}
+
+/// The most parents vsearch gives a multi-parent chimera.
+pub const MAX_PARENTS: usize = 20;
+
+/// The options of multi-parent chimera detection.
+#[derive(Clone, Copy)]
+pub struct LongOptions {
+    /// the parts a query is searched in, by default one a hundred bases
+    pub parts: Option<usize>,
+    pub max_parents: usize,
+    /// the shortest segment of a parent
+    pub min_segment: usize,
+    /// the share of differences a segment may hold, in percent
+    pub diff_pct: f64,
+    pub abskew: f64,
+    /// the width of the alignments' rows, 0 for the whole.
+    pub width: usize,
+}
+
+/// A parent of a multi-parent chimera: a candidate and the query segment
+/// it covers.
+#[derive(Clone, Copy)]
+struct Segment {
+    cand: usize,
+    start: usize,
+    len: usize,
+}
+
+/// vsearch's `scan_matches`: the longest stretch of `matches` scoring at
+/// least 0, a match `percentage` and a difference `percentage - 100`.
+fn scan_matches(matches: &[i32], percentage: f64) -> Option<(usize, usize)> {
+    let len = matches.len();
+    let (score_match, score_mismatch) = (percentage, percentage - 100.0);
+    let mut p = vec![0.0f64; len + 1];
+    for i in 0..len {
+        p[i + 1] = p[i]
+            + if matches[i] != 0 {
+                score_match
+            } else {
+                score_mismatch
+            };
+    }
+    let mut q = vec![0.0f64; len + 1];
+    q[len] = p[len];
+    for i in (0..len).rev() {
+        q[i] = q[i + 1].max(p[i]);
+    }
+    let (mut best_i, mut best_d, mut best_c) = (0usize, -1i64, -1.0f64);
+    let (mut i, mut j) = (1usize, 1usize);
+    while j <= len {
+        let c = q[j] - p[i - 1];
+        if c >= 0.0 {
+            let d = j as i64 - i as i64 + 1;
+            if d > best_d {
+                best_i = i;
+                best_d = d;
+                best_c = c;
+            }
+            j += 1;
+        } else {
+            i += 1;
+        }
+    }
+    (best_c >= 0.0).then(|| (best_i - 1, best_d as usize))
+}
+
+/// The multi-parent chimera detector, vsearch's `--chimeras_denovo`.
+pub struct Mchime {
+    options: LongOptions,
+    finder: Finder,
+}
+
+impl Mchime {
+    /// a detector searching `db`, which grows with the non-chimeras.
+    pub fn new(db: &Database, options: LongOptions) -> Mchime {
+        Mchime {
+            options,
+            finder: Finder::new(db, Some(options.abskew)),
+        }
+    }
+
+    /// judges `query` against the parents of `db`: a chimera when the
+    /// segments of two or more of them cover it.
+    pub fn evaluate(&mut self, db: &Database, label: &str, size: i64, query: &[u8]) -> Verdict {
+        let o = self.options;
+        let parts = o.parts.unwrap_or(query.len().div_ceil(100)).clamp(2, 100);
+        let candidates = self.finder.candidates(db, label, size, query, parts);
+        let ops = self.finder.align(db, query, &candidates);
+        match self.best_parents(db, query, &candidates, &ops) {
+            Some(segments) => self.eval_parents(db, label, query, &candidates, &ops, &segments),
+            None => Verdict {
+                status: Status::NoParents,
+                table: String::new(),
+                alignment: None,
+            },
+        }
+    }
+
+    /// vsearch's `find_best_parents_long`. It takes in turn the longest
+    /// segment of a candidate over positions not yet covered, without an
+    /// insertion of the candidate inside it. It returns the parents, in
+    /// query order, if they cover the whole query.
+    fn best_parents(
+        &self,
+        db: &Database,
+        query: &[u8],
+        candidates: &[usize],
+        ops: &[Vec<(u8, usize)>],
+    ) -> Option<Vec<Segment>> {
+        let o = &self.options;
+        let qlen = query.len();
+        let n = candidates.len();
+        let mut matches = vec![0i32; n * qlen];
+        let mut insert = vec![0usize; n * qlen];
+        for (i, cand_ops) in ops.iter().enumerate() {
+            let target = &db.seqs[candidates[i]];
+            let (mut qpos, mut tpos) = (0usize, 0usize);
+            for &(op, run) in cand_ops {
+                match op {
+                    b'M' => {
+                        for _ in 0..run {
+                            if code(query[qpos]) & code(target[tpos]) != 0 {
+                                matches[i * qlen + qpos] = 1;
+                            }
+                            qpos += 1;
+                            tpos += 1;
+                        }
+                    }
+                    b'I' => {
+                        // vsearch's insertion past the end lands on the next
+                        // candidate's first position, which no segment reads
+                        if qpos < qlen {
+                            insert[i * qlen + qpos] = run;
+                        }
+                        tpos += run;
+                    }
+                    _ => qpos += run,
+                }
+            }
+        }
+        let mut used = vec![false; qlen];
+        let mut remaining = qlen;
+        let mut segments: Vec<Segment> = Vec::new();
+        for _ in 0..o.max_parents.min(MAX_PARENTS) {
+            let mut best = Segment {
+                cand: 0,
+                start: 0,
+                len: 0,
+            };
+            for i in 0..n {
+                let mut j = 0;
+                while j < qlen {
+                    let start = j;
+                    let mut len = 0;
+                    while j < qlen && !used[j] && (len == 0 || insert[i * qlen + j] == 0) {
+                        len += 1;
+                        j += 1;
+                    }
+                    if len > best.len
+                        && let Some((s, l)) = scan_matches(
+                            &matches[i * qlen + start..i * qlen + start + len],
+                            o.diff_pct,
+                        )
+                        && l > best.len
+                    {
+                        best = Segment {
+                            cand: i,
+                            start: start + s,
+                            len: l,
+                        };
+                    }
+                    j += 1;
+                }
+            }
+            if best.len >= o.min_segment {
+                segments.push(best);
+                used[best.start..best.start + best.len].fill(true);
+                remaining -= best.len;
+            } else {
+                break;
+            }
+        }
+        segments.sort_by_key(|s| s.start);
+        (segments.len() > 1 && remaining == 0).then_some(segments)
+    }
+
+    /// vsearch's `eval_parents_long`: the alignment of the query with its
+    /// parents and their identities.
+    fn eval_parents(
+        &self,
+        db: &Database,
+        label: &str,
+        query: &[u8],
+        candidates: &[usize],
+        ops: &[Vec<(u8, usize)>],
+        segments: &[Segment],
+    ) -> Verdict {
+        let qlen = query.len();
+        let parents: Vec<usize> = segments.iter().map(|s| s.cand).collect();
+        let maxi = insertions(qlen, ops, &parents);
+        let alnlen = qlen + maxi.iter().sum::<usize>();
+        let mut paln: Vec<Vec<u8>> = parents
+            .iter()
+            .map(|&p| parent_row(&db.seqs[candidates[p]], &ops[p], &maxi))
+            .collect();
+        let qaln = query_row(query, &maxi);
+        // the parent of each column: the segment covering its query position
+        let mut model = Vec::with_capacity(alnlen);
+        let mut nth = 0;
+        for (qpos, &gaps) in maxi[..qlen].iter().enumerate() {
+            if nth + 1 < segments.len() && qpos >= segments[nth].start + segments[nth].len {
+                nth += 1;
+            }
+            let letter = b'A' + nth as u8;
+            model.extend(std::iter::repeat_n(letter, gaps + 1));
+        }
+        model.extend(std::iter::repeat_n(b'A' + nth as u8, maxi[qlen]));
+
+        let mut diffs = vec![b' '; alnlen];
+        for i in 0..alnlen {
+            let qsym = code(qaln[i]);
+            let psym: Vec<u8> = paln.iter().map(|row| code(row[i])).collect();
+            for (row, &p) in paln.iter_mut().zip(&psym) {
+                if p != 0 && p != qsym {
+                    row[i] = row[i].to_ascii_lowercase();
+                }
+            }
+            if qsym != 0 && psym.iter().all(|&p| p != 0) {
+                let mut found = 0;
+                for (f, &p) in psym.iter().enumerate() {
+                    if p == qsym {
+                        diffs[i] = b'A' + f as u8;
+                        found += 1;
+                    }
+                }
+                if found > 1 {
+                    diffs[i] = b' ';
+                }
+            }
+        }
+        let identities: Vec<f64> = paln
+            .iter()
+            .map(|row| {
+                let same = (0..alnlen)
+                    .filter(|&i| code(qaln[i]) == code(row[i]))
+                    .count();
+                100.0 * same as f64 / alnlen as f64
+            })
+            .collect();
+        let qt = identities.iter().copied().fold(0.0, f64::max);
+        let (qa, qb) = (identities[0], identities[1]);
+        let qc = identities.get(2).copied().unwrap_or(0.0);
+        let qm = 100.0;
+        let divfrac = 100.0 * (qm - qt) / qt;
+        let labels: Vec<&String> = parents.iter().map(|&p| &db.labels[candidates[p]]).collect();
+
+        let mut text = String::new();
+        text.push('\n');
+        text.push_str(&"-".repeat(72));
+        let _ = write!(text, "\nQuery   ({qlen:5} nt) {label}");
+        for (f, &p) in parents.iter().enumerate() {
+            let _ = write!(
+                text,
+                "\nParent{} ({:5} nt) {}",
+                (b'A' + f as u8) as char,
+                db.seqs[candidates[p]].len(),
+                labels[f]
+            );
+        }
+        text.push_str("\n\n");
+        let width = if self.options.width > 0 {
+            self.options.width
+        } else {
+            alnlen
+        };
+        let mut qpos = 0;
+        let mut ppos = vec![0usize; parents.len()];
+        let mut i = 0;
+        while i < alnlen {
+            let w = width.min(alnlen - i);
+            let residues = |row: &[u8]| row[i..i + w].iter().filter(|&&c| c != b'-').count();
+            let row = |text: &mut String, name: char, start: usize, row: &[u8], n: usize| {
+                let _ = writeln!(
+                    text,
+                    "{name} {:5} {} {}",
+                    start + 1,
+                    String::from_utf8_lossy(&row[i..i + w]),
+                    start + n
+                );
+            };
+            let qnt = residues(&qaln);
+            row(&mut text, 'Q', qpos, &qaln, qnt);
+            for (f, prow) in paln.iter().enumerate() {
+                let pnt = residues(prow);
+                row(&mut text, (b'A' + f as u8) as char, ppos[f], prow, pnt);
+                ppos[f] += pnt;
+            }
+            for (name, annotation) in [("Diffs   ", &diffs), ("Model   ", &model)] {
+                text.push_str(name);
+                text.push_str(&String::from_utf8_lossy(&annotation[i..i + w]));
+                text.push('\n');
+            }
+            text.push('\n');
+            qpos += qnt;
+            i += width;
+        }
+        let _ = writeln!(
+            text,
+            "Ids.  QA {qa:.2}%, QB {qb:.2}%, QC {qc:.2}%, QT {qt:.2}%, QModel {qm:.2}%, Div. \
+             {divfrac:+.2}%"
+        );
+        let third = labels.get(2).map_or("*", |l| l.as_str());
+        let table = format!(
+            "99.9999\t{label}\t{}\t{}\t{third}\t{qm:.2}\t{qa:.2}\t{qb:.2}\t{qc:.2}\t{qt:.2}\t0\t0\t0\t\
+             0\t0\t0\t0.00\tY\n",
+            labels[0], labels[1]
+        );
+        Verdict {
+            status: Status::Chimeric,
+            table,
+            alignment: Some(text),
+        }
     }
 }
