@@ -76,9 +76,8 @@ class ToolsMdPreprocessing(unittest.TestCase):
             '--fastq_minlen 50 --fastq_maxee 1 --fastqout m'),
             'sqtrim -i in --qual 2 > w/tmp1.sqtrim\n'
             'sqtrim -i rev --qual 2 > w/tmp2.sqtrim\n'
-            'sqfilt -i w/tmp1.sqtrim --reverse w/tmp2.sqtrim --rev-out w/tmp3.rev '
-            '--min-len 50 > w/tmp4.sqfilt\n'
-            'mergpa -i w/tmp4.sqfilt --reverse w/tmp3.rev | sqfilt --max-ee 1 '
+            'sqfilt --reverse w/tmp2.sqtrim --rev-out w/tmp3.rev --min-len 50 '
+            '< w/tmp1.sqtrim | mergpa --reverse w/tmp3.rev | sqfilt --max-ee 1 '
             '> w/tmp6.sqfilt')
 
     def test_mergepairs_lengths(self):
@@ -411,6 +410,63 @@ class EveryCommand(unittest.TestCase):
             self.assertTrue(p.outputs, cmd)
 
 
+class Compressed(unittest.TestCase):
+    """Compressed inputs go through gzip -dc or bzip2 -dc, known by their
+    magic numbers as vsearch knows them, or by --gzip_decompress."""
+
+    def setUp(self):
+        import bz2, gzip, os, tempfile
+        self.d = tempfile.mkdtemp()
+        fq = b'@a\nACGT\n+\nIIII\n'
+        fa = b'>d\nACGTACGT\n'
+        self.fq_gz = os.path.join(self.d, 'q.fq.gz')
+        self.fa_bz = os.path.join(self.d, 'db.fa.bz2')
+        self.fa_gz = os.path.join(self.d, 'a.fa.gz')
+        with gzip.open(self.fq_gz, 'wb') as f:
+            f.write(fq)
+        with bz2.open(self.fa_bz, 'wb') as f:
+            f.write(fa)
+        with gzip.open(self.fa_gz, 'wb') as f:
+            f.write(fa)
+        self.plain = os.path.join(self.d, 'q.fq')
+        with open(self.plain, 'wb') as f:
+            f.write(fq)
+
+    def test_gzip(self):
+        p = translate(f'--fastx_revcomp {self.fq_gz} --fastqout o'.split(), W)
+        self.assertEqual(p.render(), f'gzip -dc {self.fq_gz} | revcomp > '
+                         'w/tmp2.revcomp')
+        self.assertTrue(p.steps[0].system)
+        self.assertEqual(p.steps[0].argv('bin'), ['gzip', '-dc', self.fq_gz])
+        self.assertEqual(p.steps[1].argv('bin'), ['bin/revcomp'])
+
+    def test_format_inside(self):
+        # FASTA inside the gzip file: no conv at --fasta_width 0
+        r = translate(f'--fastx_revcomp {self.fa_gz} --fasta_width 0 '
+                      '--fastaout o'.split(), W).render()
+        self.assertEqual(r, f'gzip -dc {self.fa_gz} | revcomp > w/tmp2.revcomp')
+
+    def test_database_and_pairs(self):
+        r = translate(f'--usearch_global {self.fq_gz} --db {self.fa_bz} --id 1 '
+                      '--qmask soft --dbmask soft --uc u'.split(), W).render()
+        self.assertIn(f'gzip -dc {self.fq_gz} > w/tmp1.fastq', r)
+        self.assertIn(f'bzip2 -dc {self.fa_bz} | sqfilt --min-len 32 '
+                      '--max-len 50000 > w/tmp3.db', r)
+        self.assertIn('dbsrch --db w/tmp3.db --id 1 --maxhits 1 < w/tmp1.fastq', r)
+        r = translate(f'--fastq_mergepairs {self.fq_gz} --reverse {self.fq_gz} '
+                      '--fastqout m'.split(), W).render()
+        self.assertIn('mergpa --reverse w/tmp2.fastq < w/tmp1.fastq', r)
+
+    def test_flag(self):
+        # vsearch reads an uncompressed file as it is with --gzip_decompress
+        r = translate(f'--fastx_revcomp {self.plain} --gzip_decompress '
+                      '--fastqout o'.split(), W).render()
+        self.assertEqual(r, f'revcomp -i {self.plain} > w/tmp1.revcomp')
+        r = translate(f'--fastx_revcomp {self.fq_gz} --gzip_decompress '
+                      '--fastqout o'.split(), W).render()
+        self.assertTrue(r.startswith(f'gzip -dc {self.fq_gz} |'))
+
+
 class Errors(unittest.TestCase):
 
     def bad(self, cmd, text):
@@ -425,8 +481,8 @@ class Errors(unittest.TestCase):
         self.bad('--help', 'no rsearch translation')
 
     def test_untranslatable(self):
-        self.bad('--fastx_filter in --gzip_decompress --fastqout o',
-                 '--gzip_decompress')
+        self.bad('--fastx_filter in --gzip_decompress --bzip2_decompress '
+                 '--fastqout o', '--bzip2_decompress')
         self.bad('--cluster_fast in --id 0.9 --alnout a', '--alnout with')
         self.bad('--cluster_fast in --id 0.9 --clusters c', '--fasta_width 80')
         self.bad('--fastx_filter in --fastq_minlen 0 --fastqout o', 'empty read')
