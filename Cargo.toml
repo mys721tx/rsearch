@@ -164,3 +164,7 @@ harness = false
 [[bench]]
 name = "unoise"
 harness = false
+
+[[bench]]
+name = "clspl"
+harness = false
