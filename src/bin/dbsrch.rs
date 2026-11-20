@@ -267,10 +267,10 @@ fn main() {
         let qsize = checked_abundance(label)
             .unwrap_or_else(|e| fail(&format!("{e} in read {label}"))) as i64;
         let query = record.seq();
-        let mut hits = searcher.search(label, qsize, query, false);
+        let mut hits = searcher.search(&db, label, qsize, query, false);
         if both {
             reverse_complement_keeping_case(&mut minus, query);
-            hits.extend(searcher.search(label, qsize, &minus, true));
+            hits.extend(searcher.search(&db, label, qsize, &minus, true));
         }
         order(&mut hits, iddef);
         hits.truncate(max_hits);

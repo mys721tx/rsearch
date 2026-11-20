@@ -236,6 +236,12 @@ impl Index {
     pub fn without_words(&self) -> u64 {
         self.without_words
     }
+
+    /// the start of each word's sequences, one more ending the last, and
+    /// the sequences.
+    pub fn into_parts(self) -> (Vec<u64>, Vec<u32>) {
+        (self.starts, self.sequences)
+    }
 }
 
 /// counts, for each word, the sequences of `seqs` holding it, as vsearch's
