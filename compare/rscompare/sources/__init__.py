@@ -64,4 +64,4 @@ def seeds(a: int, b: int) -> List[int]:
     return list(range(a, b + 1))
 
 
-from . import preprocess, analysis, fuzz, datasets  # noqa: E402,F401
+from . import preprocess, analysis, fuzz, compressed, datasets  # noqa: E402,F401
