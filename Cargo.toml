@@ -1,3 +1,6 @@
+[workspace]
+members = ["compare"]
+
 [package]
 name = "rsearch"
 version = "0.1.0"
@@ -17,6 +20,7 @@ path = "src/lib/lib.rs"
 
 [dev-dependencies]
 criterion = "0.8.2"
+rscompare = { path = "compare" }
 
 [[bench]]
 name = "conv"

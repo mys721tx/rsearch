@@ -1,0 +1,9 @@
+[package]
+name = "rscompare"
+version = "0.1.0"
+edition = "2024"
+description = "Compares rsearch with vsearch: translates vsearch command lines into rsearch pipelines, runs both, and compares their outputs"
+publish = false
+
+[dependencies]
+serde_json = "1.0.154"
