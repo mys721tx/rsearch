@@ -24,6 +24,8 @@ cut at spaces without `--notrunclabels`, several threads), is listed in
 `caveats` instead.
 """
 
+import bz2
+import gzip
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -39,8 +41,11 @@ class Step:
     args: List[str]
     stdin: Optional[str] = None
     stdout: Optional[str] = None
+    system: bool = False   # a program on PATH (gzip, bzip2), not rsearch's
 
     def argv(self, bindir: str) -> List[str]:
+        if self.system:
+            return [self.tool] + self.args
         return [os.path.join(bindir, self.tool)] + self.args
 
     def inputs(self) -> List[str]:
@@ -115,14 +120,33 @@ def _close(pending) -> str:
     return text + (' > ' + out if out else '')
 
 
-# the first bytes of a file: FASTA, FASTQ, UDB or SFF, or None
-def sniff(path: Optional[str]) -> Optional[str]:
+def compression(path: Optional[str]) -> Optional[str]:
+    """'gzip' or 'bzip2' by the file's magic number, as vsearch detects
+    them, or None."""
     if not path or path == '-':
         return None
     try:
         with open(path, 'rb') as f:
-            head = f.read(4)
+            head = f.read(3)
     except OSError:
+        return None
+    if head[:2] == b'\x1f\x8b':
+        return 'gzip'
+    if head == b'BZh':
+        return 'bzip2'
+    return None
+
+
+# the first bytes of a file, inside its compression: FASTA, FASTQ, UDB or
+# SFF, or None
+def sniff(path: Optional[str]) -> Optional[str]:
+    if not path or path == '-':
+        return None
+    opener = {'gzip': gzip.open, 'bzip2': bz2.open}.get(compression(path), open)
+    try:
+        with opener(path, 'rb') as f:
+            head = f.read(4)
+    except (OSError, EOFError, ValueError):
         return None
     if head[:1] == b'>':
         return 'fasta'
@@ -195,6 +219,30 @@ class _Translator:
         self.p = Pipeline(self.cmd, list(argv))
         self.n = 0
         self.width = 80
+        self.formats: Dict[str, Optional[str]] = {}
+
+    def fmt(self, path: Optional[str]) -> Optional[str]:
+        """The format of an input, or of the file a step decompressed it
+        into."""
+        if path in self.formats:
+            return self.formats[path]
+        return sniff(path)
+
+    def decompressed(self, path: Optional[str]):
+        """A compressed input through gzip -dc or bzip2 -dc. vsearch knows
+        a compressed file by its magic number; --gzip_decompress and
+        --bzip2_decompress matter only for a pipe, and an uncompressed file
+        is read as it is with them."""
+        if not path or path == '-':
+            return path
+        kind = compression(path)
+        if kind is None:
+            return path
+        fmt = sniff(path)
+        out = self.tmp(fmt or kind)
+        self.p.steps.append(Step(kind, ['-dc', path], None, out, system=True))
+        self.formats[out] = fmt
+        return out
 
     # building blocks
 
@@ -211,7 +259,12 @@ class _Translator:
 
     def run(self, tool: str, args: List[str], stdin: Optional[str] = None,
             stdout: Optional[str] = None, name: str = 'out') -> str:
-        """Adds a step; returns the file its standard output goes to."""
+        """Adds a step; returns the file its standard output goes to. A
+        temporary file given first as -i is read on standard input instead,
+        so that it streams as in a shell pipeline."""
+        if stdin is None and len(args) >= 2 and args[0] == '-i' \
+                and _tmp(args[1]):
+            stdin, args = args[1], list(args[2:])
         if stdout is None:
             stdout = self.tmp(name)
         self.p.steps.append(Step(tool, list(args), stdin, stdout))
@@ -411,10 +464,15 @@ class _Translator:
         if not a.flag('notrunclabels') and self.cmd not in WHOLE_HEADERS:
             self.caveat('labels are whole (decision 9): vsearch cuts them at '
                         'the first space or tab without --notrunclabels')
-        for v in ('gzip_decompress', 'bzip2_decompress'):
+        gz, bz = a.flag('gzip_decompress'), a.flag('bzip2_decompress')
+        if gz and bz:
+            raise TranslationError('--gzip_decompress with --bzip2_decompress')
+        if self.inp == '-' and (gz or bz):
+            raise TranslationError('compressed standard input: give a file')
+        self.inp = self.decompressed(self.inp)
+        for v in ('reverse', 'db'):
             if a.has(v):
-                raise TranslationError(f'--{v}: rsearch reads no compressed '
-                                       'input')
+                a.opts[v] = self.decompressed(a.opts[v])
         self.width = a.take_num('fasta_width', 80)
         self.threads()
         handler = getattr(self, 't_' + self.cmd, None)
@@ -540,7 +598,7 @@ class _Translator:
         offset = str(a.opts.get('fastq_ascii', 33))
         q = self.qual_in()
         rev = a.take('reverse')
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         src, rsrc = self.inp, rev
         if trim:
             src = self.run('sqtrim', ['-i', src] + trim + q, name='sqtrim')
@@ -570,7 +628,7 @@ class _Translator:
         if disc:
             self.records(disc, fmt, 'fastaout_discarded', 'fastqout_discarded')
         if rev:
-            rfmt = sniff(rev)
+            rfmt = self.fmt(rev)
             self.records(rkept, rfmt, 'fastaout_rev', 'fastqout_rev')
             if rdisc:
                 self.records(rdisc, rfmt, 'fastaout_discarded_rev',
@@ -690,7 +748,7 @@ class _Translator:
         if a.has('read_separators'):
             args += ['--separators', str(a.take('read_separators'))]
         self.run('syncpa', args, name='syncpa')
-        ffmt, rfmt = sniff(self.inp), sniff(rev)
+        ffmt, rfmt = self.fmt(self.inp), self.fmt(rev)
         self.records(outs['fwd'], ffmt, 'fastaout', 'fastqout')
         self.records(outs['rev'], rfmt, 'fastaout_rev', 'fastqout_rev')
         self.records(outs['orphans'], ffmt, 'fastaout_orphans',
@@ -703,7 +761,7 @@ class _Translator:
     def derep(self, mode: List[str], min_default: int, fa: str,
               fq: Optional[str] = None):
         a = self.a
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         src = self.filtered(self.inp, min_default)
         args = list(mode)
         if a.has('strand'):
@@ -767,7 +825,7 @@ class _Translator:
         a.take('sizein')
         s = self.run('rerep', args, name='rerep')
         s = self.labels(s, skip=('sizeout',))
-        self.fasta('output', s, sniff(self.inp))
+        self.fasta('output', s, self.fmt(self.inp))
 
     # sequence manipulation
 
@@ -775,7 +833,7 @@ class _Translator:
         s = self.run('revcomp', ['-i', self.inp], name='revcomp')
         self.a.take('sizein')
         s = self.labels(s, str(self.a.opts.get('fastq_ascii', 33)))
-        self.records(s, sniff(self.inp), 'fastaout', 'fastqout')
+        self.records(s, self.fmt(self.inp), 'fastaout', 'fastqout')
 
     def mask_command(self, fa: str, fq: Optional[str]):
         a = self.a
@@ -803,7 +861,7 @@ class _Translator:
                 self.run('sqfilt', ['-i', s] + args, name='sqfilt')
         a.take('sizein')
         s = self.labels(s, str(a.opts.get('fastq_ascii', 33)))
-        self.records(s, sniff(self.inp), fa, fq)
+        self.records(s, self.fmt(self.inp), fa, fq)
 
     def t_fastx_mask(self):
         self.mask_command('fastaout', 'fastqout')
@@ -823,7 +881,7 @@ class _Translator:
                            str(a.take('cut_pattern')), '--rev-out', outs['rev'],
                            '--uncut', outs['uncut'], '--rev-uncut',
                            outs['rev_uncut']], stdout=outs['cut'])
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         self.fasta('fastaout', outs['cut'], fmt)
         self.fasta('fastaout_rev', outs['rev'], fmt)
         self.fasta('fastaout_discarded', outs['uncut'], fmt)
@@ -844,7 +902,7 @@ class _Translator:
         s = self.run('scrmbl', args, name='scrmbl')
         self.a.take('sizein')
         s = self.labels(s, str(self.a.opts.get('fastq_ascii', 33)))
-        self.records(s, sniff(self.inp), 'fastaout', 'fastqout')
+        self.records(s, self.fmt(self.inp), 'fastaout', 'fastqout')
 
     # retrieval
 
@@ -882,7 +940,7 @@ class _Translator:
                     sub += [r, str(a.take(v))]
             s = self.run('subseq', sub, stdin=s, name='subseq')
         a.take('sizein')
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         s = self.labels(s, str(a.opts.get('fastq_ascii', 33)))
         self.records(s, fmt, 'fastaout', 'fastqout')
         if disc:
@@ -912,7 +970,7 @@ class _Translator:
             s = self.run('topn', [str(a.take('topn'))], stdin=s, name='topn')
         a.take('sizein')
         s = self.labels(s)
-        self.fasta('output', s, sniff(self.inp))
+        self.fasta('output', s, self.fmt(self.inp))
 
     def t_sortbylength(self):
         self.sort('--length')
@@ -928,7 +986,7 @@ class _Translator:
             s = self.run('topn', [str(a.take('topn'))], stdin=s, name='topn')
         a.take('sizein')
         s = self.labels(s)
-        self.fasta('output', s, sniff(self.inp))
+        self.fasta('output', s, self.fmt(self.inp))
 
     def t_fastx_subsample(self):
         a = self.a
@@ -953,7 +1011,7 @@ class _Translator:
             args += ['--discarded', disc]
         self.no_labels('relabelling subsamples is not translated')
         kept = self.step('subsmp', s, args, name='subsmp')
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         self.records(kept, fmt, 'fastaout', 'fastqout')
         if disc:
             self.records(disc, fmt, 'fastaout_discarded', 'fastqout_discarded')
@@ -1011,7 +1069,7 @@ class _Translator:
                                 '(decision 28)')
                 s = self.run('getseq', ['--hits', hits(kind), '-i', src] + extra,
                              name=opt)
-                self.fasta(opt, s, sniff(src) if src != db else 'fasta')
+                self.fasta(opt, s, self.fmt(src) if src != db else 'fasta')
         for opt, args, comp in (('otutabout', [], 'bytes'),
                                 ('mothur_shared_out', ['--mothur'], 'bytes'),
                                 ('biomout', ['--biom'], 'biom')):
@@ -1050,7 +1108,7 @@ class _Translator:
         db = self.a.take('db')
         if db is None:
             raise TranslationError(f'--{self.cmd} needs --db')
-        if sniff(db) == 'udb':
+        if self.fmt(db) == 'udb':
             self.lengths(min_default)
             if mask_style:
                 self.a.take('dbmask')
@@ -1169,7 +1227,7 @@ class _Translator:
         db = a.take('db')
         if db is None:
             raise TranslationError('--orient needs --db')
-        if sniff(db) == 'udb':
+        if self.fmt(db) == 'udb':
             self.lengths(1)
             a.take('dbmask')
             a.take('hardmask')
@@ -1204,7 +1262,7 @@ class _Translator:
         if a.has('log'):
             self.output('log', self.path('log'), 'orient-log')
         self.no_search_labels()
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         self.records(out, fmt, 'fastaout', 'fastqout')
         if a.has('notmatched'):
             if fmt == 'fastq':
@@ -1261,7 +1319,7 @@ class _Translator:
             if a.has(o):
                 raise TranslationError(f'--{o} with --{self.cmd}: no rsearch '
                                        'translation')
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         self.fasta('centroids', cent, fmt)
         if a.has('uc'):
             self.output('uc', hits,
@@ -1346,7 +1404,7 @@ class _Translator:
         for v in ('uchimeout', 'uchimealns'):
             if a.has(v):
                 self.output(v, self.path(v))
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         self.fasta('nonchimeras', non, fmt)
         for v, f in outs.items():
             self.fasta(v, f, fmt)
@@ -1389,7 +1447,7 @@ class _Translator:
         for v in ('tabbedout', 'alnout'):
             if a.has(v):
                 self.output(v, self.path(v))
-        fmt = sniff(self.inp)
+        fmt = self.fmt(self.inp)
         self.fasta('nonchimeras', non, fmt)
         if chim:
             self.fasta('chimeras', chim, fmt)
@@ -1401,7 +1459,7 @@ class _Translator:
         db = a.take('db')
         if db is None:
             raise TranslationError('--sintax needs --db')
-        if sniff(db) != 'udb':
+        if self.fmt(db) != 'udb':
             mode = a.take('dbmask', 'dust')
             if mode not in ('dust', 'soft', 'none'):
                 raise TranslationError(f'--dbmask {mode}')
