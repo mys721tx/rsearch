@@ -54,3 +54,61 @@ pub fn split(header: &[u8]) -> [std::ops::Range<usize>; 9] {
     }
     levels
 }
+
+/// the last common ancestor of the taxonomies in `headers`, as vsearch's
+/// `--lcaout`. At each level, a candidate is voted for by the headers
+/// agreeing with it on that level and those above (a majority vote, as
+/// vsearch's). The levels are written while at least `cutoff` of the
+/// headers agree with their candidate, empty names skipped.
+///
+/// # Example
+/// ```rust
+/// # use rsearch::taxonomy::lca;
+/// let headers: [&[u8]; 3] = [b"a;tax=d:B,p:P1,g:G1", b"b;tax=d:B,p:P1,g:G2", b"c;tax=d:B,p:P2"];
+/// assert_eq!(lca(&headers, 0.6), b"d:B,p:P1");
+/// assert_eq!(lca(&headers, 1.0), b"d:B");
+/// ```
+pub fn lca(headers: &[&[u8]], cutoff: f64) -> Vec<u8> {
+    let names: Vec<[&[u8]; 9]> = headers
+        .iter()
+        .map(|header| split(header).map(|range| &header[range]))
+        .collect();
+    // the candidate of each level, and its votes
+    let mut candidate = [0usize; 9];
+    let mut votes = [0i64; 9];
+    let agree = |a: usize, b: usize, k: usize| (0..=k).all(|j| names[a][j] == names[b][j]);
+    for i in 0..names.len() {
+        for k in 0..LEVELS.len() {
+            if votes[k] == 0 {
+                candidate[k] = i;
+                votes[k] = 1;
+            } else if agree(candidate[k], i, k) {
+                votes[k] += 1;
+            } else {
+                votes[k] -= 1;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if names.is_empty() {
+        return out;
+    }
+    for k in 0..LEVELS.len() {
+        let matching = (0..names.len())
+            .filter(|&i| agree(candidate[k], i, k))
+            .count();
+        if (matching as f64) / (names.len() as f64) < cutoff {
+            break;
+        }
+        let name = names[candidate[k]][k];
+        if !name.is_empty() {
+            if !out.is_empty() {
+                out.push(b',');
+            }
+            out.push(LEVELS[k]);
+            out.push(b':');
+            out.extend_from_slice(name);
+        }
+    }
+    out
+}
