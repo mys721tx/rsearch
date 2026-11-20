@@ -1,0 +1,444 @@
+//! End-to-end tests of the clspl binary.
+//!
+//! Expected files are those vsearch writes with `--clusters` (with
+//! `--sizein --notrunclabels --fasta_width 0`), beside its `--uc` clusters,
+//! which clspl reads with the sequences clustered.
+
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+
+/// Variants of three templates, in mixed case, reverse complements, and
+/// an empty sequence.
+const INPUT: &str = r##">s0;size=6
+GAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCTCTGCTGCGAATGGCTGCT
+>s1
+ATATCACCCCCTACCTTCAAATGCCTTGACCTAACGCCCTAATCCTGCGCGCTGCGTAGCAGCGACGAGATGGCATCGTT
+>s2
+ATATCACACCCAACCTTCAAATGCCGTGCCCTAACGCCCTAATCCTGCTCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s3
+AGCAGCCATTCGCAGCAGGGATTGACCCTCGCACAGGAAGCGGTTATGACATTGCAACTAGATTACCATAGGCGGTTCTT
+>s4
+atatcacacccaaccttcaaATGCCGTGCCCTAACGCCCTAATCCTGCGCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s5;size=5
+AGCAGCCATTCGCAGCAGCGATTGGCGCTCGCACAGGAAGCGGTTGTGACATTGCAACTAGATTACCATTGGCGGTTCTT
+>s6
+attcccggggacactttgctAATCGTAAGTGGGCGTCCCGGCAGTGTGGTTCCTACCATGGAAGCTTCAGAATCTCAATT
+>s7
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGCATCTCAATT
+>s8
+ATTCCCGGGCACACTTTGCCAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGGATCTCAGTT
+>s9
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTTCCATGGAAGCTTCAGGATCTCAATT
+>s10
+AATTGAGATCCTGAAGCGCCAATGGTAGGAACGAAGCTGTGGGGACGCCCACTTACGATTAGAAAAGTGTCCCCGGGAAT
+>s11
+AAGAACCGCGTATGGTAATCAAGCTGCAATGTCACAACTGCTTCATGTGCGATCGTCAATCCCTGCTGCCAATGGCTGCT
+>s12;size=3
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s13;size=1
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>e
+
+"##;
+
+/// The input sorted by length, as --cluster_fast clusters it.
+const BY_LENGTH: &str = r##">s0;size=6
+GAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCTCTGCTGCGAATGGCTGCT
+>s5;size=5
+AGCAGCCATTCGCAGCAGCGATTGGCGCTCGCACAGGAAGCGGTTGTGACATTGCAACTAGATTACCATTGGCGGTTCTT
+>s12;size=3
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s1
+ATATCACCCCCTACCTTCAAATGCCTTGACCTAACGCCCTAATCCTGCGCGCTGCGTAGCAGCGACGAGATGGCATCGTT
+>s10
+AATTGAGATCCTGAAGCGCCAATGGTAGGAACGAAGCTGTGGGGACGCCCACTTACGATTAGAAAAGTGTCCCCGGGAAT
+>s11
+AAGAACCGCGTATGGTAATCAAGCTGCAATGTCACAACTGCTTCATGTGCGATCGTCAATCCCTGCTGCCAATGGCTGCT
+>s13;size=1
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s2
+ATATCACACCCAACCTTCAAATGCCGTGCCCTAACGCCCTAATCCTGCTCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s3
+AGCAGCCATTCGCAGCAGGGATTGACCCTCGCACAGGAAGCGGTTATGACATTGCAACTAGATTACCATAGGCGGTTCTT
+>s4
+atatcacacccaaccttcaaATGCCGTGCCCTAACGCCCTAATCCTGCGCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s6
+attcccggggacactttgctAATCGTAAGTGGGCGTCCCGGCAGTGTGGTTCCTACCATGGAAGCTTCAGAATCTCAATT
+>s7
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGCATCTCAATT
+>s8
+ATTCCCGGGCACACTTTGCCAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGGATCTCAGTT
+>s9
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTTCCATGGAAGCTTCAGGATCTCAATT
+>e
+
+"##;
+
+/// A path in the temporary directory, unique to this test process.
+fn temp_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("rsearch-clspl-{}-{name}", std::process::id()))
+}
+
+/// Runs clspl on `hits` and `input`, and returns its output and the files
+/// it wrote, by cluster.
+fn run(name: &str, hits: &str, input: &str) -> (Output, Vec<String>) {
+    let (hp, ip) = (
+        temp_path(&format!("{name}-hits")),
+        temp_path(&format!("{name}-in")),
+    );
+    let prefix = temp_path(&format!("{name}-c"));
+    std::fs::write(&hp, hits).unwrap();
+    std::fs::write(&ip, input).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_clspl"))
+        .arg("--hits")
+        .arg(&hp)
+        .arg("-i")
+        .arg(&ip)
+        .arg("--prefix")
+        .arg(&prefix)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let mut files = Vec::new();
+    for i in 0.. {
+        let path = PathBuf::from(format!("{}{i}", prefix.display()));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => files.push(text),
+            Err(_) => break,
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    let _ = std::fs::remove_file(&hp);
+    let _ = std::fs::remove_file(&ip);
+    (output, files)
+}
+
+/// Runs clspl, which must succeed, and returns its files.
+fn clspl(name: &str, hits: &str, input: &str) -> Vec<String> {
+    let (output, files) = run(name, hits, input);
+    assert!(
+        output.status.success(),
+        "clspl failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    files
+}
+
+const HITS: &str = r##"S	0	80	*	*	*	*	*	s0;size=6	*
+S	1	80	*	*	*	*	*	s1	*
+S	2	80	*	*	*	*	*	s2	*
+S	3	80	*	*	*	*	*	s3	*
+H	2	80	98.8	+	0	0	80M	s4	s2
+H	3	80	93.8	+	0	0	80M	s5;size=5	s3
+S	4	80	*	*	*	*	*	s6	*
+H	4	80	97.5	+	0	0	80M	s7	s6
+H	4	80	93.8	+	0	0	80M	s8	s6
+H	4	80	96.2	+	0	0	80M	s9	s6
+S	5	80	*	*	*	*	*	s10	*
+S	6	80	*	*	*	*	*	s11	*
+H	0	80	97.5	+	0	0	80M	s12;size=3	s0;size=6
+H	0	80	97.5	+	0	0	80M	s13;size=1	s0;size=6
+S	7	0	*	*	*	*	*	e	*
+C	0	10	*	*	*	*	*	s0;size=6	*
+C	1	1	*	*	*	*	*	s1	*
+C	2	2	*	*	*	*	*	s2	*
+C	3	6	*	*	*	*	*	s3	*
+C	4	4	*	*	*	*	*	s6	*
+C	5	1	*	*	*	*	*	s10	*
+C	6	1	*	*	*	*	*	s11	*
+C	7	1	*	*	*	*	*	e	*
+"##;
+
+#[test]
+fn writes_a_file_a_cluster() {
+    assert_eq!(
+        clspl("plain", HITS, INPUT),
+        &[
+            r##">s0;size=6
+GAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCTCTGCTGCGAATGGCTGCT
+>s12;size=3
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s13;size=1
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+"##,
+            r##">s1
+ATATCACCCCCTACCTTCAAATGCCTTGACCTAACGCCCTAATCCTGCGCGCTGCGTAGCAGCGACGAGATGGCATCGTT
+"##,
+            r##">s2
+ATATCACACCCAACCTTCAAATGCCGTGCCCTAACGCCCTAATCCTGCTCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s4
+atatcacacccaaccttcaaATGCCGTGCCCTAACGCCCTAATCCTGCGCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+"##,
+            r##">s3
+AGCAGCCATTCGCAGCAGGGATTGACCCTCGCACAGGAAGCGGTTATGACATTGCAACTAGATTACCATAGGCGGTTCTT
+>s5;size=5
+AGCAGCCATTCGCAGCAGCGATTGGCGCTCGCACAGGAAGCGGTTGTGACATTGCAACTAGATTACCATTGGCGGTTCTT
+"##,
+            r##">s6
+attcccggggacactttgctAATCGTAAGTGGGCGTCCCGGCAGTGTGGTTCCTACCATGGAAGCTTCAGAATCTCAATT
+>s7
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGCATCTCAATT
+>s8
+ATTCCCGGGCACACTTTGCCAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGGATCTCAGTT
+>s9
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTTCCATGGAAGCTTCAGGATCTCAATT
+"##,
+            r##">s10
+AATTGAGATCCTGAAGCGCCAATGGTAGGAACGAAGCTGTGGGGACGCCCACTTACGATTAGAAAAGTGTCCCCGGGAAT
+"##,
+            r##">s11
+AAGAACCGCGTATGGTAATCAAGCTGCAATGTCACAACTGCTTCATGTGCGATCGTCAATCCCTGCTGCCAATGGCTGCT
+"##,
+            r##">e
+
+"##
+        ]
+    );
+}
+
+#[test]
+fn keeps_members_of_the_minus_strand_as_they_are() {
+    let hits = r##"S	0	80	*	*	*	*	*	s0;size=6	*
+S	1	80	*	*	*	*	*	s1	*
+S	2	80	*	*	*	*	*	s2	*
+H	0	80	95.0	-	0	0	80M	s3	s0;size=6
+H	2	80	98.8	+	0	0	80M	s4	s2
+H	0	80	95.0	-	0	0	80M	s5;size=5	s0;size=6
+S	3	80	*	*	*	*	*	s6	*
+H	3	80	97.5	+	0	0	80M	s7	s6
+H	3	80	93.8	+	0	0	80M	s8	s6
+H	3	80	96.2	+	0	0	80M	s9	s6
+S	4	80	*	*	*	*	*	s10	*
+S	5	80	*	*	*	*	*	s11	*
+H	0	80	97.5	+	0	0	80M	s12;size=3	s0;size=6
+H	0	80	97.5	+	0	0	80M	s13;size=1	s0;size=6
+S	6	0	*	*	*	*	*	e	*
+C	0	16	*	*	*	*	*	s0;size=6	*
+C	1	1	*	*	*	*	*	s1	*
+C	2	2	*	*	*	*	*	s2	*
+C	3	4	*	*	*	*	*	s6	*
+C	4	1	*	*	*	*	*	s10	*
+C	5	1	*	*	*	*	*	s11	*
+C	6	1	*	*	*	*	*	e	*
+"##;
+    assert_eq!(
+        clspl("both", hits, INPUT),
+        &[
+            r##">s0;size=6
+GAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCTCTGCTGCGAATGGCTGCT
+>s3
+AGCAGCCATTCGCAGCAGGGATTGACCCTCGCACAGGAAGCGGTTATGACATTGCAACTAGATTACCATAGGCGGTTCTT
+>s5;size=5
+AGCAGCCATTCGCAGCAGCGATTGGCGCTCGCACAGGAAGCGGTTGTGACATTGCAACTAGATTACCATTGGCGGTTCTT
+>s12;size=3
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s13;size=1
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+"##,
+            r##">s1
+ATATCACCCCCTACCTTCAAATGCCTTGACCTAACGCCCTAATCCTGCGCGCTGCGTAGCAGCGACGAGATGGCATCGTT
+"##,
+            r##">s2
+ATATCACACCCAACCTTCAAATGCCGTGCCCTAACGCCCTAATCCTGCTCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s4
+atatcacacccaaccttcaaATGCCGTGCCCTAACGCCCTAATCCTGCGCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+"##,
+            r##">s6
+attcccggggacactttgctAATCGTAAGTGGGCGTCCCGGCAGTGTGGTTCCTACCATGGAAGCTTCAGAATCTCAATT
+>s7
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGCATCTCAATT
+>s8
+ATTCCCGGGCACACTTTGCCAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGGATCTCAGTT
+>s9
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTTCCATGGAAGCTTCAGGATCTCAATT
+"##,
+            r##">s10
+AATTGAGATCCTGAAGCGCCAATGGTAGGAACGAAGCTGTGGGGACGCCCACTTACGATTAGAAAAGTGTCCCCGGGAAT
+"##,
+            r##">s11
+AAGAACCGCGTATGGTAATCAAGCTGCAATGTCACAACTGCTTCATGTGCGATCGTCAATCCCTGCTGCCAATGGCTGCT
+"##,
+            r##">e
+
+"##
+        ]
+    );
+}
+
+#[test]
+fn splits_the_clusters_of_sorted_input() {
+    let hits = r##"S	0	80	*	*	*	*	*	s0;size=6	*
+S	1	80	*	*	*	*	*	s5;size=5	*
+H	0	80	97.5	+	0	0	80M	s12;size=3	s0;size=6
+S	2	80	*	*	*	*	*	s1	*
+S	3	80	*	*	*	*	*	s10	*
+S	4	80	*	*	*	*	*	s11	*
+H	0	80	97.5	+	0	0	80M	s13;size=1	s0;size=6
+S	5	80	*	*	*	*	*	s2	*
+H	1	80	93.8	+	0	0	80M	s3	s5;size=5
+H	5	80	98.8	+	0	0	80M	s4	s2
+S	6	80	*	*	*	*	*	s6	*
+H	6	80	97.5	+	0	0	80M	s7	s6
+H	6	80	93.8	+	0	0	80M	s8	s6
+H	6	80	96.2	+	0	0	80M	s9	s6
+S	7	0	*	*	*	*	*	e	*
+C	0	10	*	*	*	*	*	s0;size=6	*
+C	1	6	*	*	*	*	*	s5;size=5	*
+C	2	1	*	*	*	*	*	s1	*
+C	3	1	*	*	*	*	*	s10	*
+C	4	1	*	*	*	*	*	s11	*
+C	5	2	*	*	*	*	*	s2	*
+C	6	4	*	*	*	*	*	s6	*
+C	7	1	*	*	*	*	*	e	*
+"##;
+    assert_eq!(
+        clspl("fast", hits, BY_LENGTH),
+        &[
+            r##">s0;size=6
+GAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCTCTGCTGCGAATGGCTGCT
+>s12;size=3
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s13;size=1
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+"##,
+            r##">s5;size=5
+AGCAGCCATTCGCAGCAGCGATTGGCGCTCGCACAGGAAGCGGTTGTGACATTGCAACTAGATTACCATTGGCGGTTCTT
+>s3
+AGCAGCCATTCGCAGCAGGGATTGACCCTCGCACAGGAAGCGGTTATGACATTGCAACTAGATTACCATAGGCGGTTCTT
+"##,
+            r##">s1
+ATATCACCCCCTACCTTCAAATGCCTTGACCTAACGCCCTAATCCTGCGCGCTGCGTAGCAGCGACGAGATGGCATCGTT
+"##,
+            r##">s10
+AATTGAGATCCTGAAGCGCCAATGGTAGGAACGAAGCTGTGGGGACGCCCACTTACGATTAGAAAAGTGTCCCCGGGAAT
+"##,
+            r##">s11
+AAGAACCGCGTATGGTAATCAAGCTGCAATGTCACAACTGCTTCATGTGCGATCGTCAATCCCTGCTGCCAATGGCTGCT
+"##,
+            r##">s2
+ATATCACACCCAACCTTCAAATGCCGTGCCCTAACGCCCTAATCCTGCTCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s4
+atatcacacccaaccttcaaATGCCGTGCCCTAACGCCCTAATCCTGCGCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+"##,
+            r##">s6
+attcccggggacactttgctAATCGTAAGTGGGCGTCCCGGCAGTGTGGTTCCTACCATGGAAGCTTCAGAATCTCAATT
+>s7
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGCATCTCAATT
+>s8
+ATTCCCGGGCACACTTTGCCAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGGATCTCAGTT
+>s9
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTTCCATGGAAGCTTCAGGATCTCAATT
+"##,
+            r##">e
+
+"##
+        ]
+    );
+}
+
+#[test]
+fn writes_fastq() {
+    let fastq: String = INPUT
+        .split('>')
+        .skip(1)
+        .map(|record| {
+            let (header, seq) = record.split_once('\n').unwrap();
+            let seq = seq.trim_end();
+            format!("@{header}\n{seq}\n+\n{}\n", "I".repeat(seq.len()))
+        })
+        .collect();
+    let files = clspl("fastq", HITS, &fastq);
+    let fasta: Vec<String> = files
+        .iter()
+        .map(|f| {
+            f.lines()
+                .collect::<Vec<_>>()
+                .chunks(4)
+                .map(|r| format!(">{}\n{}\n", &r[0][1..], r[1]))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        fasta,
+        &[
+            r##">s0;size=6
+GAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCTCTGCTGCGAATGGCTGCT
+>s12;size=3
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+>s13;size=1
+AAGAACCGCCTATGGTAATCTAGTTGCAATGTCACAACCGCTTCCTGTGCGAGCGTCAATCCCTGCTGCGAATGGCTGCT
+"##,
+            r##">s1
+ATATCACCCCCTACCTTCAAATGCCTTGACCTAACGCCCTAATCCTGCGCGCTGCGTAGCAGCGACGAGATGGCATCGTT
+"##,
+            r##">s2
+ATATCACACCCAACCTTCAAATGCCGTGCCCTAACGCCCTAATCCTGCTCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+>s4
+atatcacacccaaccttcaaATGCCGTGCCCTAACGCCCTAATCCTGCGCTAGGGGTTGCAGCGACCAGATGGCATCGTT
+"##,
+            r##">s3
+AGCAGCCATTCGCAGCAGGGATTGACCCTCGCACAGGAAGCGGTTATGACATTGCAACTAGATTACCATAGGCGGTTCTT
+>s5;size=5
+AGCAGCCATTCGCAGCAGCGATTGGCGCTCGCACAGGAAGCGGTTGTGACATTGCAACTAGATTACCATTGGCGGTTCTT
+"##,
+            r##">s6
+attcccggggacactttgctAATCGTAAGTGGGCGTCCCGGCAGTGTGGTTCCTACCATGGAAGCTTCAGAATCTCAATT
+>s7
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGCATCTCAATT
+>s8
+ATTCCCGGGCACACTTTGCCAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTACCATGGAAGCTTCAGGATCTCAGTT
+>s9
+ATTCCCGGGGACACTTTGCTAATCGTAAGTGGGCGTCCCGACAGTGTGGTTCCTTCCATGGAAGCTTCAGGATCTCAATT
+"##,
+            r##">s10
+AATTGAGATCCTGAAGCGCCAATGGTAGGAACGAAGCTGTGGGGACGCCCACTTACGATTAGAAAAGTGTCCCCGGGAAT
+"##,
+            r##">s11
+AAGAACCGCGTATGGTAATCAAGCTGCAATGTCACAACTGCTTCATGTGCGATCGTCAATCCCTGCTGCCAATGGCTGCT
+"##,
+            r##">e
+
+"##
+        ]
+    );
+}
+
+#[test]
+fn splits_nothing() {
+    assert!(clspl("empty", "", "").is_empty());
+}
+
+#[test]
+fn rejects_hits_not_matching_the_records() {
+    // a label differs, a record is missing, one is left over, a record is
+    // not S, H or C, and a member's cluster comes before its centroid
+    let renamed = HITS.replacen("\ts1", "\tx1", 1);
+    let shorter = INPUT.rsplitn(3, '>').nth(2).unwrap().to_string();
+    let longer = format!("{INPUT}>more\nACGT\n");
+    let stray = format!("N\t*\t*\t*\t.\t*\t*\t*\ts0\t*\n{HITS}");
+    let early = HITS.replacen("S\t0\t", "H\t5\t", 1);
+    for (name, hits, input) in [
+        ("renamed", renamed.as_str(), INPUT),
+        ("shorter", HITS, shorter.as_str()),
+        ("longer", HITS, longer.as_str()),
+        ("stray", stray.as_str(), INPUT),
+        ("early", early.as_str(), INPUT),
+    ] {
+        let (output, files) = run(name, hits, input);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert!(files.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn rejects_invalid_arguments() {
+    for args in [&["--prefix", "x"][..], &["--hits", "x"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_clspl"))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+}
