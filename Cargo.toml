@@ -145,3 +145,6 @@ harness = false
 [[bench]]
 name = "lcatax"
 harness = false
+
+[profile.test]
+opt-level = 3
