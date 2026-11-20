@@ -19,6 +19,7 @@ pub mod random;
 pub mod report;
 pub mod scoring;
 pub mod scramble;
+pub mod search;
 pub mod select;
 pub mod sff;
 pub mod sintax;
