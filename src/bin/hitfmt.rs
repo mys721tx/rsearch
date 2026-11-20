@@ -12,7 +12,7 @@ use clap::{Arg, ArgAction, ArgGroup, Command, value_parser};
 use md5::{Digest, Md5};
 
 use rsearch::alignment::{Stats, parse_cigar, row};
-use rsearch::cluster::{complement, normalize_base, reverse_complement_keeping_case};
+use rsearch::cluster::{normalize_base, reverse_complement_keeping_case};
 use rsearch::fastx::{Reader, Record};
 use rsearch::hits::{UcHit, UcRecord};
 use rsearch::scoring::{FOUR_BIT, N, Scoring, is_ambiguous};
@@ -85,6 +85,8 @@ struct Formatter<'a> {
     iddef: usize,
     rowlen: usize,
     no_hits: bool,
+    /// vsearch's alignment symbol of each pair of 4-bit codes.
+    symbols: [[u8; 16]; 16],
 }
 
 /// formats a share with one decimal, as `%.1f`.
@@ -231,7 +233,8 @@ impl Formatter<'_> {
     }
 
     /// vsearch's `align_show`: blocks of `rowlen` columns of the alignment
-    /// without its terminal gaps.
+    /// without its terminal gaps, the query on the strand it was aligned,
+    /// numbered on the plus strand.
     fn show(
         &self,
         out: &mut Vec<u8>,
@@ -242,96 +245,73 @@ impl Formatter<'_> {
         rowlen: usize,
     ) {
         let s = &hit.stats;
-        let qseq = &query.seq;
-        let rev = hit.minus;
+        let qlen = query.seq.len() as i64;
+        let qseq = query.strand(hit.minus);
         let cigar = &hit.cigar[s.trim_aln_left..hit.cigar.len() - s.trim_aln_right];
-        let ops = parse_cigar(cigar).unwrap();
-        let mut qpos: i64 = if rev {
-            qseq.len() as i64 - 1 - s.trim_q_left
-        } else {
-            s.trim_q_left
-        };
-        let mut tpos = s.trim_t_left;
-        let (mut qstart, mut tstart) = (qpos, tpos);
-        let (mut qrow, mut symbols, mut trow) = (Vec::new(), Vec::new(), Vec::new());
-        let delta = if rev { -1 } else { 1 };
-        let block = |out: &mut Vec<u8>,
-                     qrow: &[u8],
-                     symbols: &[u8],
-                     trow: &[u8],
-                     qstart: i64,
-                     tstart: i64,
-                     qpos: i64,
-                     tpos: i64| {
-            let query_start = (qstart + 1).min(qseq.len() as i64);
-            let query_end = if rev { qpos + 2 } else { qpos };
-            let target_start = (tstart + 1).min(target.len() as i64);
-            let _ = write!(
-                Bytes(out),
-                "\nQry {query_start:width$} {} {} {query_end}\n    {}   {}\nTgt {target_start:width$} + {} {tpos}\n",
-                if rev { '-' } else { '+' },
-                String::from_utf8_lossy(qrow),
-                " ".repeat(width),
-                String::from_utf8_lossy(symbols),
-                String::from_utf8_lossy(trow),
-            );
-        };
-        for (op, run) in ops {
-            for _ in 0..run {
-                if qrow.is_empty() {
-                    qstart = qpos;
-                    tstart = tpos;
+        // the three rows, whole
+        let (mut qrow, mut trow) = (Vec::new(), Vec::new());
+        let (mut q, mut t) = (s.trim_q_left as usize, s.trim_t_left as usize);
+        for (op, run) in parse_cigar(cigar).unwrap() {
+            match op {
+                b'M' => {
+                    qrow.extend_from_slice(&qseq[q..q + run]);
+                    trow.extend_from_slice(&target[t..t + run]);
+                    q += run;
+                    t += run;
                 }
-                let qnuc = || {
-                    let c = qseq[qpos as usize];
-                    if rev { complement(c) } else { c }
-                };
-                match op {
-                    b'M' => {
-                        let (q, t) = (qnuc(), target[tpos as usize]);
-                        qrow.push(q);
-                        symbols.push(self.symbol(q, t));
-                        trow.push(t);
-                        qpos += delta;
-                        tpos += 1;
-                    }
-                    b'D' => {
-                        qrow.push(qnuc());
-                        symbols.push(b' ');
-                        trow.push(b'-');
-                        qpos += delta;
-                    }
-                    _ => {
-                        qrow.push(b'-');
-                        symbols.push(b' ');
-                        trow.push(target[tpos as usize]);
-                        tpos += 1;
-                    }
+                b'D' => {
+                    qrow.extend_from_slice(&qseq[q..q + run]);
+                    trow.extend(std::iter::repeat_n(b'-', run));
+                    q += run;
                 }
-                if qrow.len() == rowlen {
-                    block(out, &qrow, &symbols, &trow, qstart, tstart, qpos, tpos);
-                    qrow.clear();
-                    symbols.clear();
-                    trow.clear();
+                _ => {
+                    qrow.extend(std::iter::repeat_n(b'-', run));
+                    trow.extend_from_slice(&target[t..t + run]);
+                    t += run;
                 }
             }
         }
-        if !qrow.is_empty() {
-            block(out, &qrow, &symbols, &trow, qstart, tstart, qpos, tpos);
-        }
-    }
-
-    /// vsearch's alignment symbol of a column.
-    fn symbol(&self, q: u8, t: u8) -> u8 {
-        let (a, b) = (FOUR_BIT[usize::from(q)], FOUR_BIT[usize::from(t)]);
-        if self.scoring.n_mismatch && (a == N || b == N) {
-            b' '
-        } else if a == b && !is_ambiguous(a) {
-            b'|'
-        } else if a & b != 0 {
-            b'+'
+        let symbols: Vec<u8> = qrow
+            .iter()
+            .zip(&trow)
+            .map(|(&a, &b)| {
+                if a == b'-' || b == b'-' {
+                    b' '
+                } else {
+                    self.symbols[usize::from(FOUR_BIT[usize::from(a)])]
+                        [usize::from(FOUR_BIT[usize::from(b)])]
+                }
+            })
+            .collect();
+        // vsearch's positions: the query's index on the plus strand, moving
+        // down on the minus strand
+        let (mut qpos, delta) = if hit.minus {
+            (qlen - 1 - s.trim_q_left, -1)
         } else {
-            b' '
+            (s.trim_q_left, 1)
+        };
+        let mut tpos = s.trim_t_left;
+        let rowlen = rowlen.max(1);
+        for start in (0..qrow.len()).step_by(rowlen) {
+            let end = (start + rowlen).min(qrow.len());
+            let (qstart, tstart) = (qpos, tpos);
+            let residues = |row: &[u8]| row.iter().filter(|&&c| c != b'-').count() as i64;
+            qpos += delta * residues(&qrow[start..end]);
+            tpos += residues(&trow[start..end]);
+            let query_start = (qstart + 1).min(qlen);
+            let query_end = if hit.minus { qpos + 2 } else { qpos };
+            let target_start = (tstart + 1).min(target.len() as i64);
+            let _ = write!(
+                Bytes(out),
+                "\nQry {query_start:width$} {} ",
+                if hit.minus { '-' } else { '+' }
+            );
+            out.extend_from_slice(&qrow[start..end]);
+            let _ = write!(Bytes(out), " {query_end}\n    {:width$}   ", "");
+            out.extend_from_slice(&symbols[start..end]);
+            let _ = write!(Bytes(out), "\nTgt {target_start:width$} + ");
+            out.extend_from_slice(&trow[start..end]);
+            let _ = writeln!(Bytes(out), " {tpos}");
         }
     }
 
@@ -485,6 +465,27 @@ impl Formatter<'_> {
         };
         out.extend_from_slice(text.as_bytes());
     }
+}
+
+/// vsearch's alignment symbol of each pair of 4-bit codes: `|` for a base
+/// against itself, `+` for codes sharing a base, a space otherwise and,
+/// with `--n-mismatch`, against N.
+fn symbols(n_mismatch: bool) -> [[u8; 16]; 16] {
+    let mut table = [[b' '; 16]; 16];
+    for a in 0..16u8 {
+        for b in 0..16u8 {
+            table[usize::from(a)][usize::from(b)] = if n_mismatch && (a == N || b == N) {
+                b' '
+            } else if a == b && !is_ambiguous(a) {
+                b'|'
+            } else if a & b != 0 {
+                b'+'
+            } else {
+                b' '
+            };
+        }
+    }
+    table
 }
 
 /// writes a FASTA record, unwrapped.
@@ -747,10 +748,11 @@ fn main() {
             .exit();
     }
 
+    let n_mismatch = matches.get_flag("n-mismatch");
     let mut scoring = Scoring {
         match_score: *matches.get_one::<i64>("match").unwrap(),
         mismatch: *matches.get_one::<i64>("mismatch").unwrap(),
-        n_mismatch: matches.get_flag("n-mismatch"),
+        n_mismatch,
         ..Scoring::default()
     };
     if let Some(text) = matches.get_one::<String>("gapopen") {
@@ -797,7 +799,9 @@ fn main() {
         iddef: usize::from(*matches.get_one::<u8>("iddef").unwrap()),
         rowlen: *matches.get_one::<usize>("rowlen").unwrap(),
         no_hits: matches.get_flag("output-no-hits"),
+        symbols: symbols(n_mismatch),
     };
+    let table = formatter.scoring.substitutions();
     let mut buffer = Vec::new();
     if matches.get_flag("sam-header") {
         buffer.extend_from_slice(b"@HD\tVN:1.0\tSO:unsorted\tGO:query\n");
@@ -906,6 +910,7 @@ fn main() {
                     query.strand(h.minus),
                     &db[target].1,
                     &formatter.scoring,
+                    &table,
                 )
                 .unwrap_or_else(|e| fail(&format!("{e}: hit of query {label}")));
                 Hit {

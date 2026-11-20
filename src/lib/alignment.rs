@@ -4,7 +4,7 @@
 //! run of one without its length; and the statistics vsearch derives from
 //! them (`alignstats` and `align_trim`).
 
-use crate::scoring::{End, FOUR_BIT, N, Scoring};
+use crate::scoring::{End, FOUR_BIT, Scoring, Substitutions};
 
 /// parses a CIGAR into (operation, run) pairs.
 ///
@@ -75,7 +75,9 @@ impl Stats {
     /// # Example
     /// ```rust
     /// # use rsearch::{alignment::Stats, scoring::Scoring};
-    /// let stats = Stats::new("2I4M", b"ACGT", b"TTACGA", &Scoring::default()).unwrap();
+    /// let scoring = Scoring::default();
+    /// let table = scoring.substitutions();
+    /// let stats = Stats::new("2I4M", b"ACGT", b"TTACGA", &scoring, &table).unwrap();
     /// assert_eq!((stats.matches, stats.mismatches, stats.gaps), (3, 1, 1));
     /// assert_eq!((stats.trim_t_left, stats.internal_length), (2, 4));
     /// // 3 matches, a mismatch and a left gap of 2 in the query: its
@@ -88,6 +90,7 @@ impl Stats {
         query: &[u8],
         target: &[u8],
         scoring: &Scoring,
+        table: &Substitutions,
     ) -> Result<Stats, String> {
         let ops = parse_cigar(cigar)?;
         let mut s = Stats::default();
@@ -108,16 +111,12 @@ impl Stats {
                     }
                     s.length += run as i64;
                     for (&x, &y) in query[a..a + run].iter().zip(&target[b..b + run]) {
-                        s.score += scoring.substitution(x, y);
-                        let (cx, cy) = (FOUR_BIT[usize::from(x)], FOUR_BIT[usize::from(y)]);
-                        if scoring.n_mismatch && (cx == N || cy == N) {
-                            s.mismatches += 1;
-                        } else if cx & cy != 0 {
-                            s.matches += 1;
-                        } else {
-                            s.mismatches += 1;
-                        }
+                        let i = usize::from(FOUR_BIT[usize::from(x)]);
+                        let j = usize::from(FOUR_BIT[usize::from(y)]);
+                        s.score += table.score[i][j];
+                        s.matches += i64::from(table.is_match[i][j]);
                     }
+                    s.mismatches += run as i64;
                     a += run;
                     b += run;
                 }
@@ -146,6 +145,7 @@ impl Stats {
         if a != query.len() || b != target.len() {
             return Err("CIGAR shorter than the sequences".to_string());
         }
+        s.mismatches -= s.matches;
         s.indels = s.length - s.matches - s.mismatches;
         s.shortest = query.len().min(target.len()) as i64;
         s.longest = query.len().max(target.len()) as i64;

@@ -102,6 +102,30 @@ impl Scoring {
         }
     }
 
+    /// the scores and match classes of every pair of 4-bit codes.
+    pub fn substitutions(&self) -> Substitutions {
+        let mut table = Substitutions {
+            score: [[0; 16]; 16],
+            is_match: [[false; 16]; 16],
+        };
+        for a in 0..16u8 {
+            for b in 0..16u8 {
+                let (i, j) = (usize::from(a), usize::from(b));
+                table.score[i][j] = if self.n_mismatch && (a == N || b == N) {
+                    self.mismatch
+                } else if is_ambiguous(a) || is_ambiguous(b) {
+                    0
+                } else if a == b {
+                    self.match_score
+                } else {
+                    self.mismatch
+                };
+                table.is_match[i][j] = !(self.n_mismatch && (a == N || b == N)) && a & b != 0;
+            }
+        }
+        table
+    }
+
     /// the penalty of a gap of `run` residues in the query (`query`) or the
     /// target, at end `end` (0 left, 1 interior, 2 right): as vsearch, whose
     /// opening penalty covers the first residue, the opening penalty plus
@@ -206,4 +230,12 @@ impl Scoring {
         }
         Ok(())
     }
+}
+
+/// The score of each pair of 4-bit codes, and whether vsearch counts it as
+/// a match: codes sharing a base, but N with `--n_mismatch`.
+#[derive(Clone, Debug)]
+pub struct Substitutions {
+    pub score: [[i64; 16]; 16],
+    pub is_match: [[bool; 16]; 16],
 }
