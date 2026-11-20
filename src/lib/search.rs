@@ -10,7 +10,13 @@ use crate::accept::{Criteria, Verdict};
 use crate::align16::Search16;
 use crate::alignment::Stats;
 use crate::linmem::LinearMemoryAligner;
-use crate::scoring::{Scoring, Substitutions};
+use crate::scoring::{FOUR_BIT, Scoring, Substitutions};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
+
+use crate::fastx::{Reader, Record};
+use crate::label::checked_abundance;
+use crate::udb::{self, Header, Udb};
 use crate::words::{Index, MIN_WORD_LEN, Uniquer};
 
 /// The targets vsearch aligns at once.
@@ -161,6 +167,119 @@ impl Database {
     }
 }
 
+/// reads a database to search: a UDB file, whose word length wins over
+/// `word_len`, or a FASTA or FASTQ file indexed at `word_len`; `warn` gets
+/// the warnings.
+pub fn read_database(
+    path: &str,
+    word_len: u32,
+    warn: &mut dyn FnMut(&[u8]),
+) -> Result<Database, String> {
+    let file = File::open(path).map_err(|e| format!("cannot open {path}: {e}"))?;
+    let file_size = file
+        .metadata()
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| m.len());
+    let mut fin = BufReader::new(file);
+    let start = fin
+        .fill_buf()
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    if start.starts_with(udb::MAGIC) {
+        let mut bytes = Vec::new();
+        let file_size = match file_size {
+            Some(s) => s,
+            None => {
+                fin.read_to_end(&mut bytes)
+                    .map_err(|e| format!("cannot read {path}: {e}"))?;
+                bytes.len() as u64
+            }
+        };
+        // vsearch warns as it reads the header
+        let first = if bytes.is_empty() {
+            fin.fill_buf().unwrap_or_default()
+        } else {
+            &bytes
+        };
+        if let Ok(header) = Header::parse(first, file_size)
+            && header.word_len() != word_len
+        {
+            warn(
+                format!(
+                    "the word length of the UDB file, {}, is used",
+                    header.word_len()
+                )
+                .as_bytes(),
+            );
+        }
+        let mut list = Vec::new();
+        let keep = |_: &[u32], _: u64, block: &[u32]| list.extend_from_slice(block);
+        let read = if bytes.is_empty() {
+            Udb::read(&mut fin, file_size, keep)
+        } else {
+            Udb::read(&mut &bytes[..], file_size, keep)
+        };
+        let udb = read.map_err(|e| e.to_string())?;
+        let labels: Vec<String> = udb
+            .header_starts
+            .windows(2)
+            .map(|pair| {
+                String::from_utf8_lossy(&udb.headers[pair[0] as usize..pair[1] as usize - 1])
+                    .into_owned()
+            })
+            .collect();
+        let sizes = labels
+            .iter()
+            .map(|l| {
+                checked_abundance(l)
+                    .map(|s| s as i64)
+                    .map_err(|e| format!("{e} in the database"))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut seqs = Vec::with_capacity(labels.len());
+        let mut at = 0;
+        for &length in &udb.lengths {
+            seqs.push(udb.sequences[at..at + length as usize].to_vec());
+            at += length as usize;
+        }
+        let index = Index::from_parts(udb.header.word_len(), &udb.counts, list);
+        return Ok(Database::new(labels, seqs, sizes, index));
+    }
+
+    let mut reader = Reader::new(fin);
+    let (mut labels, mut seqs, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
+    let mut record = Record::new();
+    loop {
+        reader.read(&mut record).map_err(|e| e.to_string())?;
+        if record.is_empty() {
+            break;
+        }
+        let header = record.header();
+        let abundance = checked_abundance(header)
+            .map_err(|e| format!("{e} in read {header} of the database"))?;
+        labels.push(header.to_string());
+        seqs.push(record.seq().to_vec());
+        sizes.push(abundance as i64);
+    }
+    if let Some(warning) = reader.stripped_warning() {
+        warn(&warning);
+    }
+    let index = Index::new(word_len, seqs.iter().map(Vec::as_slice));
+    if index.without_words() > 0 {
+        warn(
+            format!(
+                "{} of {} sequences give no word to index: they are shorter than the word \
+                 length ({word_len}), or each of their words holds a lower-case residue or a \
+                 symbol other than A, C, G, T or U",
+                index.without_words(),
+                seqs.len()
+            )
+            .as_bytes(),
+        );
+    }
+    Ok(Database::new(labels, seqs, sizes, index))
+}
+
 /// The limits of a search: at most this many hits accepted or rejected (0
 /// for every target), and the words a candidate shares with the query.
 #[derive(Clone, Copy)]
@@ -168,6 +287,8 @@ pub struct Limits {
     pub max_accepts: usize,
     pub max_rejects: usize,
     pub min_word_matches: u32,
+    /// the candidates kept, by default the limits and a batch of eight
+    pub top_hits: Option<usize>,
 }
 
 /// A hit kept: accepted, or weak.
@@ -210,6 +331,8 @@ pub struct Searcher {
     unoise_alpha: Option<f64>,
     /// the abundance of the query searched.
     query_size: i64,
+    /// the whole query, when a part of it is searched with `--self-id`.
+    whole: Option<Vec<u8>>,
 }
 
 impl Searcher {
@@ -227,12 +350,38 @@ impl Searcher {
             max_accepts,
             max_rejects,
             min_word_matches: limits.min_word_matches,
-            top_hits: (max_accepts + max_rejects + MAX_DELAYED).min(n),
+            top_hits: limits
+                .top_hits
+                .unwrap_or(max_accepts + max_rejects + MAX_DELAYED)
+                .min(n),
             uniquer: Uniquer::new(db.word_len()),
             counts: Vec::new(),
             unoise_alpha: None,
             query_size: 1,
+            whole: None,
         }
+    }
+
+    /// searches `part` of the query `whole`, as vsearch searches the parts
+    /// of a query for chimeras. `--self-id` compares the whole query, not
+    /// the part, with the targets.
+    pub fn search_part(
+        &mut self,
+        db: &Database,
+        label: &str,
+        size: i64,
+        part: &[u8],
+        whole: &[u8],
+    ) -> Vec<Hit> {
+        // the part itself is not compared
+        let self_id = std::mem::replace(&mut self.criteria.self_id, false);
+        if self_id {
+            self.whole = Some(whole.to_vec());
+        }
+        let hits = self.search(db, label, size, part, false);
+        self.whole = None;
+        self.criteria.self_id = self_id;
+        hits
     }
 
     /// accepts the hits that pass the criteria only by UNOISE's rule, as
@@ -311,7 +460,7 @@ impl Searcher {
             && tally.accepts < max_accepts
         {
             let Some(t) = next.next() else { break };
-            let ok = self.criteria.unaligned(
+            let mut ok = self.criteria.unaligned(
                 label,
                 query,
                 size,
@@ -319,6 +468,16 @@ impl Searcher {
                 &db.seqs[t],
                 db.sizes[t],
             );
+            // a part of a query is identical to the target when the whole is
+            if let Some(whole) = &self.whole {
+                let target = &db.seqs[t];
+                ok = ok
+                    && !(whole.len() == target.len()
+                        && whole
+                            .iter()
+                            .zip(target)
+                            .all(|(&a, &b)| FOUR_BIT[usize::from(a)] == FOUR_BIT[usize::from(b)]));
+            }
             if ok {
                 delayed += 1;
             }

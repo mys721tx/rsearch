@@ -155,6 +155,7 @@ pub fn run(matches: &ArgMatches, unoise_alpha: Option<f64>) {
             .get_one::<u32>("min-word-matches")
             .copied()
             .unwrap_or(MIN_WORD_MATCHES[word_len as usize]),
+        top_hits: None,
     };
     let by_size = matches.get_flag("size-order");
     let sizein = !matches.get_flag("no-sizein");

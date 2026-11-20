@@ -5,7 +5,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 
 use clap::{Arg, Command, value_parser};
 
@@ -14,9 +14,8 @@ use rsearch::fastx::{Reader, Record};
 use rsearch::hits::{write_hit, write_no_hit};
 use rsearch::label::checked_abundance;
 use rsearch::options::{hit_choice_args, search_args, search_options};
-use rsearch::search::{Database, Limits, MIN_WORD_MATCHES, Searcher, order};
-use rsearch::udb::{self, Header, Udb};
-use rsearch::words::{Index, MAX_WORD_LEN, MIN_WORD_LEN};
+use rsearch::search::{Limits, MIN_WORD_MATCHES, Searcher, order, read_database};
+use rsearch::words::{MAX_WORD_LEN, MIN_WORD_LEN};
 
 /// prints a warning, which may hold bytes that are not UTF-8.
 fn warn(message: &[u8]) {
@@ -31,114 +30,6 @@ fn warn(message: &[u8]) {
 fn fail(message: &str) -> ! {
     eprintln!("Error: {message}");
     std::process::exit(1);
-}
-
-/// the abundance of a database record, which vsearch always reads.
-fn size(header: &str) -> i64 {
-    checked_abundance(header).unwrap_or_else(|e| fail(&format!("{e} in the database"))) as i64
-}
-
-/// reads the database: a UDB file, whose word length wins over
-/// `word_len`, or a FASTA or FASTQ file indexed at `word_len`.
-fn database(path: &str, word_len: u32) -> Database {
-    let file = File::open(path).unwrap_or_else(|e| fail(&format!("cannot open {path}: {e}")));
-    let file_size = file
-        .metadata()
-        .ok()
-        .filter(|m| m.is_file())
-        .map(|m| m.len());
-    let mut fin = BufReader::new(file);
-    let start = fin
-        .fill_buf()
-        .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-    if start.starts_with(udb::MAGIC) {
-        let mut bytes = Vec::new();
-        let file_size = match file_size {
-            Some(s) => s,
-            None => {
-                fin.read_to_end(&mut bytes)
-                    .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-                bytes.len() as u64
-            }
-        };
-        // vsearch warns as it reads the header
-        let first = if bytes.is_empty() {
-            fin.fill_buf().unwrap_or_default()
-        } else {
-            &bytes
-        };
-        if let Ok(header) = Header::parse(first, file_size)
-            && header.word_len() != word_len
-        {
-            warn(
-                format!(
-                    "the word length of the UDB file, {}, is used",
-                    header.word_len()
-                )
-                .as_bytes(),
-            );
-        }
-        let mut list = Vec::new();
-        let keep = |_: &[u32], _: u64, block: &[u32]| list.extend_from_slice(block);
-        let read = if bytes.is_empty() {
-            Udb::read(&mut fin, file_size, keep)
-        } else {
-            Udb::read(&mut &bytes[..], file_size, keep)
-        };
-        let udb = read.unwrap_or_else(|e| fail(&e.to_string()));
-        let labels: Vec<String> = udb
-            .header_starts
-            .windows(2)
-            .map(|pair| {
-                String::from_utf8_lossy(&udb.headers[pair[0] as usize..pair[1] as usize - 1])
-                    .into_owned()
-            })
-            .collect();
-        let sizes = labels.iter().map(|l| size(l)).collect();
-        let mut seqs = Vec::with_capacity(labels.len());
-        let mut at = 0;
-        for &length in &udb.lengths {
-            seqs.push(udb.sequences[at..at + length as usize].to_vec());
-            at += length as usize;
-        }
-        let index = Index::from_parts(udb.header.word_len(), &udb.counts, list);
-        return Database::new(labels, seqs, sizes, index);
-    }
-
-    let mut reader = Reader::new(fin);
-    let (mut labels, mut seqs, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
-    let mut record = Record::new();
-    loop {
-        reader
-            .read(&mut record)
-            .unwrap_or_else(|e| fail(&e.to_string()));
-        if record.is_empty() {
-            break;
-        }
-        let header = record.header();
-        let abundance = checked_abundance(header)
-            .unwrap_or_else(|e| fail(&format!("{e} in read {header} of the database")));
-        labels.push(header.to_string());
-        seqs.push(record.seq().to_vec());
-        sizes.push(abundance as i64);
-    }
-    if let Some(warning) = reader.stripped_warning() {
-        warn(&warning);
-    }
-    let index = Index::new(word_len, seqs.iter().map(Vec::as_slice));
-    if index.without_words() > 0 {
-        warn(
-            format!(
-                "{} of {} sequences give no word to index: they are shorter than the word \
-                 length ({word_len}), or each of their words holds a lower-case residue or a \
-                 symbol other than A, C, G, T or U",
-                index.without_words(),
-                seqs.len()
-            )
-            .as_bytes(),
-        );
-    }
-    Database::new(labels, seqs, sizes, index)
 }
 
 fn main() {
@@ -237,6 +128,7 @@ fn main() {
         max_accepts: *matches.get_one::<u64>("maxaccepts").unwrap() as usize,
         max_rejects: *matches.get_one::<u64>("maxrejects").unwrap() as usize,
         min_word_matches,
+        top_hits: None,
     };
 
     let mut out: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
@@ -245,7 +137,12 @@ fn main() {
         )),
         None => Box::new(BufWriter::new(io::stdout())),
     };
-    let db = database(matches.get_one::<String>("db").unwrap(), word_len);
+    let db = read_database(
+        matches.get_one::<String>("db").unwrap(),
+        word_len,
+        &mut |w| warn(w),
+    )
+    .unwrap_or_else(|e| fail(&e));
     let fin: Box<dyn Read> = match matches.get_one::<String>("in").map(String::as_str) {
         Some(f) => {
             Box::new(File::open(f).unwrap_or_else(|e| fail(&format!("cannot open {f}: {e}"))))

@@ -1,6 +1,7 @@
 pub mod accept;
 pub mod align16;
 pub mod alignment;
+pub mod chimera;
 pub mod cluster;
 pub mod clustering;
 pub mod database;
