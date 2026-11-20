@@ -5,6 +5,8 @@
 //! CIGARs and ties are vsearch's. A pair it cannot score in 16 bits gets
 //! the score `i16::MAX` and no alignment, for the linear-memory aligner.
 
+use std::fmt::Write as _;
+
 use crate::scoring::{FOUR_BIT, N, Scoring, is_ambiguous};
 
 const CHANNELS: usize = 8;
@@ -12,56 +14,10 @@ const CDEPTH: usize = 4;
 const MAX_LEN_PRODUCT: i64 = 25_000_000;
 const MAX_LEN_SUM: i64 = 65_535;
 
-type V = [i16; CHANNELS];
-
-#[inline]
-fn add(a: V, b: V) -> V {
-    std::array::from_fn(|i| a[i].saturating_add(b[i]))
-}
-#[inline]
-fn sub(a: V, b: V) -> V {
-    std::array::from_fn(|i| a[i].saturating_sub(b[i]))
-}
-#[inline]
-fn sub_unsigned(a: V, b: V) -> V {
-    std::array::from_fn(|i| (a[i] as u16).saturating_sub(b[i] as u16) as i16)
-}
-#[inline]
-fn max(a: V, b: V) -> V {
-    std::array::from_fn(|i| a[i].max(b[i]))
-}
-#[inline]
-fn min(a: V, b: V) -> V {
-    std::array::from_fn(|i| a[i].min(b[i]))
-}
-#[inline]
-fn and(a: V, b: V) -> V {
-    std::array::from_fn(|i| a[i] & b[i])
-}
-#[inline]
-fn xor(a: V, b: V) -> V {
-    std::array::from_fn(|i| a[i] ^ b[i])
-}
-#[inline]
-fn dup(x: i16) -> V {
-    [x; CHANNELS]
-}
-#[inline]
-fn shift_left(a: V) -> V {
-    std::array::from_fn(|i| if i == 0 { 0 } else { a[i - 1] })
-}
-/// two bits a channel where `a` is above `b`, as `_mm_movemask_epi8` of
-/// `_mm_cmpgt_epi16`.
-#[inline]
-fn mask_gt(a: V, b: V) -> u16 {
-    let mut mask = 0u16;
-    for i in 0..CHANNELS {
-        if a[i] > b[i] {
-            mask |= 3 << (2 * i);
-        }
-    }
-    mask
-}
+use crate::lanes::{
+    V, add, and, dup, from_array, mask_gt, max, min, set, shift_left, sub, sub_unsigned, to_array,
+    xor, zero,
+};
 
 /// whether vsearch's 16-bit aligner takes sequences of these lengths.
 pub fn fits(qlen: usize, dlen: usize) -> bool {
@@ -174,7 +130,7 @@ impl Search16 {
         self.qseq = query.to_vec();
         self.qcodes = query.iter().map(|&c| FOUR_BIT[usize::from(c)]).collect();
         self.hearray.clear();
-        self.hearray.resize(2 * query.len(), [0; CHANNELS]);
+        self.hearray.resize(2 * query.len(), zero());
     }
 
     fn score_min(&self) -> i16 {
@@ -235,7 +191,7 @@ impl Search16 {
 
         let pen = |x: i16| dup(x);
         let qr = |s: usize, e: usize| dup(self.open[s][e].wrapping_add(self.extend[s][e]));
-        let t0: V = [-1, 0, 0, 0, 0, 0, 0, 0];
+        let t0: V = from_array([-1, 0, 0, 0, 0, 0, 0, 0]);
         let r_query_left = pen(self.extend[q][left]);
         let qr_query_interior = qr(q, interior);
         let r_query_interior = pen(self.extend[q][interior]);
@@ -256,13 +212,11 @@ impl Search16 {
         let mut seq_id = [-1i64; CHANNELS];
         let mut overflow = [false; CHANNELS];
         let mut dseq = [[0u8; CHANNELS]; CDEPTH];
-        let mut s_vec: [V; 4] = [[0; CHANNELS]; 4];
+        let mut s_vec: [V; 4] = [zero(); 4];
         let score_min = self.score_min();
         let score_max = i16::MAX;
-        let (mut h0, mut h1, mut h2, mut h3) =
-            ([0; CHANNELS], [0; CHANNELS], [0; CHANNELS], [0; CHANNELS]);
-        let (mut f0, mut f1, mut f2, mut f3) =
-            ([0; CHANNELS], [0; CHANNELS], [0; CHANNELS], [0; CHANNELS]);
+        let (mut h0, mut h1, mut h2, mut h3) = (zero(), zero(), zero(), zero());
+        let (mut f0, mut f1, mut f2, mut f3) = (zero(), zero(), zero(), zero());
         let mut easy = false;
         let mut dir = 0usize;
         let mut next_id = 0usize;
@@ -289,7 +243,7 @@ impl Search16 {
                 }
             } else {
                 easy = true;
-                let mut m: V = [0; CHANNELS];
+                let mut m: V = zero();
                 let mut tt = t0;
                 for c in 0..CHANNELS {
                     if begin[c] < end[c] {
@@ -316,7 +270,7 @@ impl Search16 {
                             if overflow[c] {
                                 out[slot] = Aligned::overflow();
                             } else {
-                                let score = s_vec[z][c];
+                                let score = to_array(s_vec[z])[c];
                                 out[slot] = self.backtrack(targets[slot], offset[c], c, maxdlen);
                                 out[slot].score = score;
                             }
@@ -340,15 +294,15 @@ impl Search16 {
                             end[c] = length;
                             offset[c] = dir;
                             overflow[c] = false;
-                            h0[c] = 0;
+                            set(&mut h0, c, 0);
                             let edge = |k: i64| (-go_q_l - k * ge_q_l) as i16;
-                            h1[c] = edge(1);
-                            h2[c] = edge(2);
-                            h3[c] = edge(3);
-                            f0[c] = edge(1);
-                            f1[c] = edge(2);
-                            f2[c] = edge(3);
-                            f3[c] = edge(4);
+                            set(&mut h1, c, edge(1));
+                            set(&mut h2, c, edge(2));
+                            set(&mut h3, c, edge(3));
+                            set(&mut f0, c, edge(1));
+                            set(&mut f1, c, edge(2));
+                            set(&mut f2, c, edge(3));
+                            set(&mut f3, c, edge(4));
                             let target = targets[cand_id];
                             for depth in dseq.iter_mut() {
                                 depth[c] = if begin[c] < end[c] {
@@ -382,12 +336,12 @@ impl Search16 {
 
             // the profile: the score of each query code against each target
             // residue of the step
-            let mut profile = [[[0i16; CHANNELS]; CDEPTH]; 16];
+            let mut profile = [[zero(); CDEPTH]; 16];
             for (r, rows) in profile.iter_mut().enumerate() {
                 for (j, lanes) in rows.iter_mut().enumerate() {
-                    for c in 0..CHANNELS {
-                        lanes[c] = self.matrix[usize::from(dseq[j][c])][r];
-                    }
+                    *lanes = from_array(std::array::from_fn(|c| {
+                        self.matrix[usize::from(dseq[j][c])][r]
+                    }));
                 }
             }
             let mut qr_target = [qr_target_interior; 4];
@@ -396,7 +350,7 @@ impl Search16 {
                 let qr_diff = sub(qr_target_right, qr_target_interior);
                 let r_diff = sub(r_target_right, r_target_interior);
                 for j in 0..CDEPTH {
-                    let mut mm: V = [0; CHANNELS];
+                    let mut mm: V = zero();
                     let mut tt = t0;
                     for c in 0..CHANNELS {
                         let dlen = if seq_id[c] >= 0 { end[c] } else { 0 };
@@ -432,6 +386,7 @@ impl Search16 {
                 mask,
                 dir,
             );
+            let (h_min, h_max) = (to_array(h_min), to_array(h_max));
             for c in 0..CHANNELS {
                 if !overflow[c] && (h_min[c] <= score_min || h_max[c] >= score_max) {
                     overflow[c] = true;
@@ -464,38 +419,62 @@ impl Search16 {
         r_t: [V; 4],
         h: [V; 4],
         f: [V; 4],
-        mut mask: Option<Masked>,
+        mask: Option<Masked>,
+        dir: usize,
+    ) -> (V, V) {
+        match mask {
+            Some(mask) => self.columns::<true>(s_vec, profile, query, qr_t, r_t, h, f, mask, dir),
+            None => {
+                let none = Masked {
+                    mm: zero(),
+                    qr_t_left: zero(),
+                    r_t_left: zero(),
+                    qr_q_interior: zero(),
+                    qr_q_right: zero(),
+                };
+                self.columns::<false>(s_vec, profile, query, qr_t, r_t, h, f, none, dir)
+            }
+        }
+    }
+
+    /// the columns, with the channels starting a target masked or not, as
+    /// vsearch's `Masked` and `Unmasked`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn columns<const MASKED: bool>(
+        &mut self,
+        s_vec: &mut [V; 4],
+        profile: &[[V; CDEPTH]; 16],
+        query: [V; 4],
+        qr_t: [V; 4],
+        r_t: [V; 4],
+        h: [V; 4],
+        f: [V; 4],
+        mut m: Masked,
         dir: usize,
     ) -> (V, V) {
         let [qr_q_i, r_q_i, qr_q_r, r_q_r] = query;
         let ql = self.qcodes.len();
-        let (mut h0, mut h1, mut h2, mut h3) = (h[0], h[1], h[2], h[3]);
-        let mut f = [
-            sub(f[0], qr_t[0]),
-            sub(f[1], qr_t[1]),
-            sub(f[2], qr_t[2]),
-            sub(f[3], qr_t[3]),
-        ];
-        let mut h_min: V = [0; CHANNELS];
-        let mut h_max: V = [0; CHANNELS];
-        let (mut h5, mut h6, mut h7, mut h8) =
-            ([0; CHANNELS], [0; CHANNELS], [0; CHANNELS], [0; CHANNELS]);
-        for i in 0..ql {
-            let last = i == ql - 1;
-            let vp = &profile[usize::from(self.qcodes[i])];
-            let mut h4 = self.hearray[2 * i];
-            let mut e = self.hearray[2 * i + 1];
-            let (qr_q, r_q) = if last {
-                (qr_q_r, r_q_r)
-            } else {
-                (qr_q_i, r_q_i)
-            };
-            if let Some(m) = mask.as_mut() {
-                if last {
-                    e = sub_unsigned(e, m.mm);
-                    e = sub(e, m.qr_t_left);
-                    e = sub(e, m.qr_q_right);
-                } else {
+        let [mut h0, mut h1, mut h2, mut h3] = h;
+        let mut f0 = sub(f[0], qr_t[0]);
+        let mut f1 = sub(f[1], qr_t[1]);
+        let mut f2 = sub(f[2], qr_t[2]);
+        let mut f3 = sub(f[3], qr_t[3]);
+        let mut h_min = zero();
+        let mut h_max = zero();
+        let (mut h5, mut h6, mut h7, mut h8) = (zero(), zero(), zero(), zero());
+        let rows = self.dir[dir..dir + 16 * ql]
+            .as_chunks_mut::<16>()
+            .0
+            .iter_mut();
+        let cells = self.hearray.as_chunks_mut::<2>().0.iter_mut();
+        for (i, ((paths, he), &code)) in rows.zip(cells).zip(&self.qcodes).enumerate() {
+            let last = i + 1 == ql;
+            let vp = &profile[usize::from(code)];
+            if !last {
+                let mut h4 = he[0];
+                let mut e = he[1];
+                if MASKED {
                     h4 = sub_unsigned(h4, m.mm);
                     h4 = sub(h4, m.qr_t_left);
                     e = sub_unsigned(e, m.mm);
@@ -503,39 +482,136 @@ impl Search16 {
                     e = sub(e, m.qr_q_interior);
                     m.qr_t_left = add(m.qr_t_left, m.r_t_left);
                 }
+                let (qr_q, r_q) = (qr_q_i, r_q_i);
+                step(
+                    &mut h0,
+                    &mut h5,
+                    &mut f0,
+                    vp[0],
+                    &mut paths[0..4],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[0],
+                    r_t[0],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                step(
+                    &mut h1,
+                    &mut h6,
+                    &mut f1,
+                    vp[1],
+                    &mut paths[4..8],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[1],
+                    r_t[1],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                step(
+                    &mut h2,
+                    &mut h7,
+                    &mut f2,
+                    vp[2],
+                    &mut paths[8..12],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[2],
+                    r_t[2],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                step(
+                    &mut h3,
+                    &mut h8,
+                    &mut f3,
+                    vp[3],
+                    &mut paths[12..16],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[3],
+                    r_t[3],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                he[0] = h8;
+                he[1] = e;
+                h0 = h4;
+                h1 = h5;
+                h2 = h6;
+                h3 = h7;
+            } else {
+                let mut e = he[1];
+                if MASKED {
+                    e = sub_unsigned(e, m.mm);
+                    e = sub(e, m.qr_t_left);
+                    e = sub(e, m.qr_q_right);
+                }
+                let (qr_q, r_q) = (qr_q_r, r_q_r);
+                step(
+                    &mut h0,
+                    &mut h5,
+                    &mut f0,
+                    vp[0],
+                    &mut paths[0..4],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[0],
+                    r_t[0],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                step(
+                    &mut h1,
+                    &mut h6,
+                    &mut f1,
+                    vp[1],
+                    &mut paths[4..8],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[1],
+                    r_t[1],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                step(
+                    &mut h2,
+                    &mut h7,
+                    &mut f2,
+                    vp[2],
+                    &mut paths[8..12],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[2],
+                    r_t[2],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                step(
+                    &mut h3,
+                    &mut h8,
+                    &mut f3,
+                    vp[3],
+                    &mut paths[12..16],
+                    &mut e,
+                    qr_q,
+                    r_q,
+                    qr_t[3],
+                    r_t[3],
+                    &mut h_min,
+                    &mut h_max,
+                );
+                he[0] = h8;
+                he[1] = e;
             }
-            let at = dir + 16 * i;
-            let (dir_buf, hmin, hmax) = (&mut self.dir, &mut h_min, &mut h_max);
-            let mut step = |hh: &mut V, nn: &mut V, ff: &mut V, v: V, k: usize, e: &mut V| {
-                let p = &mut dir_buf[at + 4 * k..at + 4 * k + 4];
-                *hh = add(*hh, v);
-                p[0] = mask_gt(*ff, *hh);
-                *hh = max(*hh, *ff);
-                p[1] = mask_gt(*e, *hh);
-                *hh = max(*hh, *e);
-                *hmin = min(*hmin, *hh);
-                *hmax = max(*hmax, *hh);
-                *nn = *hh;
-                let hf = sub(*hh, qr_t[k]);
-                *ff = sub(*ff, r_t[k]);
-                p[2] = mask_gt(*ff, hf);
-                *ff = max(*ff, hf);
-                let he = sub(*hh, qr_q);
-                *e = sub(*e, r_q);
-                p[3] = mask_gt(*e, he);
-                *e = max(*e, he);
-            };
-            let [f0, f1, f2, f3] = &mut f;
-            step(&mut h0, &mut h5, f0, vp[0], 0, &mut e);
-            step(&mut h1, &mut h6, f1, vp[1], 1, &mut e);
-            step(&mut h2, &mut h7, f2, vp[2], 2, &mut e);
-            step(&mut h3, &mut h8, f3, vp[3], 3, &mut e);
-            self.hearray[2 * i] = h8;
-            self.hearray[2 * i + 1] = e;
-            h0 = h4;
-            h1 = h5;
-            h2 = h6;
-            h3 = h7;
         }
         *s_vec = [h5, h6, h7, h8];
         (h_min, h_max)
@@ -550,7 +626,7 @@ impl Search16 {
         let shift = 2 * channel;
         let (mut aligned, mut matches, mut mismatches, mut gaps) = (0u16, 0u16, 0u16, 0u16);
         let (mut i, mut j) = (qlen as i64 - 1, dlen as i64 - 1);
-        let mut ops: Vec<(u8, usize)> = Vec::new();
+        let mut ops: Vec<(u8, usize)> = Vec::with_capacity(64);
         let mut op = 0u8;
         let push = |ops: &mut Vec<(u8, usize)>, op: &mut u8, new: u8| {
             if let Some(last) = ops.last_mut()
@@ -622,10 +698,10 @@ impl Search16 {
             j -= 1;
             push(&mut ops, &mut op, b'I');
         }
-        let mut cigar = String::new();
+        let mut cigar = String::with_capacity(6 * ops.len());
         for &(op, run) in ops.iter().rev() {
             if run > 1 {
-                cigar.push_str(&run.to_string());
+                let _ = write!(cigar, "{run}");
             }
             cigar.push(op as char);
         }
@@ -638,6 +714,42 @@ impl Search16 {
             cigar,
         }
     }
+}
+
+/// vsearch's `onestep`: one cell of four target columns, its direction
+/// bits in `path`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn step(
+    h: &mut V,
+    n: &mut V,
+    f: &mut V,
+    v: V,
+    path: &mut [u16],
+    e: &mut V,
+    qr_q: V,
+    r_q: V,
+    qr_t: V,
+    r_t: V,
+    h_min: &mut V,
+    h_max: &mut V,
+) {
+    *h = add(*h, v);
+    path[0] = mask_gt(*f, *h);
+    *h = max(*h, *f);
+    path[1] = mask_gt(*e, *h);
+    *h = max(*h, *e);
+    *h_min = min(*h_min, *h);
+    *h_max = max(*h_max, *h);
+    *n = *h;
+    let hf = sub(*h, qr_t);
+    *f = sub(*f, r_t);
+    path[2] = mask_gt(*f, hf);
+    *f = max(*f, hf);
+    let he = sub(*h, qr_q);
+    *e = sub(*e, r_q);
+    path[3] = mask_gt(*e, he);
+    *e = max(*e, he);
 }
 
 /// The masks of vsearch's `Masked` columns: the channels starting a target.

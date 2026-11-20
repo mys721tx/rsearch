@@ -8,6 +8,7 @@ pub mod fastx;
 pub mod filter;
 pub mod hits;
 pub mod label;
+mod lanes;
 pub mod linmem;
 pub mod merge;
 pub mod options;
