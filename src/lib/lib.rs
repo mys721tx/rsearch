@@ -1,4 +1,5 @@
 pub mod accept;
+pub mod alignment;
 pub mod cluster;
 pub mod dust;
 pub mod fastx;
@@ -11,6 +12,7 @@ pub mod orient;
 pub mod quality;
 pub mod random;
 pub mod report;
+pub mod scoring;
 pub mod scramble;
 pub mod select;
 pub mod sff;

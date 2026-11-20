@@ -50,3 +50,77 @@ pub fn write_no_hit(out: &mut impl Write, query: &[u8]) -> io::Result<()> {
     out.write_all(query)?;
     out.write_all(b"\t*\n")
 }
+
+/// A UC record: a hit, or a query without hits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UcRecord {
+    /// `None` for an `N` record.
+    pub hit: Option<UcHit>,
+    /// The fields after the eighth: the query's label, a tab and the
+    /// target's (`*` for an `N` record). Labels may hold tabs and are told
+    /// apart with the target's label (see `split_labels`).
+    pub labels: String,
+}
+
+/// The fields of an `H` record that hits are rebuilt from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UcHit {
+    pub target: u64,
+    pub query_len: usize,
+    pub minus: bool,
+    /// The CIGAR, or `=` for a perfect alignment.
+    pub cigar: String,
+}
+
+impl UcRecord {
+    /// parses a line of a UC file of hits, without its line feed.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::hits::UcRecord;
+    /// let record = UcRecord::parse("H\t3\t10\t90.0\t-\t0\t0\t2I8M\tq 1\tt\t3").unwrap();
+    /// let hit = record.hit.unwrap();
+    /// assert_eq!((hit.target, hit.query_len, hit.minus), (3, 10, true));
+    /// assert_eq!(record.labels, "q 1\tt\t3");
+    /// assert!(UcRecord::parse("N\t*\t*\t*\t.\t*\t*\t*\tq\t*").unwrap().hit.is_none());
+    /// assert!(UcRecord::parse("S\t0\t10\t*").is_err());
+    /// ```
+    pub fn parse(line: &str) -> Result<UcRecord, String> {
+        let fields: Vec<&str> = line.splitn(9, '\t').collect();
+        let invalid = || format!("invalid hit record: {line}");
+        if fields.len() < 9 {
+            return Err(invalid());
+        }
+        let labels = fields[8].to_string();
+        match fields[0] {
+            "N" => Ok(UcRecord { hit: None, labels }),
+            "H" => {
+                let target = fields[1].parse().map_err(|_| invalid())?;
+                let query_len = fields[2].parse().map_err(|_| invalid())?;
+                let minus = match fields[4] {
+                    "+" => false,
+                    "-" => true,
+                    _ => return Err(invalid()),
+                };
+                Ok(UcRecord {
+                    hit: Some(UcHit {
+                        target,
+                        query_len,
+                        minus,
+                        cigar: fields[7].to_string(),
+                    }),
+                    labels,
+                })
+            }
+            _ => Err(invalid()),
+        }
+    }
+
+    /// the query's label, given the target's (`*` for an `N` record), or
+    /// none if the record does not end with it.
+    pub fn query_label(&self, target_label: &str) -> Option<&str> {
+        self.labels
+            .strip_suffix(target_label)
+            .and_then(|rest| rest.strip_suffix('\t'))
+    }
+}
