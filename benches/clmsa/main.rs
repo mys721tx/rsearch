@@ -82,6 +82,9 @@ fn output(program: &str, args: &[String]) -> Vec<u8> {
     output.stdout
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let input = input_file(dir);
@@ -158,6 +161,7 @@ fn bench_binary(c: &mut Criterion) {
                 }
             })
         });
+        translated::bench(&mut group, "vsearch/all", &vargs);
         group.bench_function("vsearch/all", |b| b.iter(|| run(vsearch, &vargs)));
     }
     group.finish();

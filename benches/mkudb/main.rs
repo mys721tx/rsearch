@@ -88,6 +88,9 @@ fn vsearch_args<'a>(fa: &'a str, out: &'a str) -> [&'a str; 10] {
     ]
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let input = tmp("mkudb-bench.fa");
     std::fs::write(&input, generate()).unwrap();
@@ -113,6 +116,7 @@ fn bench_binary(c: &mut Criterion) {
     group.bench_function("mkudb", |b| b.iter(|| run(mkudb, &["-i", fa, "-o", null])));
     if let Some(vsearch) = &vsearch {
         let args = vsearch_args(fa, null);
+        translated::bench(&mut group, "vsearch", &args);
         group.bench_function("vsearch", |b| b.iter(|| run(vsearch, &args)));
     }
     group.finish();

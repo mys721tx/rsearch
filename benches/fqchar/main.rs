@@ -71,6 +71,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let input = input_file();
     let fq = input.to_str().unwrap();
@@ -86,6 +89,11 @@ fn bench_binary(c: &mut Criterion) {
         });
         if let Some(vsearch) = &vsearch {
             // the report goes to stderr, discarded with the progress lines
+            translated::bench(
+                &mut group,
+                format!("vsearch/tail_{tail}"),
+                &["--fastq_chars", fq, "--fastq_tail", tail],
+            );
             group.bench_function(format!("vsearch/tail_{tail}"), |b| {
                 b.iter(|| run(vsearch, &["--fastq_chars", fq, "--fastq_tail", tail]))
             });

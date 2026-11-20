@@ -82,6 +82,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let inputs = input_files();
     let topn = env!("CARGO_BIN_EXE_topn");
@@ -103,11 +106,26 @@ fn bench_binary(c: &mut Criterion) {
     }
 
     if let Ok(vsearch) = std::env::var("VSEARCH") {
-        let derep = env!("CARGO_BIN_EXE_derep");
-        let pipeline = format!("{derep} -i {fa} | {topn} 10 > /dev/null");
-        group.bench_function("pipeline/derep_topn_10", |b| {
-            b.iter(|| run("sh", &["-c", &pipeline]))
-        });
+        translated::bench(
+            &mut group,
+            "vsearch/fastx_uniques_topn_10",
+            &[
+                "--fastx_uniques",
+                fa,
+                "--quiet",
+                "--sizein",
+                "--sizeout",
+                "--notrunclabels",
+                "--minseqlength",
+                "0",
+                "--fasta_width",
+                "0",
+                "--topn",
+                "10",
+                "--fastaout",
+                "/dev/null",
+            ],
+        );
         group.bench_function("vsearch/fastx_uniques_topn_10", |b| {
             b.iter(|| {
                 run(

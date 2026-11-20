@@ -247,6 +247,9 @@ fn cases<'a>(inputs: &'a Inputs) -> Vec<Case<'a>> {
     ]
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let inputs = input_files();
     let derep = env!("CARGO_BIN_EXE_derep");
@@ -260,6 +263,7 @@ fn bench_binary(c: &mut Criterion) {
             b.iter(|| run(derep, &case.derep))
         });
         if let Some(vsearch) = &vsearch {
+            translated::bench(&mut group, format!("vsearch/{}", case.name), &case.vsearch);
             group.bench_function(format!("vsearch/{}", case.name), |b| {
                 b.iter(|| run(vsearch, &case.vsearch))
             });

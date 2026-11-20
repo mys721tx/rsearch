@@ -96,6 +96,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let input = input_file();
     let fq = input.to_str().unwrap();
@@ -127,6 +130,7 @@ fn bench_binary(c: &mut Criterion) {
                 "--scramble_kmer",
                 k,
             ];
+            translated::bench(&mut group, format!("vsearch/k{k}"), &args);
             group.bench_function(format!("vsearch/k{k}"), |b| b.iter(|| run(vsearch, &args)));
         }
     }

@@ -68,6 +68,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let (forward, reverse) = input_files();
     let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
@@ -88,6 +91,7 @@ fn bench_binary(c: &mut Criterion) {
             "--fastqout",
             "/dev/null",
         ];
+        translated::bench(&mut group, "vsearch", &args);
         group.bench_function("vsearch", |b| b.iter(|| run(&vsearch, &args)));
     }
     group.finish();

@@ -147,6 +147,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let (forward, reverse) = input_files(&generate());
     let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
@@ -168,7 +171,9 @@ fn bench_binary(c: &mut Criterion) {
             "/dev/null",
         ];
         let one = [&args[..], &["--threads", "1"]].concat();
+        translated::bench(&mut group, "vsearch/1-thread", &one);
         group.bench_function("vsearch/1-thread", |b| b.iter(|| run(&vsearch, &one)));
+        translated::bench(&mut group, "vsearch/threads", &args);
         group.bench_function("vsearch/threads", |b| b.iter(|| run(&vsearch, &args)));
     }
     group.finish();

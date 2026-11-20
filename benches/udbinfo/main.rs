@@ -73,6 +73,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let udb = input_file();
     let udb = udb.to_str().unwrap();
@@ -102,6 +105,7 @@ fn bench_binary(c: &mut Criterion) {
     group.sample_size(20);
     group.bench_function("udbinfo", |b| b.iter(|| run(udbinfo, &["-i", udb])));
     if let Some(vsearch) = &vsearch {
+        translated::bench(&mut group, "vsearch", &vargs);
         group.bench_function("vsearch", |b| b.iter(|| run(vsearch, &vargs)));
     }
     group.finish();

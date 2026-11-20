@@ -77,6 +77,9 @@ fn files(prefix: &Path) -> Vec<Vec<u8>> {
         .collect()
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let input = input_file(dir);
@@ -135,6 +138,7 @@ fn bench_binary(c: &mut Criterion) {
                 run(clspl, &split);
             })
         });
+        translated::bench(&mut group, "vsearch/cluster", &vargs);
         group.bench_function("vsearch/cluster", |b| b.iter(|| run(vsearch, &vargs)));
     }
     group.finish();

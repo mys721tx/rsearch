@@ -81,6 +81,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let input = input_file();
     let fa = input.to_str().unwrap();
@@ -131,6 +134,7 @@ fn bench_binary(c: &mut Criterion) {
         group.bench_function(format!("unoise/{name}"), |b| b.iter(|| run(unoise, &rargs)));
         if let Some(vsearch) = &vsearch {
             let vargs = [&vbase[..], args, &["--centroids", "/dev/null"]].concat();
+            translated::bench(&mut group, format!("vsearch/{name}"), &vargs);
             group.bench_function(format!("vsearch/{name}"), |b| {
                 b.iter(|| run(vsearch, &vargs))
             });

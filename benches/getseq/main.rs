@@ -171,6 +171,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let inputs = input_files();
     let getseq = env!("CARGO_BIN_EXE_getseq");
@@ -198,6 +201,7 @@ fn bench_binary(c: &mut Criterion) {
                 &case.vsearch,
             ]
             .concat();
+            translated::bench(&mut group, format!("vsearch/{}", case.name), &args);
             group.bench_function(format!("vsearch/{}", case.name), |b| {
                 b.iter(|| run(vsearch, &args))
             });
@@ -299,6 +303,7 @@ fn bench_hits(c: &mut Criterion) {
         group.bench_function(format!("getseq/{name}"), |b| b.iter(|| run(getseq, &args)));
         if let Some(vsearch) = &vsearch {
             let vargs = [&vbase[..], &vargs].concat();
+            translated::bench(&mut group, format!("vsearch/{name}"), &vargs);
             group.bench_function(format!("vsearch/{name}"), |b| {
                 b.iter(|| run(vsearch, &vargs))
             });

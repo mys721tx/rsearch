@@ -76,6 +76,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let input = input_file();
     let fq = input.to_str().unwrap();
@@ -89,6 +92,11 @@ fn bench_binary(c: &mut Criterion) {
         b.iter(|| run(eestat, &["-i", fq, "-o", "/dev/null"]))
     });
     if let Some(vsearch) = &vsearch {
+        translated::bench(
+            &mut group,
+            "vsearch",
+            &["--fastq_eestats", fq, "--quiet", "--output", "/dev/null"],
+        );
         group.bench_function("vsearch", |b| {
             b.iter(|| {
                 run(

@@ -96,6 +96,9 @@ fn run(program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+#[path = "../common/translated.rs"]
+mod translated;
+
 fn bench_binary(c: &mut Criterion) {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (all, queries, db) = input_files(dir);
@@ -148,6 +151,7 @@ fn bench_binary(c: &mut Criterion) {
         group.bench_function(format!("uchime/{name}"), |b| b.iter(|| run(uchime, &ra)));
         if let Some(vsearch) = &vsearch {
             let va = [&vargs[..], &common, &["--nonchimeras", "/dev/null"]].concat();
+            translated::bench(&mut group, format!("vsearch/{name}"), &va);
             group.bench_function(format!("vsearch/{name}"), |b| b.iter(|| run(vsearch, &va)));
         }
     }
