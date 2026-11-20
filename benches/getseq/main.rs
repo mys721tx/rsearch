@@ -3,9 +3,14 @@
 //! `matches` measures `Selector::matches` on the headers of parsed reads;
 //! `binary` runs the getseq program end to end on a FASTQ file: one label,
 //! 10,000 labels from a file, a substring, a word, and words of a field from
-//! a file. Set `VSEARCH` to a vsearch executable to time
-//! `vsearch --fastx_getseq` and `--fastx_getseqs` on the same files for
-//! comparison:
+//! a file. `hits` runs it on the hits exsrch finds for 100,000 reads of 150
+//! bases against 25,000 sequences, selecting the queries with hits, those
+//! without, and the targets hit. Set `VSEARCH` to a vsearch executable to
+//! time `vsearch --fastx_getseq` and `--fastx_getseqs` on the same files,
+//! and `vsearch --search_exact --threads 1 --qmask none --dbmask none`
+//! writing `--matched`,
+//! `--notmatched` and `--dbmatched`, its exact search included, after
+//! checking that it selects the same queries:
 //!
 //! ```sh
 //! VSEARCH=/path/to/vsearch cargo bench --bench getseq
@@ -201,5 +206,106 @@ fn bench_binary(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_matches, bench_binary);
+/// writes reads drawn from 20,000 sequences, a tenth of them changed, and
+/// a database of those sequences and 5,000 duplicates.
+fn hit_files() -> (PathBuf, PathBuf) {
+    let mut rng = Rng(0x5eed);
+    let seqs: Vec<String> = (0..20_000)
+        .map(|_| (0..150).map(|_| b"ACGT"[rng.below(4)] as char).collect())
+        .collect();
+    let mut db = String::new();
+    for (i, seq) in seqs.iter().enumerate() {
+        db.push_str(&format!(">d{i}\n{seq}\n"));
+    }
+    for i in 0..5_000 {
+        db.push_str(&format!(">dup{i}\n{}\n", seqs[rng.below(seqs.len())]));
+    }
+    let mut reads = String::new();
+    for i in 0..100_000 {
+        let mut seq = seqs[rng.below(seqs.len())].clone().into_bytes();
+        if rng.below(10) == 0 {
+            let at = rng.below(150);
+            seq[at] = b"ACGT"[rng.below(4)];
+        }
+        reads.push_str(&format!(">r{i}\n{}\n", String::from_utf8(seq).unwrap()));
+    }
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let (fa, dbfa) = (dir.join("getseq-hits.fa"), dir.join("getseq-hits-db.fa"));
+    std::fs::write(&fa, reads).unwrap();
+    std::fs::write(&dbfa, db).unwrap();
+    (fa, dbfa)
+}
+
+fn bench_hits(c: &mut Criterion) {
+    let (fa, db) = hit_files();
+    let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let hits = dir.join("getseq-hits.uc");
+    let hits = hits.to_str().unwrap();
+    run(
+        env!("CARGO_BIN_EXE_exsrch"),
+        &["-i", fa, "--db", db, "-o", hits],
+    );
+    let getseq = env!("CARGO_BIN_EXE_getseq");
+    let vsearch = std::env::var("VSEARCH").ok();
+    let vbase = [
+        "--search_exact",
+        fa,
+        "--db",
+        db,
+        "--quiet",
+        "--notrunclabels",
+        "--threads",
+        "1",
+        "--fasta_width",
+        "0",
+        "--qmask",
+        "none",
+        "--dbmask",
+        "none",
+    ];
+    // both select the same queries
+    if let Some(vsearch) = &vsearch {
+        let (r, v) = (dir.join("getseq-hits-r.fa"), dir.join("getseq-hits-v.fa"));
+        run(
+            getseq,
+            &["--hits", hits, "-i", fa, "-o", r.to_str().unwrap()],
+        );
+        run(
+            vsearch,
+            &[&vbase[..], &["--matched", v.to_str().unwrap()]].concat(),
+        );
+        assert!(std::fs::read(&r).unwrap() == std::fs::read(&v).unwrap());
+    }
+    let mut group = c.benchmark_group("getseq/hits");
+    group.throughput(Throughput::Elements(100_000));
+    group.sample_size(10);
+    for (name, input, args, vargs) in [
+        ("matched", fa, vec![], vec!["--matched", "/dev/null"]),
+        (
+            "notmatched",
+            fa,
+            vec!["--invert"],
+            vec!["--notmatched", "/dev/null"],
+        ),
+        (
+            "dbmatched",
+            db,
+            vec!["--targets"],
+            vec!["--dbmatched", "/dev/null"],
+        ),
+    ] {
+        let args = [&["--hits", hits, "-i", input, "-o", "/dev/null"][..], &args].concat();
+        group.bench_function(format!("getseq/{name}"), |b| b.iter(|| run(getseq, &args)));
+        if let Some(vsearch) = &vsearch {
+            let vargs = [&vbase[..], &vargs].concat();
+            group.bench_function(format!("vsearch/{name}"), |b| {
+                b.iter(|| run(vsearch, &vargs))
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_matches, bench_binary, bench_hits);
 criterion_main!(benches);
