@@ -361,12 +361,8 @@ fn rejects_hits_not_matching_the_database() {
 
 #[test]
 fn rejects_invalid_arguments() {
-    for args in [&["--mothur", "--biom"][..]] {
-        assert_eq!(
-            otutab("args", EXACT_HITS, EXACT_DB, args).status.code(),
-            Some(2)
-        );
-    }
+    let output = otutab("args", EXACT_HITS, EXACT_DB, &["--mothur", "--biom"]);
+    assert_eq!(output.status.code(), Some(2));
     let output = Command::new(env!("CARGO_BIN_EXE_otutab"))
         .stdin(Stdio::null())
         .output()
