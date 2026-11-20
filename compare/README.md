@@ -18,7 +18,11 @@ cargo build --release
 ```
 
 `build-vsearch.sh` takes the vsearch source directory and an output
-directory as optional arguments. Tested on macOS on Apple silicon.
+directory as optional arguments. It defines `HAVE_ZLIB_H` and
+`HAVE_BZLIB_H`, as configure would, so that vsearch reads gzip and bzip2
+files. It opens `libz` and `libbz2` at run time. Without them it fails with
+"Files compressed with gzip are not supported". Tested on macOS on Apple
+silicon.
 
 ## Compare
 
@@ -125,11 +129,22 @@ output still streams into the next step on its standard input. A step
 that takes it as a file argument (a database, a hit file) does not run.
 The exit code and error are the first failing step's.
 
+Compressed input is decompressed first. vsearch knows a gzip or bzip2
+file by its magic number, and so does the translator. The main input,
+`--reverse`, and `--db` go through `gzip -dc` or `bzip2 -dc` into the
+pipeline. `--gzip_decompress` and `--bzip2_decompress` matter to vsearch
+only for a pipe, and it reads an uncompressed file as it is with them.
+The translator uses `gzip -dc` because macOS's `zcat` expects `.Z`
+files. A failing decompressor counts as exit code 1. That is vsearch's
+code for unreadable input. What it writes before failing is its own.
+From a file cut short, macOS `gzip -dc` writes nothing. vsearch writes
+the records it read.
+
 An option it cannot translate is a `TranslationError` naming it (for
 example `--alnout` with clustering, `--fastq_minlen 0`, compressed
-input, and `--clusters` at a width other than 0). A default behaviour of
-vsearch that the pipeline does not reproduce is a caveat. Each case
-records its caveats:
+standard input, and `--clusters` at a width other than 0). A default
+behaviour of vsearch that the pipeline does not reproduce is a caveat.
+Each case records its caveats:
 
 - `--minseqlength 0` keeps empty sequences. `sqfilt` cannot keep them,
   and `--maxseqlength` is then not applied.
@@ -182,6 +197,11 @@ inputs from a seed as before. Every case is reproducible from its seed.
   from `report-input.zsh`). Where the translated pipeline starts with
   another tool than the one `input.zsh` fuzzed, a probe runs
   `input.zsh`'s own command too.
+- `compressed.py`: `compressed` gzips or bzip2s the generators' files at
+  random (seeds 1 to 100). It covers streaming and whole-file tools, a
+  FASTA output at 80, pairs, and a search with a compressed database. It
+  also covers fuzzed records inside compressed files and files cut short
+  (exit code only).
 - `datasets.py`: the real datasets of `datasets.json`.
   `fetch_datasets.py` downloads them into `$RSCOMPARE_DATA` (default
   `$TMPDIR/rsearch-data/<id>/`). Seed N is the manifest's Nth entry. An
@@ -205,6 +225,9 @@ The 45 zsh runners and `input.zsh`/`report-input.zsh` are retired to
 `input.zsh` `fuzz`, and `report-input.zsh` `fuzz-report`). It passed the
 seeds the runner passed (see below). `gen/merge.py` and
 `gen/vsearch_log_report.py` served only the runners.
+
+`compressed` was added later and passed 1,200 cases
+(`results/compressed-2026-11-20.jsonl`).
 
 The port's first full run (2026-11-20, rsearch `26fdb8c`, vsearch
 `e1551256`; `results/final-2026-11-20.jsonl` and its `.summary.txt`). It
