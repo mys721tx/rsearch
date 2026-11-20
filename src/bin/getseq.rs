@@ -5,9 +5,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 use clap::{Arg, ArgAction, ArgGroup, Command};
+
+use rsearch::hits::UcRecord;
 
 use rsearch::fastx::{Format, Reader, Record};
 use rsearch::label::checked_abundance;
@@ -40,11 +42,98 @@ fn read_list(path: &str) -> Vec<Vec<u8>> {
     labels_of(&text).into_iter().map(<[u8]>::to_vec).collect()
 }
 
+/// Selection by a UC file of hits: of the queries with hits, matched to
+/// the records in order by label, or of the database records hit, by
+/// their number.
+enum Hits {
+    Queries {
+        lines: std::io::Lines<BufReader<File>>,
+        pending: Option<String>,
+    },
+    Targets {
+        hit: std::collections::HashSet<u64>,
+        last: Option<u64>,
+        seen: u64,
+    },
+}
+
+impl Hits {
+    fn new(reader: BufReader<File>, targets: bool) -> Hits {
+        if !targets {
+            return Hits::Queries {
+                lines: reader.lines(),
+                pending: None,
+            };
+        }
+        let mut hit = std::collections::HashSet::new();
+        for line in reader.lines() {
+            let line = line.unwrap_or_else(|e| fail(&format!("cannot read the hits: {e}")));
+            let record = UcRecord::parse(&line).unwrap_or_else(|e| fail(&e));
+            if let Some(h) = record.hit {
+                hit.insert(h.target);
+            }
+        }
+        let last = hit.iter().max().copied();
+        Hits::Targets { hit, last, seen: 0 }
+    }
+
+    /// whether the next record, of this header, is selected.
+    fn select(&mut self, header: &str) -> Result<bool, String> {
+        match self {
+            Hits::Targets { hit, seen, .. } => {
+                *seen += 1;
+                Ok(hit.contains(&(*seen - 1)))
+            }
+            Hits::Queries { lines, pending } => {
+                let prefix = format!("{header}\t");
+                let mut selected = false;
+                loop {
+                    let line = match pending.take() {
+                        Some(line) => line,
+                        None => match lines.next() {
+                            None => break,
+                            Some(line) => line.map_err(|e| format!("cannot read the hits: {e}"))?,
+                        },
+                    };
+                    let record = UcRecord::parse(&line)?;
+                    if !record.labels.starts_with(&prefix) {
+                        *pending = Some(line);
+                        break;
+                    }
+                    if record.hit.is_some() {
+                        selected = true;
+                    } else {
+                        // an N record is a query of its own
+                        break;
+                    }
+                }
+                Ok(selected)
+            }
+        }
+    }
+
+    /// fails if hits are left for queries or targets the input lacks.
+    fn finish(self) -> Result<(), String> {
+        match self {
+            Hits::Targets { last, seen, .. } => match last {
+                Some(t) if t >= seen => Err(format!("hit to target {t}, beyond the input")),
+                _ => Ok(()),
+            },
+            Hits::Queries { mut lines, pending } => {
+                match pending.or_else(|| lines.next().and_then(Result::ok)) {
+                    Some(line) => Err(format!("hits of a query not in the input: {line}")),
+                    None => Ok(()),
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     let text = |name: &'static str, value: &'static str, help: &'static str| {
         Arg::new(name).long(name).value_name(value).help(help)
     };
-    let matches = Command::new("getseq")
+    let mut command = Command::new("getseq")
         .about("Select records by their headers.")
         .long_about(
             "Select records by their headers.\n\n\
@@ -83,9 +172,20 @@ fn main() {
             "FILE",
             "Select records whose header holds a word listed in FILE",
         ))
+        .arg(text(
+            "hits",
+            "FILE",
+            "Select the queries with hits in this UC file, matched in order",
+        ))
+        .arg(
+            Arg::new("targets")
+                .long("targets")
+                .action(ArgAction::SetTrue)
+                .help("With --hits, select the database records hit, by their number"),
+        )
         .group(
             ArgGroup::new("selection")
-                .args(["label", "labels", "word", "words"])
+                .args(["label", "labels", "word", "words", "hits"])
                 .required(true),
         )
         .arg(
@@ -113,12 +213,26 @@ fn main() {
             "discarded",
             "FILE",
             "Output file of the records not written to the output",
-        ))
-        .get_matches();
+        ));
+    let matches = command.get_matches_mut();
+    if matches.get_flag("targets") && matches.get_one::<String>("hits").is_none() {
+        command
+            .error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--targets needs --hits",
+            )
+            .exit();
+    }
 
     let string = |name: &str| matches.get_one::<String>(name).map(String::as_str);
     let substr = matches.get_flag("substr");
-    let selector = if let Some(label) = string("label") {
+    let mut hits = string("hits").map(|path| {
+        let file = File::open(path).unwrap_or_else(|e| fail(&format!("cannot open {path}: {e}")));
+        Hits::new(BufReader::new(file), matches.get_flag("targets"))
+    });
+    let selector = if hits.is_some() {
+        Selector::labels(std::iter::empty::<&str>(), false)
+    } else if let Some(label) = string("label") {
         Selector::labels([label], substr)
     } else if let Some(path) = string("labels") {
         Selector::labels(read_list(path), substr)
@@ -168,7 +282,14 @@ fn main() {
             flush(&mut writer, &mut discarded);
             fail(&format!("{e} in read {}", record.header()));
         }
-        let out = if selector.matches(record.header()) != invert {
+        let selected = match &mut hits {
+            Some(hits) => hits.select(record.header()).unwrap_or_else(|e| {
+                flush(&mut writer, &mut discarded);
+                fail(&e)
+            }),
+            None => selector.matches(record.header()),
+        };
+        let out = if selected != invert {
             Some(&mut writer)
         } else {
             discarded.as_mut()
@@ -180,6 +301,9 @@ fn main() {
     }
 
     flush(&mut writer, &mut discarded);
+    if let Some(hits) = hits {
+        hits.finish().unwrap_or_else(|e| fail(&e));
+    }
     if let Some(warning) = reader.stripped_warning() {
         warn(&warning);
     }
