@@ -1296,7 +1296,7 @@ H	4	114	100.0	-	0	0	60M4I54M2I	revgap	d4
     let run = |more: &[&str]| {
         let args = with(more);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        format("iddef", hits, &args)
+        format("iddef0", hits, &args)
     };
     assert_eq!(
         run(&["--userout", FIELDS]),
@@ -1589,7 +1589,7 @@ H	4	114	95.0	-	0	0	60M4I54M2I	revgap	d4
     let run = |more: &[&str]| {
         let args = with(more);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        format("iddef", hits, &args)
+        format("iddef1", hits, &args)
     };
     assert_eq!(
         run(&["--userout", FIELDS]),
@@ -1802,7 +1802,7 @@ H	4	114	98.3	-	0	0	60M4I54M2I	revgap	d4
     let run = |more: &[&str]| {
         let args = with(more);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        format("iddef", hits, &args)
+        format("iddef3", hits, &args)
     };
     assert_eq!(
         run(&["--userout", FIELDS]),
@@ -2095,7 +2095,7 @@ H	4	114	95.0	-	0	0	60M4I54M2I	revgap	d4
     let run = |more: &[&str]| {
         let args = with(more);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        format("iddef", hits, &args)
+        format("iddef4", hits, &args)
     };
     assert_eq!(
         run(&["--userout", FIELDS]),
