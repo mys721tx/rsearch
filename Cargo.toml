@@ -133,3 +133,7 @@ harness = false
 [[bench]]
 name = "exsrch"
 harness = false
+
+[[bench]]
+name = "hitfmt"
+harness = false
