@@ -206,6 +206,10 @@ pub struct Searcher {
     counts: Vec<u16>,
     simd: Search16,
     fallback: LinearMemoryAligner,
+    /// UNOISE's alpha, when its abundance skew rule decides acceptance.
+    unoise_alpha: Option<f64>,
+    /// the abundance of the query searched.
+    query_size: i64,
 }
 
 impl Searcher {
@@ -226,7 +230,17 @@ impl Searcher {
             top_hits: (max_accepts + max_rejects + MAX_DELAYED).min(n),
             uniquer: Uniquer::new(db.word_len()),
             counts: Vec::new(),
+            unoise_alpha: None,
+            query_size: 1,
         }
+    }
+
+    /// accepts the hits that pass the criteria only by UNOISE's rule, as
+    /// vsearch --cluster_unoise. A target must be at most one in 2^(alpha d
+    /// + 1) as abundant as the query, for d mismatches, or have no
+    /// mismatches. The others are weak.
+    pub fn set_unoise(&mut self, alpha: f64) {
+        self.unoise_alpha = Some(alpha);
     }
 
     /// the candidates for `query`, best first: the targets sharing the
@@ -284,6 +298,7 @@ impl Searcher {
         query: &[u8],
         minus: bool,
     ) -> Vec<Hit> {
+        self.query_size = size;
         let candidates = self.candidates(db, query);
         self.simd.set_query(query);
         let (max_accepts, max_rejects) = (self.max_accepts, self.max_rejects);
@@ -373,9 +388,19 @@ impl Searcher {
                 (a.cigar, stats)
             };
             let stats = stats.expect("the aligners' CIGARs are valid");
-            let verdict =
+            let mut verdict =
                 self.criteria
                     .aligned(&stats, &cigar, query.len(), target.len(), &self.scoring);
+            if let Some(alpha) = self.unoise_alpha
+                && verdict == Verdict::Accepted
+            {
+                let mismatches = stats.mismatches;
+                let skew = self.query_size as f64 / db.sizes[c.target] as f64;
+                let beta = 1.0 / 2f64.powf(alpha * mismatches as f64 + 1.0);
+                if !(skew <= beta || mismatches == 0) {
+                    verdict = Verdict::Weak;
+                }
+            }
             if verdict == Verdict::Accepted {
                 tally.accepts += 1;
             } else {
