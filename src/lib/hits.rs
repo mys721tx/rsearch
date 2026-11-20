@@ -124,3 +124,95 @@ impl UcRecord {
             .and_then(|rest| rest.strip_suffix('\t'))
     }
 }
+
+/// Reads a UC file of hits query by query: the consecutive `H` records of
+/// one query label, or one `N` record. Labels are told apart with the
+/// targets' labels, which the caller looks up by target number.
+pub struct UcQueries<R> {
+    lines: std::io::Lines<R>,
+    pending: Option<UcRecord>,
+}
+
+impl<R: std::io::BufRead> UcQueries<R> {
+    pub fn new(reader: R) -> UcQueries<R> {
+        UcQueries {
+            lines: reader.lines(),
+            pending: None,
+        }
+    }
+
+    fn record(&mut self) -> Option<Result<UcRecord, String>> {
+        if let Some(record) = self.pending.take() {
+            return Some(Ok(record));
+        }
+        let line = self.lines.next()?;
+        Some(
+            line.map_err(|e| format!("cannot read the hits: {e}"))
+                .and_then(|line| UcRecord::parse(&line)),
+        )
+    }
+
+    /// the next query's label and hits, none for an `N` record; `target`
+    /// gives a target's label, or none beyond the database.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use rsearch::hits::UcQueries;
+    /// let uc = "H\t0\t4\t100.0\t+\t0\t0\t=\tq\ta\nH\t1\t4\t100.0\t+\t0\t0\t=\tq\tb\n\
+    ///           N\t*\t*\t*\t.\t*\t*\t*\tr\t*\n";
+    /// let labels = ["a", "b"];
+    /// let target = |t: u64| labels.get(t as usize).copied();
+    /// let mut queries = UcQueries::new(uc.as_bytes());
+    /// let (label, hits) = queries.next_query(target).unwrap().unwrap();
+    /// assert_eq!((label.as_str(), hits.len()), ("q", 2));
+    /// let (label, hits) = queries.next_query(target).unwrap().unwrap();
+    /// assert_eq!((label.as_str(), hits.len()), ("r", 0));
+    /// assert!(queries.next_query(target).is_none());
+    /// ```
+    pub fn next_query<'a>(
+        &mut self,
+        target: impl Fn(u64) -> Option<&'a str>,
+    ) -> Option<Result<(String, Vec<UcHit>), String>> {
+        let label_of = |record: &UcRecord| -> Result<String, String> {
+            let target_label = match &record.hit {
+                None => "*",
+                Some(hit) => target(hit.target)
+                    .ok_or_else(|| format!("hit to target {}, beyond the database", hit.target))?,
+            };
+            record
+                .query_label(target_label)
+                .map(str::to_string)
+                .ok_or_else(|| format!("labels do not match the database: {}", record.labels))
+        };
+        let first = match self.record()? {
+            Ok(record) => record,
+            Err(e) => return Some(Err(e)),
+        };
+        let label = match label_of(&first) {
+            Ok(label) => label,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut hits = Vec::new();
+        if let Some(hit) = first.hit {
+            hits.push(hit);
+            while let Some(next) = self.record() {
+                let next = match next {
+                    Ok(record) => record,
+                    Err(e) => return Some(Err(e)),
+                };
+                let same = next.hit.is_some()
+                    && match label_of(&next) {
+                        Ok(l) => l == label,
+                        Err(e) => return Some(Err(e)),
+                    };
+                if same {
+                    hits.push(next.hit.unwrap());
+                } else {
+                    self.pending = Some(next);
+                    break;
+                }
+            }
+        }
+        Some(Ok((label, hits)))
+    }
+}

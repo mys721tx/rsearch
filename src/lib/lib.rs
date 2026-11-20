@@ -9,6 +9,7 @@ pub mod label;
 pub mod merge;
 pub mod options;
 pub mod orient;
+pub mod otutable;
 pub mod quality;
 pub mod random;
 pub mod report;

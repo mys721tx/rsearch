@@ -14,7 +14,7 @@ use md5::{Digest, Md5};
 use rsearch::alignment::{Stats, parse_cigar, row};
 use rsearch::cluster::{normalize_base, reverse_complement_keeping_case};
 use rsearch::fastx::{Reader, Record};
-use rsearch::hits::{UcHit, UcRecord};
+use rsearch::hits::UcQueries;
 use rsearch::scoring::{FOUR_BIT, N, Scoring, is_ambiguous};
 use rsearch::udb::{self, Udb};
 
@@ -828,51 +828,14 @@ fn main() {
         );
     }
 
-    // the records of one query: consecutive H records with the same query
-    // label, or one N record
-    let mut lines = BufReader::new(hits_file).lines();
-    let mut pending: Option<UcRecord> = None;
+    let mut uc = UcQueries::new(BufReader::new(hits_file));
     let mut record = Record::new();
     loop {
-        let first = match pending.take() {
-            Some(r) => r,
-            None => match lines.next() {
-                None => break,
-                Some(line) => {
-                    let line =
-                        line.unwrap_or_else(|e| fail(&format!("cannot read {hits_path}: {e}")));
-                    UcRecord::parse(&line).unwrap_or_else(|e| fail(&e))
-                }
-            },
+        let target = |t: u64| db.get(t as usize).map(|(header, _)| header.as_str());
+        let (label, group) = match uc.next_query(target) {
+            None => break,
+            Some(result) => result.unwrap_or_else(|e| fail(&e)),
         };
-        let label_of = |r: &UcRecord| -> String {
-            let target = match &r.hit {
-                None => "*",
-                Some(h) => match db.get(h.target as usize) {
-                    Some((header, _)) => header.as_str(),
-                    None => fail(&format!("hit to target {}, beyond the database", h.target)),
-                },
-            };
-            r.query_label(target)
-                .unwrap_or_else(|| fail(&format!("labels do not match the database: {}", r.labels)))
-                .to_string()
-        };
-        let label = label_of(&first);
-        let mut group: Vec<UcHit> = Vec::new();
-        if let Some(hit) = first.hit {
-            group.push(hit);
-            for line in lines.by_ref() {
-                let line = line.unwrap_or_else(|e| fail(&format!("cannot read {hits_path}: {e}")));
-                let next = UcRecord::parse(&line).unwrap_or_else(|e| fail(&e));
-                match next.hit {
-                    Some(ref hit) if label_of(&next) == label => group.push(hit.clone()),
-                    _ => {
-                        pending = Some(next);
-                        break;
-                    }
-                }
-            }
-        }
         // the query, skipping those without records
         loop {
             queries
