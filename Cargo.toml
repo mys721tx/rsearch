@@ -156,3 +156,7 @@ harness = false
 [[bench]]
 name = "dbsrch"
 harness = false
+
+[[bench]]
+name = "clust"
+harness = false
