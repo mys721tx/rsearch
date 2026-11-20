@@ -148,3 +148,7 @@ harness = false
 
 [profile.test]
 opt-level = 3
+
+[[bench]]
+name = "allpr"
+harness = false
