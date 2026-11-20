@@ -487,7 +487,7 @@ fn rejects_hits_not_matching_the_input() {
     let output = run(&["--hits", hits], "@a\nACGT\n+\nIIII\n");
     assert_eq!(output.status.code(), Some(1));
     // a target beyond the database
-    let output = run(&["--hits", hits, "--targets"], ">u\nTTTT\n");
+    let output = run(&["--hits", hits, "--targets"], "");
     assert_eq!(output.status.code(), Some(1));
     // --targets needs --hits, which takes no other selection
     assert_eq!(
