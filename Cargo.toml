@@ -152,3 +152,7 @@ opt-level = 3
 [[bench]]
 name = "allpr"
 harness = false
+
+[[bench]]
+name = "dbsrch"
+harness = false
