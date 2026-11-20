@@ -172,3 +172,7 @@ harness = false
 [[bench]]
 name = "clmsa"
 harness = false
+
+[[bench]]
+name = "uchime"
+harness = false
