@@ -1,46 +1,51 @@
 # Comparing rsearch with vsearch
 
 Untracked helpers for checking that rsearch's tools give vsearch's
-results. They form the Python package `rscompare`. It translates a
-vsearch command line into the rsearch pipeline that should give the same
-results and runs both. It then compares their outputs, exit codes, error
-messages, and warnings. Standard library only (Python 3.9 or later).
+results. They form the Rust crate `rscompare`. It is a member of the
+workspace. It translates a vsearch command line into the rsearch
+pipeline that should give the same results and runs both. It then
+compares their outputs, exit codes, error messages, and warnings. Its
+dependencies are `clap` and `serde_json`. It calls `gzip`, `bzip2`, and,
+for `fetch`, `curl` and `md5`/`md5sum`.
 
 ## Build
 
-From the repository root, build vsearch from `../vsearch` into
-`compare/vsearch-build/vsearch`, then rsearch's tools into
-`target/release`:
+From the repository root, build rsearch's tools and rscompare into
+`target/release`, then vsearch from `../vsearch` into
+`compare/vsearch-build/vsearch`:
 
 ```sh
-./compare/build-vsearch.sh
 cargo build --release
+./target/release/rscompare build-vsearch
 ```
 
-`build-vsearch.sh` takes the vsearch source directory and an output
-directory as optional arguments. It defines `HAVE_ZLIB_H` and
-`HAVE_BZLIB_H`, as configure would, so that vsearch reads gzip and bzip2
-files. It opens `libz` and `libbz2` at run time. Without them it fails with
-"Files compressed with gzip are not supported". Tested on macOS on Apple
-silicon.
+`build-vsearch [SOURCE] [OUT]` compiles vsearch's sources directly (no
+autotools). It chooses the SIMD backends of `src/Makefile.am` for the
+machine's architecture and the system libraries for its OS. `--arch`,
+`--os`, or `VSEARCH_ARCH`/`VSEARCH_OS` override them, and `--dry-run`
+prints the choice. It defines `HAVE_ZLIB_H` and `HAVE_BZLIB_H`, as
+configure would, so that vsearch reads gzip and bzip2 files. It opens
+`libz` and `libbz2` at run time. Without them it fails with "Files
+compressed with gzip are not supported". `CXX` and `CC` are honoured.
 
 ## Compare
 
-Run from `compare/`. `list` shows the sources, their default seeds, and
-what they cover. `run` runs sources at their default seeds, or at those
-of `--seeds`, and `summary` shows the outcomes, the coverage, and the
-caveats of a results file. `translate` prints the pipeline of a vsearch
-command line, and `test` runs the unit tests:
+From the repository root, `list` shows the sources, their default seeds,
+and what they cover. `run` runs sources at their default seeds, or at
+those of `--seeds`, and `summary` shows the outcomes, the coverage, and
+the caveats of a results file. `translate` prints the pipeline of a
+vsearch command line, and `cargo test -p rscompare` runs the unit and
+translator tests. `cargo run -p rscompare --release --` can stand for
+`./target/release/rscompare`:
 
 ```sh
-cd compare
-python3 -m rscompare list
-python3 -m rscompare run derep clust
-python3 -m rscompare run all --out results/run.jsonl
-python3 -m rscompare run dbsrch --seeds 1-50,77 -j 8
-python3 -m rscompare summary results/run.jsonl
-python3 -m rscompare translate -- --cluster_fast in.fa --id 0.97 --centroids c.fa
-python3 -m rscompare test
+./target/release/rscompare list
+./target/release/rscompare run derep clust
+./target/release/rscompare run all --out compare/results/run.jsonl
+./target/release/rscompare run dbsrch --seeds 1-50,77 -j 8
+./target/release/rscompare summary compare/results/run.jsonl
+./target/release/rscompare translate -- --cluster_fast in.fa --id 0.97 --centroids c.fa
+cargo test -p rscompare
 ```
 
 `run` prints a `DIFF` line for each failing case (the first 200). It
@@ -50,17 +55,19 @@ case failed.
 
 `--vsearch` and `--bin` name the vsearch binary and the rsearch build
 (defaults `compare/vsearch-build/vsearch` and `target/release`).
-`--jobs` sets the processes (each tool stays single-threaded). `--tmp`
-sets the working directory (`$TMPDIR/rscompare`). `--keep` keeps the
-files of passing cases too. The files of a failing case are always kept
-in `$TMPDIR/rscompare/<source>-<seed>/c<index>/`. vsearch's outputs are
-in `v/` and rsearch's in `r/`.
+`--jobs` sets the cases run at once (threads; each tool stays
+single-threaded). `--tmp` sets the working directory
+(`$TMPDIR/rscompare`). `--keep` keeps the files of passing cases too.
+The files of a failing case are always kept in
+`$TMPDIR/rscompare/<source>-<seed>/c<index>/`. vsearch's outputs are in
+`v/` and rsearch's in `r/`.
 
-`all` runs every source but `mkudb-long`. Its UDB files reach 4 GB. It
-runs on its own, one case at a time:
+`all` runs every source but two. The UDB files of `mkudb-long` reach 4
+GB, and `datasets` needs the downloads (below). `mkudb-long` runs on its
+own, one case at a time:
 
 ```sh
-python3 -m rscompare run mkudb-long -j 1
+./target/release/rscompare run mkudb-long -j 1
 ```
 
 ### Results
@@ -86,20 +93,19 @@ one or more result files so that two runs can be compared.
 
 ## The translator
 
-`rscompare/translate.py` can be used alone:
+`src/translate.rs` can be used alone:
 
-```python
-from rscompare.translate import translate
-p = translate(['--fastx_uniques', 'in.fq', '--sizeout', '--fastqout', 'o.fq'], 'work')
-p.steps      # [Step(tool, args, stdin, stdout), ...] in the order they run
-p.outputs    # [Output(option, vsearch_file, rsearch_file, comparator), ...]
-p.caveats    # what the pipeline does not reproduce
-print(p.render())
+```rust
+let p = rscompare::translate::translate(&["--fastx_uniques", "in.fq", "--sizeout", "--fastqout", "o.fq"], "work")?;
+p.steps      // [Step { tool, args, stdin, stdout, system }] in the order they run
+p.outputs    // [Output { option, vsearch, rsearch, comparator }]
+p.caveats    // what the pipeline does not reproduce
+println!("{}", p.render());
 ```
 
-It holds, once, every rule the zsh runners encoded by hand. The rules
-come from the pipelines of `README.md`, the tool pages in `docs/`, and
-the option map of `docs/vsearch.md`. They are:
+It holds each rule of the translation once. The rules come from the
+pipelines of `README.md`, the tool pages in `docs/`, and the option map
+of `docs/vsearch.md`. They are:
 
 - option names;
 - `sqtrim` then `sqfilt` for the filters;
@@ -118,16 +124,20 @@ the option map of `docs/vsearch.md`. They are:
   the hits;
 - a search without `--maxhits` for `--dbmatched`, one with `--maxhits 1`
   for `--uc` without `--uc_allhits`;
+- side outputs (`clust --hits`, `dbornt --not-oriented`, `redig`'s extra
+  files) only when vsearch asks for them;
 - which rsearch output stands for each vsearch output. `--log` is the
   report of `--fastq_chars`, `--fastq_stats`, `--fastq_mergepairs`,
   `--orient`, `--sintax`, `--udbinfo`, and `--udbstats`, and otherwise a
   log that is not compared.
 
-The steps run one after the other through files. They make a shell
-pipeline without the concurrency. As in a pipeline, a failed step's
-output still streams into the next step on its standard input. A step
-that takes it as a file argument (a database, a hit file) does not run.
-The exit code and error are the first failing step's.
+`execute::run_steps` runs the steps one after the other through files.
+It is a shell pipeline without the concurrency. As in a pipeline, a
+failed step's output still streams into the next step on its standard
+input. A step that takes it as a file argument (a database, a hit file)
+does not run. The exit code and error are the first failing step's. For
+the benchmarks, `execute::run_piped` runs the same steps as a real
+pipeline.
 
 Compressed input is decompressed first. vsearch knows a gzip or bzip2
 file by its magic number, and so does the translator. The main input,
@@ -159,9 +169,21 @@ Each case records its caveats:
   `--clusters` with `--sizeout` as they are. vsearch's `--search_exact`
   writes masked sequences.
 
+## Benchmarks
+
+Every benchmark that times vsearch (`benches/<tool>/main.rs`) also asks
+the translator for the pipeline of that vsearch command. It times that
+pipeline as `pipeline/<case>` (`benches/common/translated.rs`:
+`rscompare::translate` then `execute::run_piped`). What is timed against
+vsearch is thus by construction what the comparison checks. The vsearch
+command lines keep the options that leave vsearch's default filters,
+masking and wrapping out where they change nothing on the benchmark's
+input (`--minseqlength 0`, `--qmask soft`, and `--fasta_width 0`). The
+tool-alone timings next to them thus stay comparable too.
+
 ## Comparators
 
-`rscompare/comparators.py` holds the normalisations. It names each once:
+`src/comparators.rs` holds the normalisations. It names each once:
 
 | comparator | for |
 |---|---|
@@ -182,69 +204,95 @@ that differ in wording (`abundance`, `joinpa`, `mergpa`, `mkudb`,
 exit code 2 for invalid arguments stands for vsearch's 1 where a case
 says so.
 
-## Sources
+## Sources and generators
 
-`rscompare/sources/` makes the cases. The generators in `gen/` write the
-inputs from a seed as before. Every case is reproducible from its seed.
+`src/sources/` makes the cases. `src/generators/` writes their inputs
+from a seed (`src/rng.rs`, SplitMix64). Every case is reproducible from
+its seed on any platform.
 
-- `preprocess.py` and `analysis.py`: one source a former zsh runner.
-  Each keeps the runner's generator, seeds, and option sets. Where a
-  runner applied an rsearch tool to vsearch's own hits (hitfmt, otutab,
-  lcatax, getseq `--hits`, clspl), the case is now vsearch's command
-  whole. The translated pipeline then runs the search too.
-- `fuzz.py`: `fuzz` (malformed FASTA and FASTQ against about 40 vsearch
-  commands, from `input.zsh`) and `fuzz-report` (the quality reports,
-  from `report-input.zsh`). Where the translated pipeline starts with
-  another tool than the one `input.zsh` fuzzed, a probe runs
-  `input.zsh`'s own command too.
-- `compressed.py`: `compressed` gzips or bzip2s the generators' files at
+- `preprocess.rs` and `analysis.rs`: a source for each tool, or for a
+  use of one (`getseq-hits`, `conv-udb`). Each has its own option sets
+  and seeds. Where a source applies an rsearch tool to vsearch's own
+  hits (hitfmt, otutab, lcatax, getseq `--hits`, and clspl), the case is
+  vsearch's command whole. The translated pipeline then runs the search
+  too.
+- `fuzz.rs`: `fuzz` (malformed FASTA and FASTQ against about 40 vsearch
+  commands) and `fuzz-report` (the quality reports). Where the
+  translated pipeline starts with another tool than the one a case
+  fuzzes, a probe runs that tool's own command too.
+- `compressed.rs`: `compressed` gzips or bzip2s the generators' files at
   random (seeds 1 to 100). It covers streaming and whole-file tools, a
   FASTA output at 80, pairs, and a search with a compressed database. It
   also covers fuzzed records inside compressed files and files cut short
   (exit code only).
-- `datasets.py`: the real datasets of `datasets.json`.
-  `fetch_datasets.py` downloads them into `$RSCOMPARE_DATA` (default
-  `$TMPDIR/rsearch-data/<id>/`). Seed N is the manifest's Nth entry. An
-  entry's command lines are read from `"vsearch"`, `"commands"`, or
-  `"vsearch_commands"` (strings or argv lists, without the program).
-  `{dir}` in them stands for the dataset's directory, and relative input
-  names are taken from it. Output options are moved to the case's output
-  directory. `--threads 1`, `--quiet`, and `--notrunclabels` are added.
-  An entry whose files are missing is skipped.
+- `datasets.rs`: the real datasets of `datasets.json` (below). Seed N is
+  the manifest's Nth entry. An entry's command lines are read from
+  `"vsearch"`, `"commands"`, or `"vsearch_commands"` (strings or argv
+  lists, without the program). `{dir}` in them stands for the dataset's
+  directory, and relative input names are taken from it. Output options
+  are moved to the case's output directory. `--threads 1`, `--quiet`,
+  and `--notrunclabels` are added. An entry whose files are missing is
+  skipped.
 
-A source is a function `make(T, seed, env)` returning `Case`s
-(`rscompare/cases.py`). A case holds vsearch's argv with outputs under
+A source is a function from a directory, a seed, and the environment to
+`Case`s (`src/cases.rs`). A case holds vsearch's argv with outputs under
 `@OUT@` and the error kind and warnings to compare. It also says whether
-outputs are compared when vsearch fails. It may hold a probe or a skip rule.
+outputs are compared when vsearch fails. It may hold a probe or a skip
+rule.
 
-## The zsh runners
+The 37 generators write each source's inputs from its seed: the edge
+cases, the option draws, the files, and the `params`.
 
-The 45 zsh runners and `input.zsh`/`report-input.zsh` are retired to
-`retired-zsh/`. Each source above replaces the runner of the same name
-(`getseq-hits.zsh` is `getseq-hits`, `conv-udb.zsh` `conv-udb`,
-`input.zsh` `fuzz`, and `report-input.zsh` `fuzz-report`). It passed the
-seeds the runner passed (see below). `gen/merge.py` and
-`gen/vsearch_log_report.py` served only the runners.
+## Real datasets
 
-`compressed` was added later and passed 1,200 cases
-(`results/compressed-2026-11-20.jsonl`).
+```sh
+./target/release/rscompare fetch --list
+./target/release/rscompare fetch --max-reads 5000 --vsearch compare/vsearch-build/vsearch
+./target/release/rscompare run datasets
+```
 
-The port's first full run (2026-11-20, rsearch `26fdb8c`, vsearch
-`e1551256`; `results/final-2026-11-20.jsonl` and its `.summary.txt`). It
-ran every source at the runners' seeds. 71,570 cases passed and none
-failed. The runners' own rules skipped 18 (14 `conv-udb` files whose
-magic number is spoiled, 4 `udbstat` files on which vsearch aborts). A
-case is a vsearch command line. A runner counted each compared file. The
-counts therefore differ from the runners' `pass=` totals.
+`fetch [ID ...]` downloads the datasets of `datasets.json` (and the
+references they use) into `$RSCOMPARE_DATA/<id>/` (default
+`$TMPDIR/rsearch-data/<id>/`). It resumes partial downloads and checks
+sizes and MD5s. It then decompresses the files and cuts each FASTQ to
+its first N reads with `--max-reads`. Last, it runs the entry's
+`prepare` steps (`cat`, `fasta`, `derep`, and `makeudb` with
+`--vsearch`). The working files are rebuilt only when the downloads,
+`--max-reads`, or the steps change. See `docs/datasets.md`.
 
 ## Time two builds
 
 ```sh
-python3 compare/time.py BASELINE_DIR target/release
+./target/release/rscompare time BASELINE_DIR target/release
 ```
 
 Runs the two builds alternately on the benchmark inputs in `target/tmp`
-(written by `cargo bench`) and prints the median time of each. Build the
-baseline from another commit with, for example,
-`git archive HEAD | tar -x -C /tmp/base` and
-`CARGO_TARGET_DIR=/tmp/base-target cargo build --release` there.
+(written by `cargo bench -- --test`) and prints the median time of each.
+`--runs` sets the runs of each build (15 by default), and `--inputs` the
+inputs. A baseline from another commit, such as `HEAD`, builds from its
+files into `/tmp/base-target/release`. That directory is the
+`BASELINE_DIR` above:
+
+```sh
+mkdir -p /tmp/base
+git archive HEAD | tar -x -C /tmp/base
+(cd /tmp/base && CARGO_TARGET_DIR=/tmp/base-target cargo build --release)
+```
+
+## Runs
+
+- First full run (2026-11-20, rsearch `26fdb8c`, vsearch `e1551256`;
+  `results/final-2026-11-20.jsonl` and its `.summary.txt`). It ran every
+  source at its default seeds. 71,570 cases passed and none failed. The
+  sources' own rules skipped 18 (14 `conv-udb` files whose magic number
+  is spoiled, and 4 `udbstat` files on which vsearch aborts).
+  `compressed` was added later and passed 1,200 cases
+  (`results/compressed-2026-11-20.jsonl`).
+- A run on the present generators (`results/rust-gen.jsonl`, 44 sources,
+  stopped before the last few) passed 64,725 cases, skipped 16, and
+  failed 2. `exsrch` seed 101 is a palindromic query (`CG`) with
+  `--strand both`. vsearch orders its plus and minus hits on one target
+  by `std::sort`. That sort is not stable. The order is therefore
+  libc++'s. `clust` seed 95 is an empty sequence. vsearch's
+  `--cluster_fast` CIGAR for it is `=`, and clust's is `339I`. The
+  `uc-fast` comparator now matches them.
