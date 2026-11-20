@@ -1,6 +1,7 @@
 pub mod accept;
 pub mod alignment;
 pub mod cluster;
+pub mod database;
 pub mod dust;
 pub mod fastx;
 pub mod filter;

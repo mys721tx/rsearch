@@ -6,7 +6,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Write};
 
 use clap::{Arg, ArgAction, ArgGroup, Command, value_parser};
 use md5::{Digest, Md5};
@@ -16,7 +16,6 @@ use rsearch::cluster::{normalize_base, reverse_complement_keeping_case};
 use rsearch::fastx::{Reader, Record};
 use rsearch::hits::UcQueries;
 use rsearch::scoring::{FOUR_BIT, N, Scoring, is_ambiguous};
-use rsearch::udb::{self, Udb};
 
 /// prints an error and exits.
 fn fail(message: &str) -> ! {
@@ -558,57 +557,6 @@ impl std::fmt::Write for Bytes<'_> {
     }
 }
 
-/// reads the database: a FASTA, FASTQ or UDB file.
-fn database(path: &str) -> Vec<(String, Vec<u8>)> {
-    let file = File::open(path).unwrap_or_else(|e| fail(&format!("cannot open {path}: {e}")));
-    let size = file
-        .metadata()
-        .ok()
-        .filter(|m| m.is_file())
-        .map(|m| m.len());
-    let mut fin = BufReader::new(file);
-    let start = fin
-        .fill_buf()
-        .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-    if start.starts_with(udb::MAGIC) {
-        let ignore = |_: &[u32], _: u64, _: &[u32]| {};
-        let read = match size {
-            Some(size) => Udb::read(&mut fin, size, ignore),
-            None => {
-                let mut bytes = Vec::new();
-                fin.read_to_end(&mut bytes)
-                    .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-                Udb::read(&mut &bytes[..], bytes.len() as u64, ignore)
-            }
-        };
-        let udb = read.unwrap_or_else(|e| fail(&e.to_string()));
-        let mut at = 0;
-        return udb
-            .header_starts
-            .windows(2)
-            .zip(&udb.lengths)
-            .map(|(pair, &length)| {
-                let header = &udb.headers[pair[0] as usize..pair[1] as usize - 1];
-                let seq = udb.sequences[at..at + length as usize].to_vec();
-                at += length as usize;
-                (String::from_utf8_lossy(header).into_owned(), seq)
-            })
-            .collect();
-    }
-    let mut reader = Reader::new(fin);
-    let mut record = Record::new();
-    let mut db = Vec::new();
-    loop {
-        reader
-            .read(&mut record)
-            .unwrap_or_else(|e| fail(&e.to_string()));
-        if record.is_empty() {
-            return db;
-        }
-        db.push((record.header().to_string(), record.seq().to_vec()));
-    }
-}
-
 fn main() {
     let flag = |name: &'static str, help: &'static str| {
         Arg::new(name)
@@ -778,7 +726,7 @@ fn main() {
     };
 
     let db_path = matches.get_one::<String>("db").unwrap();
-    let db = database(db_path);
+    let db = rsearch::database::read(db_path).unwrap_or_else(|e| fail(&e));
     let hits_path = matches.get_one::<String>("hits").unwrap();
     let hits_file =
         File::open(hits_path).unwrap_or_else(|e| fail(&format!("cannot open {hits_path}: {e}")));

@@ -5,68 +5,19 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Arg, ArgAction, ArgGroup, Command};
 
-use rsearch::fastx::{Reader, Record};
 use rsearch::hits::UcQueries;
 use rsearch::label::abundance;
 use rsearch::otutable::OtuTable;
-use rsearch::udb::{self, Udb};
 
 /// prints an error and exits.
 fn fail(message: &str) -> ! {
     eprintln!("Error: {message}");
     std::process::exit(1);
-}
-
-/// the labels of the database: a FASTA, FASTQ or UDB file.
-fn labels(path: &str) -> Vec<String> {
-    let file = File::open(path).unwrap_or_else(|e| fail(&format!("cannot open {path}: {e}")));
-    let size = file
-        .metadata()
-        .ok()
-        .filter(|m| m.is_file())
-        .map(|m| m.len());
-    let mut fin = BufReader::new(file);
-    let start = fin
-        .fill_buf()
-        .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-    if start.starts_with(udb::MAGIC) {
-        let ignore = |_: &[u32], _: u64, _: &[u32]| {};
-        let read = match size {
-            Some(size) => Udb::read(&mut fin, size, ignore),
-            None => {
-                let mut bytes = Vec::new();
-                fin.read_to_end(&mut bytes)
-                    .unwrap_or_else(|e| fail(&format!("cannot read {path}: {e}")));
-                Udb::read(&mut &bytes[..], bytes.len() as u64, ignore)
-            }
-        };
-        let udb = read.unwrap_or_else(|e| fail(&e.to_string()));
-        return udb
-            .header_starts
-            .windows(2)
-            .map(|pair| {
-                String::from_utf8_lossy(&udb.headers[pair[0] as usize..pair[1] as usize - 1])
-                    .into_owned()
-            })
-            .collect();
-    }
-    let mut reader = Reader::new(fin);
-    let mut record = Record::new();
-    let mut labels = Vec::new();
-    loop {
-        reader
-            .read(&mut record)
-            .unwrap_or_else(|e| fail(&e.to_string()));
-        if record.is_empty() {
-            return labels;
-        }
-        labels.push(record.header().to_string());
-    }
 }
 
 /// the time now, as `YYYY-MM-DDTHH:MM:SS` in UTC.
@@ -139,7 +90,11 @@ fn main() {
         .group(ArgGroup::new("format").args(["mothur", "biom"]))
         .get_matches();
 
-    let db = labels(matches.get_one::<String>("db").unwrap());
+    let db: Vec<String> = rsearch::database::read(matches.get_one::<String>("db").unwrap())
+        .unwrap_or_else(|e| fail(&e))
+        .into_iter()
+        .map(|(header, _)| header)
+        .collect();
     let hits_path = matches.get_one::<String>("hits").unwrap();
     let hits_file =
         File::open(hits_path).unwrap_or_else(|e| fail(&format!("cannot open {hits_path}: {e}")));
