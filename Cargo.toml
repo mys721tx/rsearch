@@ -141,3 +141,7 @@ harness = false
 [[bench]]
 name = "otutab"
 harness = false
+
+[[bench]]
+name = "lcatax"
+harness = false
