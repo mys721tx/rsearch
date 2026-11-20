@@ -16,7 +16,7 @@ use rsearch::fastx::{Reader, Record};
 use rsearch::hits::{write_hit, write_no_hit};
 use rsearch::label::checked_abundance;
 use rsearch::linmem::LinearMemoryAligner;
-use rsearch::options::{search_args, search_options};
+use rsearch::options::{hit_choice_args, search_args, search_options};
 
 /// prints a warning, which may hold bytes that are not UTF-8.
 fn warn(message: &[u8]) {
@@ -72,7 +72,7 @@ fn main() {
                 .action(ArgAction::SetTrue)
                 .help("Accept every hit, the criteria aside"),
         );
-    let matches = search_args(command)
+    let matches = hit_choice_args(search_args(command))
         .group(
             ArgGroup::new("acceptance")
                 .args(["id", "accept-all"])

@@ -102,7 +102,7 @@ pub fn share(text: &str) -> Result<f64, String> {
     }
 }
 
-/// the arguments of vsearch's acceptance criteria, scores and hit choice,
+/// the arguments of vsearch's acceptance criteria and scores,
 /// shared by the tools that align.
 pub fn search_args(command: Command) -> Command {
     let number = |name: &'static str, help: &'static str| {
@@ -153,17 +153,6 @@ pub fn search_args(command: Command) -> Command {
                 .value_parser(share)
                 .help("Weak hits: of at least this identity, below --id"),
         )
-        .arg(
-            Arg::new("maxhits")
-                .long("maxhits")
-                .value_name("N")
-                .value_parser(value_parser!(u64).range(1..))
-                .help("Write at most this many hits of a query, default to all"),
-        )
-        .arg(flag(
-            "top-hits-only",
-            "Write only the hits of the top identity",
-        ))
         .arg(count(
             "max-diffs",
             "Reject hits with more substitutions and interior gap columns",
@@ -267,6 +256,25 @@ pub fn search_args(command: Command) -> Command {
                 .help("Gap extension penalties, as vsearch's, default to 2I/1E"),
         )
         .arg(flag("n-mismatch", "Count N as a mismatch"))
+}
+
+/// the arguments choosing the hits written of each query, for the tools
+/// that write every hit.
+pub fn hit_choice_args(command: Command) -> Command {
+    command
+        .arg(
+            Arg::new("maxhits")
+                .long("maxhits")
+                .value_name("N")
+                .value_parser(value_parser!(u64).range(1..))
+                .help("Write at most this many hits of a query, default to all"),
+        )
+        .arg(
+            Arg::new("top-hits-only")
+                .long("top-hits-only")
+                .action(ArgAction::SetTrue)
+                .help("Write only the hits of the top identity"),
+        )
 }
 
 /// the scores and criteria the arguments give.

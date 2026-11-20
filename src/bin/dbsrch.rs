@@ -13,7 +13,7 @@ use rsearch::cluster::reverse_complement_keeping_case;
 use rsearch::fastx::{Reader, Record};
 use rsearch::hits::{write_hit, write_no_hit};
 use rsearch::label::checked_abundance;
-use rsearch::options::{search_args, search_options};
+use rsearch::options::{hit_choice_args, search_args, search_options};
 use rsearch::search::{Database, Limits, MIN_WORD_MATCHES, Searcher, order};
 use rsearch::udb::{self, Header, Udb};
 use rsearch::words::{Index, MAX_WORD_LEN, MIN_WORD_LEN};
@@ -216,7 +216,7 @@ fn main() {
                     "Words a target shares with the query to be a candidate, default by --word-len",
                 ),
         );
-    let matches = search_args(command)
+    let matches = hit_choice_args(search_args(command))
         .mut_arg("id", |a| a.required(true))
         .get_matches();
     let (scoring, criteria) = search_options(&matches);
