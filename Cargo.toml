@@ -160,3 +160,7 @@ harness = false
 [[bench]]
 name = "clust"
 harness = false
+
+[[bench]]
+name = "unoise"
+harness = false
