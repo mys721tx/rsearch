@@ -1,0 +1,1957 @@
+//! End-to-end tests of the clmsa binary.
+//!
+//! Expected alignments, consensus sequences and profiles are those vsearch
+//! writes with `--msaout`, `--consout` and `--profile` (with `--sizein
+//! --sizeout --notrunclabels --fasta_width 0`) beside its `--uc` clusters,
+//! which clmsa reads with the sequences clustered.
+
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+
+/// Variants of two templates by substitutions, deletions and insertions,
+/// in mixed case, with IUPAC codes, reverse complements, a shortened one,
+/// and a label ending with a semicolon.
+const INPUT: &str = r##">s0;size=6
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>s1;size=7
+TGCCTGGTATATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAGGA
+>s2;size=2
+tgccaactatacctgTTTAGCCGTGTGTACCCACCTCATCTGACTATCTTCGGACCCCT
+>s3;size=3
+GGTACATTCGCGAAATGCAGTCAAATCCAGGCACAAATAGTCAATATTCAACATTTGAA
+>s4;size=3
+TGCCAAACTATACCTGTTTAYCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s5
+TGCTGGTACATCCGCGAAATGCAGTCAAACCACGCACTAGTCAATATTAAAAACATTTGAA
+>s6
+TGCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s7
+TGCCTGGTACAACCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATCAACATTTGAA
+>s8
+TGCCTGATACATCCGCGAAATGCAGTCAAACCAGGGGGCACTAGTCAATATTCAACATTTGAA
+>s9;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>s10;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>s11
+TGCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGAACCACT
+>s12
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>s13;size=4
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>s14
+TGCCAAACTATACCTGTAGAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s15;size=7
+TGCCAAACTATACCTGTTTAGCCGTAAGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>t;
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##;
+
+/// A path in the temporary directory, unique to this test process.
+fn temp_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("rsearch-clmsa-{}-{name}", std::process::id()))
+}
+
+/// Runs clmsa with `args` on `hits` and `input`.
+fn run(name: &str, args: &[&str], hits: &str, input: &str) -> Output {
+    let (hp, ip) = (
+        temp_path(&format!("{name}-hits")),
+        temp_path(&format!("{name}-in")),
+    );
+    std::fs::write(&hp, hits).unwrap();
+    std::fs::write(&ip, input).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_clmsa"))
+        .arg("--hits")
+        .arg(&hp)
+        .arg("-i")
+        .arg(&ip)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&hp);
+    let _ = std::fs::remove_file(&ip);
+    output
+}
+
+/// Runs clmsa, which must succeed, and returns what it wrote.
+fn clmsa(name: &str, args: &[&str], hits: &str, input: &str) -> String {
+    let output = run(name, args, hits, input);
+    assert!(
+        output.status.success(),
+        "clmsa failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// vsearch's clusters at --id 0.8.
+const HITS: &str = r##"S	0	60	*	*	*	*	*	s0;size=6	*
+H	0	62	96.7	+	0	0	60M2D	s1;size=7	s0;size=6
+S	1	59	*	*	*	*	*	s2;size=2	*
+H	0	59	91.5	+	0	0	5I25MD8M3D22M	s3;size=3	s0;size=6
+H	1	60	89.8	+	0	0	D59M	s4;size=3	s2;size=2
+H	0	61	90.2	+	0	0	I48M2D11M	s5	s0;size=6
+H	1	60	91.5	+	0	0	D59M	s6	s2;size=2
+H	0	59	96.7	+	0	0	47MI12M	s7	s0;size=6
+H	0	63	93.7	+	0	0	33M3D27M	s8	s0;size=6
+S	2	60	*	*	*	*	*	s9;size=3	*
+S	3	60	*	*	*	*	*	s10;size=5	*
+H	1	60	88.1	+	0	0	D59M	s11	s2;size=2
+S	4	61	*	*	*	*	*	s12	*
+H	0	60	100.0	+	0	0	=	s13;size=4	s0;size=6
+H	1	60	88.1	+	0	0	D59M	s14	s2;size=2
+H	1	62	88.5	+	0	0	D24M2D35M	s15;size=7	s2;size=2
+S	5	30	*	*	*	*	*	t;	*
+C	0	23	*	*	*	*	*	s0;size=6	*
+C	1	15	*	*	*	*	*	s2;size=2	*
+C	2	3	*	*	*	*	*	s9;size=3	*
+C	3	5	*	*	*	*	*	s10;size=5	*
+C	4	1	*	*	*	*	*	s12	*
+C	5	1	*	*	*	*	*	t;	*
+"##;
+
+/// the multiple alignment by default, with the consensus beneath
+#[test]
+fn aligns_each_cluster() {
+    let hits = HITS;
+    assert_eq!(
+        clmsa("aligns_each_cluster-msa", &[], hits, INPUT),
+        r##"
+>*s0;size=6
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>s1;size=7
+TGCCTGGTATATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAGGA
+>s3;size=3
+-----GGTACATTCGCGAAATGCAGTCAAATCCA---GGCACAAATAGTCAATATT--CAACATTTGAA--
+>s5;size=1
+-TGCTGGTACATCCGCGAAATGCAGTCAAA-CCA---CGCAC---TAGTCAATATTAAAAACATTTGAA--
+>s7;size=1
+TGCCTGGTACAACCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATA-T--CAACATTTGAA--
+>s8;size=1
+TGCCTGATACATCCGCGAAATGCAGTCAAA-CCAGGGGGCAC---TAGTCAATATT--CAACATTTGAA--
+>s13;size=4
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>consensus
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA++
+
+>*s2;size=2
+-tgccaactatacctgTTTAGCCGT--GTGTACCCACCTCATCTGACTATCTTCGGACCCCT
+>s4;size=3
+TGCCAAACTATACCTGTTTAYCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s6;size=1
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s11;size=1
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGAACCACT
+>s14;size=1
+TGCCAAACTATACCTGTAGAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s15;size=7
+TGCCAAACTATACCTGTTTAGCCGTAAGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>consensus
++GCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+
+>*s9;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>consensus
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+
+>*s10;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>consensus
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+
+>*s12;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>consensus
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+
+>*t;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+>consensus
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa("aligns_each_cluster-cons", &["--consensus"], hits, INPUT),
+        r##">centroid=s0;seqs=7;size=23
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>centroid=s2;seqs=6;size=15
+GCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>centroid=s9;seqs=1;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>centroid=s10;seqs=1;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>centroid=s12;seqs=1;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>centroid=t;seqs=1;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa("aligns_each_cluster-prof", &["--profile"], hits, INPUT),
+        r##">centroid=s0;seqs=7;size=23
+
+0	T	0	0	0	19	4	0
+1	G	0	0	19	1	3	0
+2	C	0	19	1	0	3	0
+3	C	0	20	0	0	3	0
+4	T	0	0	0	20	3	0
+5	G	0	0	23	0	0	0
+6	G	1	0	22	0	0	0
+7	T	0	0	0	23	0	0
+8	A	23	0	0	0	0	0
+9	C	0	16	0	7	0	0
+10	A	23	0	0	0	0	0
+11	T	1	0	0	22	0	0
+12	C	0	20	0	3	0	0
+13	C	0	23	0	0	0	0
+14	G	0	0	23	0	0	0
+15	C	0	23	0	0	0	0
+16	G	0	0	23	0	0	0
+17	A	23	0	0	0	0	0
+18	A	23	0	0	0	0	0
+19	A	23	0	0	0	0	0
+20	T	0	0	0	23	0	0
+21	G	0	0	23	0	0	0
+22	C	0	23	0	0	0	0
+23	A	23	0	0	0	0	0
+24	G	0	0	23	0	0	0
+25	T	0	0	0	23	0	0
+26	C	0	23	0	0	0	0
+27	A	23	0	0	0	0	0
+28	A	23	0	0	0	0	0
+29	A	23	0	0	0	0	0
+30	-	0	0	0	3	20	0
+31	C	0	23	0	0	0	0
+32	C	0	23	0	0	0	0
+33	A	23	0	0	0	0	0
+34	-	0	0	1	0	22	0
+35	-	0	0	1	0	22	0
+36	-	0	0	1	0	22	0
+37	G	0	1	22	0	0	0
+38	G	0	0	23	0	0	0
+39	C	0	23	0	0	0	0
+40	A	23	0	0	0	0	0
+41	C	0	23	0	0	0	0
+42	-	3	0	0	0	20	0
+43	-	3	0	0	0	20	0
+44	-	3	0	0	0	20	0
+45	T	0	0	0	23	0	0
+46	A	23	0	0	0	0	0
+47	G	0	0	23	0	0	0
+48	T	0	0	0	23	0	0
+49	C	0	23	0	0	0	0
+50	A	23	0	0	0	0	0
+51	A	23	0	0	0	0	0
+52	T	0	0	0	23	0	0
+53	A	23	0	0	0	0	0
+54	T	0	0	0	22	1	0
+55	T	0	0	0	23	0	0
+56	-	1	0	0	0	22	0
+57	-	1	0	0	0	22	0
+58	C	1	22	0	0	0	0
+59	A	23	0	0	0	0	0
+60	A	23	0	0	0	0	0
+61	C	0	23	0	0	0	0
+62	A	23	0	0	0	0	0
+63	T	0	0	0	23	0	0
+64	T	0	0	0	23	0	0
+65	T	0	0	0	23	0	0
+66	G	0	0	23	0	0	0
+67	A	23	0	0	0	0	0
+68	A	16	0	7	0	0	0
+69	+	0	0	7	0	16	0
+70	+	7	0	0	0	16	0
+
+>centroid=s2;seqs=6;size=15
+
+0	+	0	0	0	13	2	0
+1	G	0	0	13	2	0	0
+2	C	0	13	2	0	0	0
+3	C	0	15	0	0	0	0
+4	A	13	2	0	0	0	0
+5	A	15	0	0	0	0	0
+6	A	15	0	0	0	0	0
+7	C	0	15	0	0	0	0
+8	T	0	0	0	15	0	0
+9	A	15	0	0	0	0	0
+10	T	0	0	0	15	0	0
+11	A	15	0	0	0	0	0
+12	C	0	15	0	0	0	0
+13	C	0	15	0	0	0	0
+14	T	0	0	0	15	0	0
+15	G	0	0	15	0	0	0
+16	T	0	0	0	15	0	0
+17	T	1	0	0	14	0	0
+18	T	0	0	1	14	0	0
+19	A	15	0	0	0	0	0
+20	G	0	0	12	0	0	3
+21	C	0	15	0	0	0	0
+22	C	0	15	0	0	0	0
+23	G	0	0	15	0	0	0
+24	T	0	0	0	15	0	0
+25	-	7	0	0	0	8	0
+26	-	7	0	0	0	8	0
+27	G	0	0	15	0	0	0
+28	T	0	0	0	15	0	0
+29	G	0	0	15	0	0	0
+30	T	0	0	0	15	0	0
+31	A	15	0	0	0	0	0
+32	C	0	15	0	0	0	0
+33	C	0	15	0	0	0	0
+34	C	0	15	0	0	0	0
+35	A	15	0	0	0	0	0
+36	C	0	15	0	0	0	0
+37	C	0	15	0	0	0	0
+38	T	0	0	0	15	0	0
+39	C	0	15	0	0	0	0
+40	A	15	0	0	0	0	0
+41	C	0	13	0	2	0	0
+42	C	0	15	0	0	0	0
+43	T	0	0	0	15	0	0
+44	G	0	0	15	0	0	0
+45	A	15	0	0	0	0	0
+46	C	0	15	0	0	0	0
+47	T	0	0	0	15	0	0
+48	A	15	0	0	0	0	0
+49	T	0	0	0	15	0	0
+50	C	0	15	0	0	0	0
+51	T	0	0	0	15	0	0
+52	T	0	0	0	15	0	0
+53	G	0	2	13	0	0	0
+54	G	0	0	15	0	0	0
+55	G	1	0	14	0	0	0
+56	A	15	0	0	0	0	0
+57	C	0	15	0	0	0	0
+58	C	0	15	0	0	0	0
+59	C	1	14	0	0	0	0
+60	C	0	15	0	0	0	0
+61	T	0	0	0	15	0	0
+
+>centroid=s9;seqs=1;size=3
+
+0	T	0	0	0	3	0	0
+1	T	0	0	0	3	0	0
+2	C	0	3	0	0	0	0
+3	A	3	0	0	0	0	0
+4	A	3	0	0	0	0	0
+5	A	3	0	0	0	0	0
+6	T	0	0	0	3	0	0
+7	G	0	0	3	0	0	0
+8	T	0	0	0	3	0	0
+9	T	0	0	0	3	0	0
+10	G	0	0	3	0	0	0
+11	A	3	0	0	0	0	0
+12	A	3	0	0	0	0	0
+13	T	0	0	0	3	0	0
+14	A	3	0	0	0	0	0
+15	T	0	0	0	3	0	0
+16	T	0	0	0	3	0	0
+17	G	0	0	3	0	0	0
+18	A	3	0	0	0	0	0
+19	C	0	3	0	0	0	0
+20	T	0	0	0	3	0	0
+21	A	3	0	0	0	0	0
+22	G	0	0	3	0	0	0
+23	T	0	0	0	3	0	0
+24	G	0	0	3	0	0	0
+25	C	0	3	0	0	0	0
+26	C	0	3	0	0	0	0
+27	T	0	0	0	3	0	0
+28	G	0	0	3	0	0	0
+29	G	0	0	3	0	0	0
+30	T	0	0	0	3	0	0
+31	T	0	0	0	3	0	0
+32	T	0	0	0	3	0	0
+33	G	0	0	3	0	0	0
+34	A	3	0	0	0	0	0
+35	C	0	3	0	0	0	0
+36	T	0	0	0	3	0	0
+37	G	0	0	3	0	0	0
+38	C	0	3	0	0	0	0
+39	A	3	0	0	0	0	0
+40	T	0	0	0	3	0	0
+41	T	0	0	0	3	0	0
+42	T	0	0	0	3	0	0
+43	C	0	3	0	0	0	0
+44	G	0	0	3	0	0	0
+45	C	0	3	0	0	0	0
+46	G	0	0	3	0	0	0
+47	G	0	0	3	0	0	0
+48	A	3	0	0	0	0	0
+49	T	0	0	0	3	0	0
+50	G	0	0	3	0	0	0
+51	T	0	0	0	3	0	0
+52	A	3	0	0	0	0	0
+53	C	0	3	0	0	0	0
+54	C	0	3	0	0	0	0
+55	A	3	0	0	0	0	0
+56	G	0	0	3	0	0	0
+57	G	0	0	3	0	0	0
+58	C	0	3	0	0	0	0
+59	A	3	0	0	0	0	0
+
+>centroid=s10;seqs=1;size=5
+
+0	A	5	0	0	0	0	0
+1	G	0	0	5	0	0	0
+2	G	0	0	5	0	0	0
+3	G	0	0	5	0	0	0
+4	G	0	0	5	0	0	0
+5	T	0	0	0	5	0	0
+6	C	0	5	0	0	0	0
+7	C	0	5	0	0	0	0
+8	C	0	5	0	0	0	0
+9	A	5	0	0	0	0	0
+10	A	5	0	0	0	0	0
+11	G	0	0	5	0	0	0
+12	A	5	0	0	0	0	0
+13	T	0	0	0	5	0	0
+14	A	5	0	0	0	0	0
+15	G	0	0	5	0	0	0
+16	T	0	0	0	5	0	0
+17	C	0	5	0	0	0	0
+18	A	5	0	0	0	0	0
+19	G	0	0	5	0	0	0
+20	G	0	0	5	0	0	0
+21	T	0	0	0	5	0	0
+22	G	0	0	5	0	0	0
+23	A	5	0	0	0	0	0
+24	G	0	0	5	0	0	0
+25	G	0	0	5	0	0	0
+26	T	0	0	0	5	0	0
+27	G	0	0	5	0	0	0
+28	G	0	0	5	0	0	0
+29	G	0	0	5	0	0	0
+30	T	0	0	0	5	0	0
+31	A	5	0	0	0	0	0
+32	C	0	5	0	0	0	0
+33	A	5	0	0	0	0	0
+34	C	0	5	0	0	0	0
+35	A	5	0	0	0	0	0
+36	C	0	5	0	0	0	0
+37	G	0	0	5	0	0	0
+38	G	0	0	5	0	0	0
+39	C	0	5	0	0	0	0
+40	T	0	0	0	5	0	0
+41	A	5	0	0	0	0	0
+42	A	5	0	0	0	0	0
+43	T	0	0	0	5	0	0
+44	C	0	5	0	0	0	0
+45	A	5	0	0	0	0	0
+46	G	0	0	5	0	0	0
+47	G	0	0	5	0	0	0
+48	T	0	0	0	5	0	0
+49	A	5	0	0	0	0	0
+50	T	0	0	0	5	0	0
+51	A	5	0	0	0	0	0
+52	G	0	0	5	0	0	0
+53	T	0	0	0	5	0	0
+54	T	0	0	0	5	0	0
+55	T	0	0	0	5	0	0
+56	G	0	0	5	0	0	0
+57	G	0	0	5	0	0	0
+58	C	0	5	0	0	0	0
+59	A	5	0	0	0	0	0
+
+>centroid=s12;seqs=1;size=1
+
+0	A	1	0	0	0	0	0
+1	A	1	0	0	0	0	0
+2	C	0	1	0	0	0	0
+3	T	0	0	0	1	0	0
+4	A	1	0	0	0	0	0
+5	T	0	0	0	1	0	0
+6	T	0	0	0	1	0	0
+7	T	0	0	0	1	0	0
+8	T	0	0	0	1	0	0
+9	A	1	0	0	0	0	0
+10	C	0	1	0	0	0	0
+11	C	0	1	0	0	0	0
+12	T	0	0	0	1	0	0
+13	T	0	0	0	1	0	0
+14	T	0	0	0	1	0	0
+15	T	0	0	0	1	0	0
+16	A	1	0	0	0	0	0
+17	G	0	0	1	0	0	0
+18	C	0	1	0	0	0	0
+19	C	0	1	0	0	0	0
+20	G	0	0	1	0	0	0
+21	T	0	0	0	1	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	G	0	0	1	0	0	0
+25	T	0	0	0	1	0	0
+26	A	1	0	0	0	0	0
+27	C	0	1	0	0	0	0
+28	C	0	1	0	0	0	0
+29	C	0	1	0	0	0	0
+30	A	1	0	0	0	0	0
+31	C	0	1	0	0	0	0
+32	C	0	1	0	0	0	0
+33	T	0	0	0	1	0	0
+34	C	0	1	0	0	0	0
+35	A	1	0	0	0	0	0
+36	C	0	1	0	0	0	0
+37	T	0	0	0	1	0	0
+38	G	0	0	1	0	0	0
+39	A	1	0	0	0	0	0
+40	C	0	1	0	0	0	0
+41	T	0	0	0	1	0	0
+42	A	1	0	0	0	0	0
+43	T	0	0	0	1	0	0
+44	T	0	0	0	1	0	0
+45	T	0	0	0	1	0	0
+46	T	0	0	0	1	0	0
+47	C	0	1	0	0	0	0
+48	T	0	0	0	1	0	0
+49	T	0	0	0	1	0	0
+50	G	0	0	1	0	0	0
+51	G	0	0	1	0	0	0
+52	G	0	0	1	0	0	0
+53	G	0	0	1	0	0	0
+54	G	0	0	1	0	0	0
+55	A	1	0	0	0	0	0
+56	C	0	1	0	0	0	0
+57	C	0	1	0	0	0	0
+58	C	0	1	0	0	0	0
+59	C	0	1	0	0	0	0
+60	T	0	0	0	1	0	0
+
+>centroid=t;seqs=1;size=1
+
+0	T	0	0	0	1	0	0
+1	T	0	0	0	1	0	0
+2	C	0	1	0	0	0	0
+3	A	1	0	0	0	0	0
+4	C	0	1	0	0	0	0
+5	A	1	0	0	0	0	0
+6	G	0	0	1	0	0	0
+7	G	0	0	1	0	0	0
+8	A	1	0	0	0	0	0
+9	C	0	1	0	0	0	0
+10	T	0	0	0	1	0	0
+11	T	0	0	0	1	0	0
+12	A	1	0	0	0	0	0
+13	T	0	0	0	1	0	0
+14	A	1	0	0	0	0	0
+15	A	1	0	0	0	0	0
+16	T	0	0	0	1	0	0
+17	T	0	0	0	1	0	0
+18	A	1	0	0	0	0	0
+19	A	1	0	0	0	0	0
+20	A	1	0	0	0	0	0
+21	A	1	0	0	0	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	T	0	0	0	1	0	0
+25	T	0	0	0	1	0	0
+26	G	0	0	1	0	0	0
+27	A	1	0	0	0	0	0
+28	C	0	1	0	0	0	0
+29	A	1	0	0	0	0	0
+
+"##
+    );
+}
+
+/// members of the minus strand are reverse-complemented
+#[test]
+fn aligns_members_of_the_minus_strand() {
+    let hits = r##"S	0	60	*	*	*	*	*	s0;size=6	*
+H	0	62	96.7	+	0	0	60M2D	s1;size=7	s0;size=6
+S	1	59	*	*	*	*	*	s2;size=2	*
+H	0	59	91.5	+	0	0	5I25MD8M3D22M	s3;size=3	s0;size=6
+H	1	60	89.8	+	0	0	D59M	s4;size=3	s2;size=2
+H	0	61	90.2	+	0	0	I48M2D11M	s5	s0;size=6
+H	1	60	91.5	+	0	0	D59M	s6	s2;size=2
+H	0	59	96.7	+	0	0	47MI12M	s7	s0;size=6
+H	0	63	93.7	+	0	0	33M3D27M	s8	s0;size=6
+H	0	60	100.0	-	0	0	=	s9;size=3	s0;size=6
+H	1	60	89.8	-	0	0	D59M	s10;size=5	s2;size=2
+H	1	60	88.1	+	0	0	D59M	s11	s2;size=2
+S	2	61	*	*	*	*	*	s12	*
+H	0	60	100.0	+	0	0	=	s13;size=4	s0;size=6
+H	1	60	88.1	+	0	0	D59M	s14	s2;size=2
+H	1	62	88.5	+	0	0	D24M2D35M	s15;size=7	s2;size=2
+S	3	30	*	*	*	*	*	t;	*
+C	0	26	*	*	*	*	*	s0;size=6	*
+C	1	20	*	*	*	*	*	s2;size=2	*
+C	2	1	*	*	*	*	*	s12	*
+C	3	1	*	*	*	*	*	t;	*
+"##;
+    assert_eq!(
+        clmsa("aligns_members_of_the_minus_strand-msa", &[], hits, INPUT),
+        r##"
+>*s0;size=6
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>s1;size=7
+TGCCTGGTATATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAGGA
+>s3;size=3
+-----GGTACATTCGCGAAATGCAGTCAAATCCA---GGCACAAATAGTCAATATT--CAACATTTGAA--
+>s5;size=1
+-TGCTGGTACATCCGCGAAATGCAGTCAAA-CCA---CGCAC---TAGTCAATATTAAAAACATTTGAA--
+>s7;size=1
+TGCCTGGTACAACCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATA-T--CAACATTTGAA--
+>s8;size=1
+TGCCTGATACATCCGCGAAATGCAGTCAAA-CCAGGGGGCAC---TAGTCAATATT--CAACATTTGAA--
+>s9;size=3
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>s13;size=4
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>consensus
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA++
+
+>*s2;size=2
+-tgccaactatacctgTTTAGCCGT--GTGTACCCACCTCATCTGACTATCTTCGGACCCCT
+>s4;size=3
+TGCCAAACTATACCTGTTTAYCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s6;size=1
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s10;size=5
+TGCCAAACTATACCTGATTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s11;size=1
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGAACCACT
+>s14;size=1
+TGCCAAACTATACCTGTAGAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s15;size=7
+TGCCAAACTATACCTGTTTAGCCGTAAGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>consensus
++GCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+
+>*s12;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>consensus
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+
+>*t;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+>consensus
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa(
+            "aligns_members_of_the_minus_strand-cons",
+            &["--consensus"],
+            hits,
+            INPUT
+        ),
+        r##">centroid=s0;seqs=8;size=26
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>centroid=s2;seqs=7;size=20
+GCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>centroid=s12;seqs=1;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>centroid=t;seqs=1;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa(
+            "aligns_members_of_the_minus_strand-prof",
+            &["--profile"],
+            hits,
+            INPUT
+        ),
+        r##">centroid=s0;seqs=8;size=26
+
+0	T	0	0	0	22	4	0
+1	G	0	0	22	1	3	0
+2	C	0	22	1	0	3	0
+3	C	0	23	0	0	3	0
+4	T	0	0	0	23	3	0
+5	G	0	0	26	0	0	0
+6	G	1	0	25	0	0	0
+7	T	0	0	0	26	0	0
+8	A	26	0	0	0	0	0
+9	C	0	19	0	7	0	0
+10	A	26	0	0	0	0	0
+11	T	1	0	0	25	0	0
+12	C	0	23	0	3	0	0
+13	C	0	26	0	0	0	0
+14	G	0	0	26	0	0	0
+15	C	0	26	0	0	0	0
+16	G	0	0	26	0	0	0
+17	A	26	0	0	0	0	0
+18	A	26	0	0	0	0	0
+19	A	26	0	0	0	0	0
+20	T	0	0	0	26	0	0
+21	G	0	0	26	0	0	0
+22	C	0	26	0	0	0	0
+23	A	26	0	0	0	0	0
+24	G	0	0	26	0	0	0
+25	T	0	0	0	26	0	0
+26	C	0	26	0	0	0	0
+27	A	26	0	0	0	0	0
+28	A	26	0	0	0	0	0
+29	A	26	0	0	0	0	0
+30	-	0	0	0	3	23	0
+31	C	0	26	0	0	0	0
+32	C	0	26	0	0	0	0
+33	A	26	0	0	0	0	0
+34	-	0	0	1	0	25	0
+35	-	0	0	1	0	25	0
+36	-	0	0	1	0	25	0
+37	G	0	1	25	0	0	0
+38	G	0	0	26	0	0	0
+39	C	0	26	0	0	0	0
+40	A	26	0	0	0	0	0
+41	C	0	26	0	0	0	0
+42	-	3	0	0	0	23	0
+43	-	3	0	0	0	23	0
+44	-	3	0	0	0	23	0
+45	T	0	0	0	26	0	0
+46	A	26	0	0	0	0	0
+47	G	0	0	26	0	0	0
+48	T	0	0	0	26	0	0
+49	C	0	26	0	0	0	0
+50	A	26	0	0	0	0	0
+51	A	26	0	0	0	0	0
+52	T	0	0	0	26	0	0
+53	A	26	0	0	0	0	0
+54	T	0	0	0	25	1	0
+55	T	0	0	0	26	0	0
+56	-	1	0	0	0	25	0
+57	-	1	0	0	0	25	0
+58	C	1	25	0	0	0	0
+59	A	26	0	0	0	0	0
+60	A	26	0	0	0	0	0
+61	C	0	26	0	0	0	0
+62	A	26	0	0	0	0	0
+63	T	0	0	0	26	0	0
+64	T	0	0	0	26	0	0
+65	T	0	0	0	26	0	0
+66	G	0	0	26	0	0	0
+67	A	26	0	0	0	0	0
+68	A	19	0	7	0	0	0
+69	+	0	0	7	0	19	0
+70	+	7	0	0	0	19	0
+
+>centroid=s2;seqs=7;size=20
+
+0	+	0	0	0	18	2	0
+1	G	0	0	18	2	0	0
+2	C	0	18	2	0	0	0
+3	C	0	20	0	0	0	0
+4	A	18	2	0	0	0	0
+5	A	20	0	0	0	0	0
+6	A	20	0	0	0	0	0
+7	C	0	20	0	0	0	0
+8	T	0	0	0	20	0	0
+9	A	20	0	0	0	0	0
+10	T	0	0	0	20	0	0
+11	A	20	0	0	0	0	0
+12	C	0	20	0	0	0	0
+13	C	0	20	0	0	0	0
+14	T	0	0	0	20	0	0
+15	G	0	0	20	0	0	0
+16	T	5	0	0	15	0	0
+17	T	1	0	0	19	0	0
+18	T	0	0	1	19	0	0
+19	A	20	0	0	0	0	0
+20	G	0	0	17	0	0	3
+21	C	0	20	0	0	0	0
+22	C	0	20	0	0	0	0
+23	G	0	0	20	0	0	0
+24	T	0	0	0	20	0	0
+25	-	7	0	0	0	13	0
+26	-	7	0	0	0	13	0
+27	G	0	0	20	0	0	0
+28	T	0	0	0	20	0	0
+29	G	0	0	20	0	0	0
+30	T	0	0	0	20	0	0
+31	A	20	0	0	0	0	0
+32	C	0	20	0	0	0	0
+33	C	0	20	0	0	0	0
+34	C	0	20	0	0	0	0
+35	A	20	0	0	0	0	0
+36	C	0	20	0	0	0	0
+37	C	0	20	0	0	0	0
+38	T	0	0	0	20	0	0
+39	C	0	20	0	0	0	0
+40	A	20	0	0	0	0	0
+41	C	0	18	0	2	0	0
+42	C	0	20	0	0	0	0
+43	T	0	0	0	20	0	0
+44	G	0	0	20	0	0	0
+45	A	20	0	0	0	0	0
+46	C	0	20	0	0	0	0
+47	T	0	0	0	20	0	0
+48	A	20	0	0	0	0	0
+49	T	0	0	0	20	0	0
+50	C	0	20	0	0	0	0
+51	T	0	0	0	20	0	0
+52	T	0	0	0	20	0	0
+53	G	0	2	18	0	0	0
+54	G	0	0	20	0	0	0
+55	G	1	0	19	0	0	0
+56	A	20	0	0	0	0	0
+57	C	0	20	0	0	0	0
+58	C	0	20	0	0	0	0
+59	C	1	19	0	0	0	0
+60	C	0	20	0	0	0	0
+61	T	0	0	0	20	0	0
+
+>centroid=s12;seqs=1;size=1
+
+0	A	1	0	0	0	0	0
+1	A	1	0	0	0	0	0
+2	C	0	1	0	0	0	0
+3	T	0	0	0	1	0	0
+4	A	1	0	0	0	0	0
+5	T	0	0	0	1	0	0
+6	T	0	0	0	1	0	0
+7	T	0	0	0	1	0	0
+8	T	0	0	0	1	0	0
+9	A	1	0	0	0	0	0
+10	C	0	1	0	0	0	0
+11	C	0	1	0	0	0	0
+12	T	0	0	0	1	0	0
+13	T	0	0	0	1	0	0
+14	T	0	0	0	1	0	0
+15	T	0	0	0	1	0	0
+16	A	1	0	0	0	0	0
+17	G	0	0	1	0	0	0
+18	C	0	1	0	0	0	0
+19	C	0	1	0	0	0	0
+20	G	0	0	1	0	0	0
+21	T	0	0	0	1	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	G	0	0	1	0	0	0
+25	T	0	0	0	1	0	0
+26	A	1	0	0	0	0	0
+27	C	0	1	0	0	0	0
+28	C	0	1	0	0	0	0
+29	C	0	1	0	0	0	0
+30	A	1	0	0	0	0	0
+31	C	0	1	0	0	0	0
+32	C	0	1	0	0	0	0
+33	T	0	0	0	1	0	0
+34	C	0	1	0	0	0	0
+35	A	1	0	0	0	0	0
+36	C	0	1	0	0	0	0
+37	T	0	0	0	1	0	0
+38	G	0	0	1	0	0	0
+39	A	1	0	0	0	0	0
+40	C	0	1	0	0	0	0
+41	T	0	0	0	1	0	0
+42	A	1	0	0	0	0	0
+43	T	0	0	0	1	0	0
+44	T	0	0	0	1	0	0
+45	T	0	0	0	1	0	0
+46	T	0	0	0	1	0	0
+47	C	0	1	0	0	0	0
+48	T	0	0	0	1	0	0
+49	T	0	0	0	1	0	0
+50	G	0	0	1	0	0	0
+51	G	0	0	1	0	0	0
+52	G	0	0	1	0	0	0
+53	G	0	0	1	0	0	0
+54	G	0	0	1	0	0	0
+55	A	1	0	0	0	0	0
+56	C	0	1	0	0	0	0
+57	C	0	1	0	0	0	0
+58	C	0	1	0	0	0	0
+59	C	0	1	0	0	0	0
+60	T	0	0	0	1	0	0
+
+>centroid=t;seqs=1;size=1
+
+0	T	0	0	0	1	0	0
+1	T	0	0	0	1	0	0
+2	C	0	1	0	0	0	0
+3	A	1	0	0	0	0	0
+4	C	0	1	0	0	0	0
+5	A	1	0	0	0	0	0
+6	G	0	0	1	0	0	0
+7	G	0	0	1	0	0	0
+8	A	1	0	0	0	0	0
+9	C	0	1	0	0	0	0
+10	T	0	0	0	1	0	0
+11	T	0	0	0	1	0	0
+12	A	1	0	0	0	0	0
+13	T	0	0	0	1	0	0
+14	A	1	0	0	0	0	0
+15	A	1	0	0	0	0	0
+16	T	0	0	0	1	0	0
+17	T	0	0	0	1	0	0
+18	A	1	0	0	0	0	0
+19	A	1	0	0	0	0	0
+20	A	1	0	0	0	0	0
+21	A	1	0	0	0	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	T	0	0	0	1	0	0
+25	T	0	0	0	1	0	0
+26	G	0	0	1	0	0	0
+27	A	1	0	0	0	0	0
+28	C	0	1	0	0	0	0
+29	A	1	0	0	0	0	0
+
+"##
+    );
+}
+
+/// --no-sizein counts each sequence once, in profiles and totals
+#[test]
+fn counts_each_sequence_once() {
+    let hits = r##"S	0	60	*	*	*	*	*	s0;size=6	*
+H	0	62	96.7	+	0	0	60M2D	s1;size=7	s0;size=6
+S	1	59	*	*	*	*	*	s2;size=2	*
+H	0	59	91.5	+	0	0	5I25MD8M3D22M	s3;size=3	s0;size=6
+H	1	60	89.8	+	0	0	D59M	s4;size=3	s2;size=2
+H	0	61	90.2	+	0	0	I48M2D11M	s5	s0;size=6
+H	1	60	91.5	+	0	0	D59M	s6	s2;size=2
+H	0	59	96.7	+	0	0	47MI12M	s7	s0;size=6
+H	0	63	93.7	+	0	0	33M3D27M	s8	s0;size=6
+S	2	60	*	*	*	*	*	s9;size=3	*
+S	3	60	*	*	*	*	*	s10;size=5	*
+H	1	60	88.1	+	0	0	D59M	s11	s2;size=2
+S	4	61	*	*	*	*	*	s12	*
+H	0	60	100.0	+	0	0	=	s13;size=4	s0;size=6
+H	1	60	88.1	+	0	0	D59M	s14	s2;size=2
+H	1	62	88.5	+	0	0	D24M2D35M	s15;size=7	s2;size=2
+S	5	30	*	*	*	*	*	t;	*
+C	0	7	*	*	*	*	*	s0;size=6	*
+C	1	6	*	*	*	*	*	s2;size=2	*
+C	2	1	*	*	*	*	*	s9;size=3	*
+C	3	1	*	*	*	*	*	s10;size=5	*
+C	4	1	*	*	*	*	*	s12	*
+C	5	1	*	*	*	*	*	t;	*
+"##;
+    assert_eq!(
+        clmsa(
+            "counts_each_sequence_once-msa",
+            &["--no-sizein"],
+            hits,
+            INPUT
+        ),
+        r##"
+>*s0;size=6
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>s1;size=7
+TGCCTGGTATATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAGGA
+>s3;size=3
+-----GGTACATTCGCGAAATGCAGTCAAATCCA---GGCACAAATAGTCAATATT--CAACATTTGAA--
+>s5;size=1
+-TGCTGGTACATCCGCGAAATGCAGTCAAA-CCA---CGCAC---TAGTCAATATTAAAAACATTTGAA--
+>s7;size=1
+TGCCTGGTACAACCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATA-T--CAACATTTGAA--
+>s8;size=1
+TGCCTGATACATCCGCGAAATGCAGTCAAA-CCAGGGGGCAC---TAGTCAATATT--CAACATTTGAA--
+>s13;size=4
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>consensus
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA++
+
+>*s2;size=2
+-tgccaactatacctgTTTAGCCGT--GTGTACCCACCTCATCTGACTATCTTCGGACCCCT
+>s4;size=3
+TGCCAAACTATACCTGTTTAYCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s6;size=1
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s11;size=1
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGAACCACT
+>s14;size=1
+TGCCAAACTATACCTGTAGAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s15;size=7
+TGCCAAACTATACCTGTTTAGCCGTAAGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>consensus
++GCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+
+>*s9;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>consensus
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+
+>*s10;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>consensus
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+
+>*s12;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>consensus
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+
+>*t;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+>consensus
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa(
+            "counts_each_sequence_once-cons",
+            &["--consensus", "--no-sizein"],
+            hits,
+            INPUT
+        ),
+        r##">centroid=s0;seqs=7;size=7
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>centroid=s2;seqs=6;size=6
+GCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>centroid=s9;seqs=1;size=1
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>centroid=s10;seqs=1;size=1
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>centroid=s12;seqs=1;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>centroid=t;seqs=1;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa(
+            "counts_each_sequence_once-prof",
+            &["--profile", "--no-sizein"],
+            hits,
+            INPUT
+        ),
+        r##">centroid=s0;seqs=7;size=7
+
+0	T	0	0	0	5	2	0
+1	G	0	0	5	1	1	0
+2	C	0	5	1	0	1	0
+3	C	0	6	0	0	1	0
+4	T	0	0	0	6	1	0
+5	G	0	0	7	0	0	0
+6	G	1	0	6	0	0	0
+7	T	0	0	0	7	0	0
+8	A	7	0	0	0	0	0
+9	C	0	6	0	1	0	0
+10	A	7	0	0	0	0	0
+11	T	1	0	0	6	0	0
+12	C	0	6	0	1	0	0
+13	C	0	7	0	0	0	0
+14	G	0	0	7	0	0	0
+15	C	0	7	0	0	0	0
+16	G	0	0	7	0	0	0
+17	A	7	0	0	0	0	0
+18	A	7	0	0	0	0	0
+19	A	7	0	0	0	0	0
+20	T	0	0	0	7	0	0
+21	G	0	0	7	0	0	0
+22	C	0	7	0	0	0	0
+23	A	7	0	0	0	0	0
+24	G	0	0	7	0	0	0
+25	T	0	0	0	7	0	0
+26	C	0	7	0	0	0	0
+27	A	7	0	0	0	0	0
+28	A	7	0	0	0	0	0
+29	A	7	0	0	0	0	0
+30	-	0	0	0	1	6	0
+31	C	0	7	0	0	0	0
+32	C	0	7	0	0	0	0
+33	A	7	0	0	0	0	0
+34	-	0	0	1	0	6	0
+35	-	0	0	1	0	6	0
+36	-	0	0	1	0	6	0
+37	G	0	1	6	0	0	0
+38	G	0	0	7	0	0	0
+39	C	0	7	0	0	0	0
+40	A	7	0	0	0	0	0
+41	C	0	7	0	0	0	0
+42	-	1	0	0	0	6	0
+43	-	1	0	0	0	6	0
+44	-	1	0	0	0	6	0
+45	T	0	0	0	7	0	0
+46	A	7	0	0	0	0	0
+47	G	0	0	7	0	0	0
+48	T	0	0	0	7	0	0
+49	C	0	7	0	0	0	0
+50	A	7	0	0	0	0	0
+51	A	7	0	0	0	0	0
+52	T	0	0	0	7	0	0
+53	A	7	0	0	0	0	0
+54	T	0	0	0	6	1	0
+55	T	0	0	0	7	0	0
+56	-	1	0	0	0	6	0
+57	-	1	0	0	0	6	0
+58	C	1	6	0	0	0	0
+59	A	7	0	0	0	0	0
+60	A	7	0	0	0	0	0
+61	C	0	7	0	0	0	0
+62	A	7	0	0	0	0	0
+63	T	0	0	0	7	0	0
+64	T	0	0	0	7	0	0
+65	T	0	0	0	7	0	0
+66	G	0	0	7	0	0	0
+67	A	7	0	0	0	0	0
+68	A	6	0	1	0	0	0
+69	+	0	0	1	0	6	0
+70	+	1	0	0	0	6	0
+
+>centroid=s2;seqs=6;size=6
+
+0	+	0	0	0	5	1	0
+1	G	0	0	5	1	0	0
+2	C	0	5	1	0	0	0
+3	C	0	6	0	0	0	0
+4	A	5	1	0	0	0	0
+5	A	6	0	0	0	0	0
+6	A	6	0	0	0	0	0
+7	C	0	6	0	0	0	0
+8	T	0	0	0	6	0	0
+9	A	6	0	0	0	0	0
+10	T	0	0	0	6	0	0
+11	A	6	0	0	0	0	0
+12	C	0	6	0	0	0	0
+13	C	0	6	0	0	0	0
+14	T	0	0	0	6	0	0
+15	G	0	0	6	0	0	0
+16	T	0	0	0	6	0	0
+17	T	1	0	0	5	0	0
+18	T	0	0	1	5	0	0
+19	A	6	0	0	0	0	0
+20	G	0	0	5	0	0	1
+21	C	0	6	0	0	0	0
+22	C	0	6	0	0	0	0
+23	G	0	0	6	0	0	0
+24	T	0	0	0	6	0	0
+25	-	1	0	0	0	5	0
+26	-	1	0	0	0	5	0
+27	G	0	0	6	0	0	0
+28	T	0	0	0	6	0	0
+29	G	0	0	6	0	0	0
+30	T	0	0	0	6	0	0
+31	A	6	0	0	0	0	0
+32	C	0	6	0	0	0	0
+33	C	0	6	0	0	0	0
+34	C	0	6	0	0	0	0
+35	A	6	0	0	0	0	0
+36	C	0	6	0	0	0	0
+37	C	0	6	0	0	0	0
+38	T	0	0	0	6	0	0
+39	C	0	6	0	0	0	0
+40	A	6	0	0	0	0	0
+41	C	0	5	0	1	0	0
+42	C	0	6	0	0	0	0
+43	T	0	0	0	6	0	0
+44	G	0	0	6	0	0	0
+45	A	6	0	0	0	0	0
+46	C	0	6	0	0	0	0
+47	T	0	0	0	6	0	0
+48	A	6	0	0	0	0	0
+49	T	0	0	0	6	0	0
+50	C	0	6	0	0	0	0
+51	T	0	0	0	6	0	0
+52	T	0	0	0	6	0	0
+53	G	0	1	5	0	0	0
+54	G	0	0	6	0	0	0
+55	G	1	0	5	0	0	0
+56	A	6	0	0	0	0	0
+57	C	0	6	0	0	0	0
+58	C	0	6	0	0	0	0
+59	C	1	5	0	0	0	0
+60	C	0	6	0	0	0	0
+61	T	0	0	0	6	0	0
+
+>centroid=s9;seqs=1;size=1
+
+0	T	0	0	0	1	0	0
+1	T	0	0	0	1	0	0
+2	C	0	1	0	0	0	0
+3	A	1	0	0	0	0	0
+4	A	1	0	0	0	0	0
+5	A	1	0	0	0	0	0
+6	T	0	0	0	1	0	0
+7	G	0	0	1	0	0	0
+8	T	0	0	0	1	0	0
+9	T	0	0	0	1	0	0
+10	G	0	0	1	0	0	0
+11	A	1	0	0	0	0	0
+12	A	1	0	0	0	0	0
+13	T	0	0	0	1	0	0
+14	A	1	0	0	0	0	0
+15	T	0	0	0	1	0	0
+16	T	0	0	0	1	0	0
+17	G	0	0	1	0	0	0
+18	A	1	0	0	0	0	0
+19	C	0	1	0	0	0	0
+20	T	0	0	0	1	0	0
+21	A	1	0	0	0	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	G	0	0	1	0	0	0
+25	C	0	1	0	0	0	0
+26	C	0	1	0	0	0	0
+27	T	0	0	0	1	0	0
+28	G	0	0	1	0	0	0
+29	G	0	0	1	0	0	0
+30	T	0	0	0	1	0	0
+31	T	0	0	0	1	0	0
+32	T	0	0	0	1	0	0
+33	G	0	0	1	0	0	0
+34	A	1	0	0	0	0	0
+35	C	0	1	0	0	0	0
+36	T	0	0	0	1	0	0
+37	G	0	0	1	0	0	0
+38	C	0	1	0	0	0	0
+39	A	1	0	0	0	0	0
+40	T	0	0	0	1	0	0
+41	T	0	0	0	1	0	0
+42	T	0	0	0	1	0	0
+43	C	0	1	0	0	0	0
+44	G	0	0	1	0	0	0
+45	C	0	1	0	0	0	0
+46	G	0	0	1	0	0	0
+47	G	0	0	1	0	0	0
+48	A	1	0	0	0	0	0
+49	T	0	0	0	1	0	0
+50	G	0	0	1	0	0	0
+51	T	0	0	0	1	0	0
+52	A	1	0	0	0	0	0
+53	C	0	1	0	0	0	0
+54	C	0	1	0	0	0	0
+55	A	1	0	0	0	0	0
+56	G	0	0	1	0	0	0
+57	G	0	0	1	0	0	0
+58	C	0	1	0	0	0	0
+59	A	1	0	0	0	0	0
+
+>centroid=s10;seqs=1;size=1
+
+0	A	1	0	0	0	0	0
+1	G	0	0	1	0	0	0
+2	G	0	0	1	0	0	0
+3	G	0	0	1	0	0	0
+4	G	0	0	1	0	0	0
+5	T	0	0	0	1	0	0
+6	C	0	1	0	0	0	0
+7	C	0	1	0	0	0	0
+8	C	0	1	0	0	0	0
+9	A	1	0	0	0	0	0
+10	A	1	0	0	0	0	0
+11	G	0	0	1	0	0	0
+12	A	1	0	0	0	0	0
+13	T	0	0	0	1	0	0
+14	A	1	0	0	0	0	0
+15	G	0	0	1	0	0	0
+16	T	0	0	0	1	0	0
+17	C	0	1	0	0	0	0
+18	A	1	0	0	0	0	0
+19	G	0	0	1	0	0	0
+20	G	0	0	1	0	0	0
+21	T	0	0	0	1	0	0
+22	G	0	0	1	0	0	0
+23	A	1	0	0	0	0	0
+24	G	0	0	1	0	0	0
+25	G	0	0	1	0	0	0
+26	T	0	0	0	1	0	0
+27	G	0	0	1	0	0	0
+28	G	0	0	1	0	0	0
+29	G	0	0	1	0	0	0
+30	T	0	0	0	1	0	0
+31	A	1	0	0	0	0	0
+32	C	0	1	0	0	0	0
+33	A	1	0	0	0	0	0
+34	C	0	1	0	0	0	0
+35	A	1	0	0	0	0	0
+36	C	0	1	0	0	0	0
+37	G	0	0	1	0	0	0
+38	G	0	0	1	0	0	0
+39	C	0	1	0	0	0	0
+40	T	0	0	0	1	0	0
+41	A	1	0	0	0	0	0
+42	A	1	0	0	0	0	0
+43	T	0	0	0	1	0	0
+44	C	0	1	0	0	0	0
+45	A	1	0	0	0	0	0
+46	G	0	0	1	0	0	0
+47	G	0	0	1	0	0	0
+48	T	0	0	0	1	0	0
+49	A	1	0	0	0	0	0
+50	T	0	0	0	1	0	0
+51	A	1	0	0	0	0	0
+52	G	0	0	1	0	0	0
+53	T	0	0	0	1	0	0
+54	T	0	0	0	1	0	0
+55	T	0	0	0	1	0	0
+56	G	0	0	1	0	0	0
+57	G	0	0	1	0	0	0
+58	C	0	1	0	0	0	0
+59	A	1	0	0	0	0	0
+
+>centroid=s12;seqs=1;size=1
+
+0	A	1	0	0	0	0	0
+1	A	1	0	0	0	0	0
+2	C	0	1	0	0	0	0
+3	T	0	0	0	1	0	0
+4	A	1	0	0	0	0	0
+5	T	0	0	0	1	0	0
+6	T	0	0	0	1	0	0
+7	T	0	0	0	1	0	0
+8	T	0	0	0	1	0	0
+9	A	1	0	0	0	0	0
+10	C	0	1	0	0	0	0
+11	C	0	1	0	0	0	0
+12	T	0	0	0	1	0	0
+13	T	0	0	0	1	0	0
+14	T	0	0	0	1	0	0
+15	T	0	0	0	1	0	0
+16	A	1	0	0	0	0	0
+17	G	0	0	1	0	0	0
+18	C	0	1	0	0	0	0
+19	C	0	1	0	0	0	0
+20	G	0	0	1	0	0	0
+21	T	0	0	0	1	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	G	0	0	1	0	0	0
+25	T	0	0	0	1	0	0
+26	A	1	0	0	0	0	0
+27	C	0	1	0	0	0	0
+28	C	0	1	0	0	0	0
+29	C	0	1	0	0	0	0
+30	A	1	0	0	0	0	0
+31	C	0	1	0	0	0	0
+32	C	0	1	0	0	0	0
+33	T	0	0	0	1	0	0
+34	C	0	1	0	0	0	0
+35	A	1	0	0	0	0	0
+36	C	0	1	0	0	0	0
+37	T	0	0	0	1	0	0
+38	G	0	0	1	0	0	0
+39	A	1	0	0	0	0	0
+40	C	0	1	0	0	0	0
+41	T	0	0	0	1	0	0
+42	A	1	0	0	0	0	0
+43	T	0	0	0	1	0	0
+44	T	0	0	0	1	0	0
+45	T	0	0	0	1	0	0
+46	T	0	0	0	1	0	0
+47	C	0	1	0	0	0	0
+48	T	0	0	0	1	0	0
+49	T	0	0	0	1	0	0
+50	G	0	0	1	0	0	0
+51	G	0	0	1	0	0	0
+52	G	0	0	1	0	0	0
+53	G	0	0	1	0	0	0
+54	G	0	0	1	0	0	0
+55	A	1	0	0	0	0	0
+56	C	0	1	0	0	0	0
+57	C	0	1	0	0	0	0
+58	C	0	1	0	0	0	0
+59	C	0	1	0	0	0	0
+60	T	0	0	0	1	0	0
+
+>centroid=t;seqs=1;size=1
+
+0	T	0	0	0	1	0	0
+1	T	0	0	0	1	0	0
+2	C	0	1	0	0	0	0
+3	A	1	0	0	0	0	0
+4	C	0	1	0	0	0	0
+5	A	1	0	0	0	0	0
+6	G	0	0	1	0	0	0
+7	G	0	0	1	0	0	0
+8	A	1	0	0	0	0	0
+9	C	0	1	0	0	0	0
+10	T	0	0	0	1	0	0
+11	T	0	0	0	1	0	0
+12	A	1	0	0	0	0	0
+13	T	0	0	0	1	0	0
+14	A	1	0	0	0	0	0
+15	A	1	0	0	0	0	0
+16	T	0	0	0	1	0	0
+17	T	0	0	0	1	0	0
+18	A	1	0	0	0	0	0
+19	A	1	0	0	0	0	0
+20	A	1	0	0	0	0	0
+21	A	1	0	0	0	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	T	0	0	0	1	0	0
+25	T	0	0	0	1	0	0
+26	G	0	0	1	0	0	0
+27	A	1	0	0	0	0	0
+28	C	0	1	0	0	0	0
+29	A	1	0	0	0	0	0
+
+"##
+    );
+}
+
+/// --no-sizeout leaves the labels as they are
+#[test]
+fn keeps_the_labels() {
+    let hits = r##"S	0	60	*	*	*	*	*	s0;size=6	*
+H	0	62	96.7	+	0	0	60M2D	s1;size=7	s0;size=6
+S	1	59	*	*	*	*	*	s2;size=2	*
+H	0	59	91.5	+	0	0	5I25MD8M3D22M	s3;size=3	s0;size=6
+H	1	60	89.8	+	0	0	D59M	s4;size=3	s2;size=2
+H	0	61	90.2	+	0	0	I48M2D11M	s5	s0;size=6
+H	1	60	91.5	+	0	0	D59M	s6	s2;size=2
+H	0	59	96.7	+	0	0	47MI12M	s7	s0;size=6
+H	0	63	93.7	+	0	0	33M3D27M	s8	s0;size=6
+S	2	60	*	*	*	*	*	s9;size=3	*
+S	3	60	*	*	*	*	*	s10;size=5	*
+H	1	60	88.1	+	0	0	D59M	s11	s2;size=2
+S	4	61	*	*	*	*	*	s12	*
+H	0	60	100.0	+	0	0	=	s13;size=4	s0;size=6
+H	1	60	88.1	+	0	0	D59M	s14	s2;size=2
+H	1	62	88.5	+	0	0	D24M2D35M	s15;size=7	s2;size=2
+S	5	30	*	*	*	*	*	t;	*
+C	0	23	*	*	*	*	*	s0;size=6	*
+C	1	15	*	*	*	*	*	s2;size=2	*
+C	2	3	*	*	*	*	*	s9;size=3	*
+C	3	5	*	*	*	*	*	s10;size=5	*
+C	4	1	*	*	*	*	*	s12	*
+C	5	1	*	*	*	*	*	t;	*
+"##;
+    assert_eq!(
+        clmsa("keeps_the_labels-msa", &["--no-sizeout"], hits, INPUT),
+        r##"
+>*s0;size=6
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>s1;size=7
+TGCCTGGTATATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAGGA
+>s3;size=3
+-----GGTACATTCGCGAAATGCAGTCAAATCCA---GGCACAAATAGTCAATATT--CAACATTTGAA--
+>s5
+-TGCTGGTACATCCGCGAAATGCAGTCAAA-CCA---CGCAC---TAGTCAATATTAAAAACATTTGAA--
+>s7
+TGCCTGGTACAACCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATA-T--CAACATTTGAA--
+>s8
+TGCCTGATACATCCGCGAAATGCAGTCAAA-CCAGGGGGCAC---TAGTCAATATT--CAACATTTGAA--
+>s13;size=4
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA--
+>consensus
+TGCCTGGTACATCCGCGAAATGCAGTCAAA-CCA---GGCAC---TAGTCAATATT--CAACATTTGAA++
+
+>*s2;size=2
+-tgccaactatacctgTTTAGCCGT--GTGTACCCACCTCATCTGACTATCTTCGGACCCCT
+>s4;size=3
+TGCCAAACTATACCTGTTTAYCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s6
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s11
+TGCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGAACCACT
+>s14
+TGCCAAACTATACCTGTAGAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>s15;size=7
+TGCCAAACTATACCTGTTTAGCCGTAAGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>consensus
++GCCAAACTATACCTGTTTAGCCGT--GTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+
+>*s9;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>consensus
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+
+>*s10;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>consensus
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+
+>*s12
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>consensus
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+
+>*t;
+TTCACAGGACTTATAATTAAAAGTTTGACA
+>consensus
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa(
+            "keeps_the_labels-cons",
+            &["--consensus", "--no-sizeout"],
+            hits,
+            INPUT
+        ),
+        r##">centroid=s0;size=6;seqs=7
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>centroid=s2;size=2;seqs=6
+GCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>centroid=s9;size=3;seqs=1
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>centroid=s10;size=5;seqs=1
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>centroid=s12;seqs=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>centroid=t;seqs=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+    assert_eq!(
+        clmsa(
+            "keeps_the_labels-prof",
+            &["--profile", "--no-sizeout"],
+            hits,
+            INPUT
+        ),
+        r##">centroid=s0;size=6;seqs=7
+
+0	T	0	0	0	19	4	0
+1	G	0	0	19	1	3	0
+2	C	0	19	1	0	3	0
+3	C	0	20	0	0	3	0
+4	T	0	0	0	20	3	0
+5	G	0	0	23	0	0	0
+6	G	1	0	22	0	0	0
+7	T	0	0	0	23	0	0
+8	A	23	0	0	0	0	0
+9	C	0	16	0	7	0	0
+10	A	23	0	0	0	0	0
+11	T	1	0	0	22	0	0
+12	C	0	20	0	3	0	0
+13	C	0	23	0	0	0	0
+14	G	0	0	23	0	0	0
+15	C	0	23	0	0	0	0
+16	G	0	0	23	0	0	0
+17	A	23	0	0	0	0	0
+18	A	23	0	0	0	0	0
+19	A	23	0	0	0	0	0
+20	T	0	0	0	23	0	0
+21	G	0	0	23	0	0	0
+22	C	0	23	0	0	0	0
+23	A	23	0	0	0	0	0
+24	G	0	0	23	0	0	0
+25	T	0	0	0	23	0	0
+26	C	0	23	0	0	0	0
+27	A	23	0	0	0	0	0
+28	A	23	0	0	0	0	0
+29	A	23	0	0	0	0	0
+30	-	0	0	0	3	20	0
+31	C	0	23	0	0	0	0
+32	C	0	23	0	0	0	0
+33	A	23	0	0	0	0	0
+34	-	0	0	1	0	22	0
+35	-	0	0	1	0	22	0
+36	-	0	0	1	0	22	0
+37	G	0	1	22	0	0	0
+38	G	0	0	23	0	0	0
+39	C	0	23	0	0	0	0
+40	A	23	0	0	0	0	0
+41	C	0	23	0	0	0	0
+42	-	3	0	0	0	20	0
+43	-	3	0	0	0	20	0
+44	-	3	0	0	0	20	0
+45	T	0	0	0	23	0	0
+46	A	23	0	0	0	0	0
+47	G	0	0	23	0	0	0
+48	T	0	0	0	23	0	0
+49	C	0	23	0	0	0	0
+50	A	23	0	0	0	0	0
+51	A	23	0	0	0	0	0
+52	T	0	0	0	23	0	0
+53	A	23	0	0	0	0	0
+54	T	0	0	0	22	1	0
+55	T	0	0	0	23	0	0
+56	-	1	0	0	0	22	0
+57	-	1	0	0	0	22	0
+58	C	1	22	0	0	0	0
+59	A	23	0	0	0	0	0
+60	A	23	0	0	0	0	0
+61	C	0	23	0	0	0	0
+62	A	23	0	0	0	0	0
+63	T	0	0	0	23	0	0
+64	T	0	0	0	23	0	0
+65	T	0	0	0	23	0	0
+66	G	0	0	23	0	0	0
+67	A	23	0	0	0	0	0
+68	A	16	0	7	0	0	0
+69	+	0	0	7	0	16	0
+70	+	7	0	0	0	16	0
+
+>centroid=s2;size=2;seqs=6
+
+0	+	0	0	0	13	2	0
+1	G	0	0	13	2	0	0
+2	C	0	13	2	0	0	0
+3	C	0	15	0	0	0	0
+4	A	13	2	0	0	0	0
+5	A	15	0	0	0	0	0
+6	A	15	0	0	0	0	0
+7	C	0	15	0	0	0	0
+8	T	0	0	0	15	0	0
+9	A	15	0	0	0	0	0
+10	T	0	0	0	15	0	0
+11	A	15	0	0	0	0	0
+12	C	0	15	0	0	0	0
+13	C	0	15	0	0	0	0
+14	T	0	0	0	15	0	0
+15	G	0	0	15	0	0	0
+16	T	0	0	0	15	0	0
+17	T	1	0	0	14	0	0
+18	T	0	0	1	14	0	0
+19	A	15	0	0	0	0	0
+20	G	0	0	12	0	0	3
+21	C	0	15	0	0	0	0
+22	C	0	15	0	0	0	0
+23	G	0	0	15	0	0	0
+24	T	0	0	0	15	0	0
+25	-	7	0	0	0	8	0
+26	-	7	0	0	0	8	0
+27	G	0	0	15	0	0	0
+28	T	0	0	0	15	0	0
+29	G	0	0	15	0	0	0
+30	T	0	0	0	15	0	0
+31	A	15	0	0	0	0	0
+32	C	0	15	0	0	0	0
+33	C	0	15	0	0	0	0
+34	C	0	15	0	0	0	0
+35	A	15	0	0	0	0	0
+36	C	0	15	0	0	0	0
+37	C	0	15	0	0	0	0
+38	T	0	0	0	15	0	0
+39	C	0	15	0	0	0	0
+40	A	15	0	0	0	0	0
+41	C	0	13	0	2	0	0
+42	C	0	15	0	0	0	0
+43	T	0	0	0	15	0	0
+44	G	0	0	15	0	0	0
+45	A	15	0	0	0	0	0
+46	C	0	15	0	0	0	0
+47	T	0	0	0	15	0	0
+48	A	15	0	0	0	0	0
+49	T	0	0	0	15	0	0
+50	C	0	15	0	0	0	0
+51	T	0	0	0	15	0	0
+52	T	0	0	0	15	0	0
+53	G	0	2	13	0	0	0
+54	G	0	0	15	0	0	0
+55	G	1	0	14	0	0	0
+56	A	15	0	0	0	0	0
+57	C	0	15	0	0	0	0
+58	C	0	15	0	0	0	0
+59	C	1	14	0	0	0	0
+60	C	0	15	0	0	0	0
+61	T	0	0	0	15	0	0
+
+>centroid=s9;size=3;seqs=1
+
+0	T	0	0	0	3	0	0
+1	T	0	0	0	3	0	0
+2	C	0	3	0	0	0	0
+3	A	3	0	0	0	0	0
+4	A	3	0	0	0	0	0
+5	A	3	0	0	0	0	0
+6	T	0	0	0	3	0	0
+7	G	0	0	3	0	0	0
+8	T	0	0	0	3	0	0
+9	T	0	0	0	3	0	0
+10	G	0	0	3	0	0	0
+11	A	3	0	0	0	0	0
+12	A	3	0	0	0	0	0
+13	T	0	0	0	3	0	0
+14	A	3	0	0	0	0	0
+15	T	0	0	0	3	0	0
+16	T	0	0	0	3	0	0
+17	G	0	0	3	0	0	0
+18	A	3	0	0	0	0	0
+19	C	0	3	0	0	0	0
+20	T	0	0	0	3	0	0
+21	A	3	0	0	0	0	0
+22	G	0	0	3	0	0	0
+23	T	0	0	0	3	0	0
+24	G	0	0	3	0	0	0
+25	C	0	3	0	0	0	0
+26	C	0	3	0	0	0	0
+27	T	0	0	0	3	0	0
+28	G	0	0	3	0	0	0
+29	G	0	0	3	0	0	0
+30	T	0	0	0	3	0	0
+31	T	0	0	0	3	0	0
+32	T	0	0	0	3	0	0
+33	G	0	0	3	0	0	0
+34	A	3	0	0	0	0	0
+35	C	0	3	0	0	0	0
+36	T	0	0	0	3	0	0
+37	G	0	0	3	0	0	0
+38	C	0	3	0	0	0	0
+39	A	3	0	0	0	0	0
+40	T	0	0	0	3	0	0
+41	T	0	0	0	3	0	0
+42	T	0	0	0	3	0	0
+43	C	0	3	0	0	0	0
+44	G	0	0	3	0	0	0
+45	C	0	3	0	0	0	0
+46	G	0	0	3	0	0	0
+47	G	0	0	3	0	0	0
+48	A	3	0	0	0	0	0
+49	T	0	0	0	3	0	0
+50	G	0	0	3	0	0	0
+51	T	0	0	0	3	0	0
+52	A	3	0	0	0	0	0
+53	C	0	3	0	0	0	0
+54	C	0	3	0	0	0	0
+55	A	3	0	0	0	0	0
+56	G	0	0	3	0	0	0
+57	G	0	0	3	0	0	0
+58	C	0	3	0	0	0	0
+59	A	3	0	0	0	0	0
+
+>centroid=s10;size=5;seqs=1
+
+0	A	5	0	0	0	0	0
+1	G	0	0	5	0	0	0
+2	G	0	0	5	0	0	0
+3	G	0	0	5	0	0	0
+4	G	0	0	5	0	0	0
+5	T	0	0	0	5	0	0
+6	C	0	5	0	0	0	0
+7	C	0	5	0	0	0	0
+8	C	0	5	0	0	0	0
+9	A	5	0	0	0	0	0
+10	A	5	0	0	0	0	0
+11	G	0	0	5	0	0	0
+12	A	5	0	0	0	0	0
+13	T	0	0	0	5	0	0
+14	A	5	0	0	0	0	0
+15	G	0	0	5	0	0	0
+16	T	0	0	0	5	0	0
+17	C	0	5	0	0	0	0
+18	A	5	0	0	0	0	0
+19	G	0	0	5	0	0	0
+20	G	0	0	5	0	0	0
+21	T	0	0	0	5	0	0
+22	G	0	0	5	0	0	0
+23	A	5	0	0	0	0	0
+24	G	0	0	5	0	0	0
+25	G	0	0	5	0	0	0
+26	T	0	0	0	5	0	0
+27	G	0	0	5	0	0	0
+28	G	0	0	5	0	0	0
+29	G	0	0	5	0	0	0
+30	T	0	0	0	5	0	0
+31	A	5	0	0	0	0	0
+32	C	0	5	0	0	0	0
+33	A	5	0	0	0	0	0
+34	C	0	5	0	0	0	0
+35	A	5	0	0	0	0	0
+36	C	0	5	0	0	0	0
+37	G	0	0	5	0	0	0
+38	G	0	0	5	0	0	0
+39	C	0	5	0	0	0	0
+40	T	0	0	0	5	0	0
+41	A	5	0	0	0	0	0
+42	A	5	0	0	0	0	0
+43	T	0	0	0	5	0	0
+44	C	0	5	0	0	0	0
+45	A	5	0	0	0	0	0
+46	G	0	0	5	0	0	0
+47	G	0	0	5	0	0	0
+48	T	0	0	0	5	0	0
+49	A	5	0	0	0	0	0
+50	T	0	0	0	5	0	0
+51	A	5	0	0	0	0	0
+52	G	0	0	5	0	0	0
+53	T	0	0	0	5	0	0
+54	T	0	0	0	5	0	0
+55	T	0	0	0	5	0	0
+56	G	0	0	5	0	0	0
+57	G	0	0	5	0	0	0
+58	C	0	5	0	0	0	0
+59	A	5	0	0	0	0	0
+
+>centroid=s12;seqs=1
+
+0	A	1	0	0	0	0	0
+1	A	1	0	0	0	0	0
+2	C	0	1	0	0	0	0
+3	T	0	0	0	1	0	0
+4	A	1	0	0	0	0	0
+5	T	0	0	0	1	0	0
+6	T	0	0	0	1	0	0
+7	T	0	0	0	1	0	0
+8	T	0	0	0	1	0	0
+9	A	1	0	0	0	0	0
+10	C	0	1	0	0	0	0
+11	C	0	1	0	0	0	0
+12	T	0	0	0	1	0	0
+13	T	0	0	0	1	0	0
+14	T	0	0	0	1	0	0
+15	T	0	0	0	1	0	0
+16	A	1	0	0	0	0	0
+17	G	0	0	1	0	0	0
+18	C	0	1	0	0	0	0
+19	C	0	1	0	0	0	0
+20	G	0	0	1	0	0	0
+21	T	0	0	0	1	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	G	0	0	1	0	0	0
+25	T	0	0	0	1	0	0
+26	A	1	0	0	0	0	0
+27	C	0	1	0	0	0	0
+28	C	0	1	0	0	0	0
+29	C	0	1	0	0	0	0
+30	A	1	0	0	0	0	0
+31	C	0	1	0	0	0	0
+32	C	0	1	0	0	0	0
+33	T	0	0	0	1	0	0
+34	C	0	1	0	0	0	0
+35	A	1	0	0	0	0	0
+36	C	0	1	0	0	0	0
+37	T	0	0	0	1	0	0
+38	G	0	0	1	0	0	0
+39	A	1	0	0	0	0	0
+40	C	0	1	0	0	0	0
+41	T	0	0	0	1	0	0
+42	A	1	0	0	0	0	0
+43	T	0	0	0	1	0	0
+44	T	0	0	0	1	0	0
+45	T	0	0	0	1	0	0
+46	T	0	0	0	1	0	0
+47	C	0	1	0	0	0	0
+48	T	0	0	0	1	0	0
+49	T	0	0	0	1	0	0
+50	G	0	0	1	0	0	0
+51	G	0	0	1	0	0	0
+52	G	0	0	1	0	0	0
+53	G	0	0	1	0	0	0
+54	G	0	0	1	0	0	0
+55	A	1	0	0	0	0	0
+56	C	0	1	0	0	0	0
+57	C	0	1	0	0	0	0
+58	C	0	1	0	0	0	0
+59	C	0	1	0	0	0	0
+60	T	0	0	0	1	0	0
+
+>centroid=t;seqs=1
+
+0	T	0	0	0	1	0	0
+1	T	0	0	0	1	0	0
+2	C	0	1	0	0	0	0
+3	A	1	0	0	0	0	0
+4	C	0	1	0	0	0	0
+5	A	1	0	0	0	0	0
+6	G	0	0	1	0	0	0
+7	G	0	0	1	0	0	0
+8	A	1	0	0	0	0	0
+9	C	0	1	0	0	0	0
+10	T	0	0	0	1	0	0
+11	T	0	0	0	1	0	0
+12	A	1	0	0	0	0	0
+13	T	0	0	0	1	0	0
+14	A	1	0	0	0	0	0
+15	A	1	0	0	0	0	0
+16	T	0	0	0	1	0	0
+17	T	0	0	0	1	0	0
+18	A	1	0	0	0	0	0
+19	A	1	0	0	0	0	0
+20	A	1	0	0	0	0	0
+21	A	1	0	0	0	0	0
+22	G	0	0	1	0	0	0
+23	T	0	0	0	1	0	0
+24	T	0	0	0	1	0	0
+25	T	0	0	0	1	0	0
+26	G	0	0	1	0	0	0
+27	A	1	0	0	0	0	0
+28	C	0	1	0	0	0	0
+29	A	1	0	0	0	0	0
+
+"##
+    );
+}
+
+#[test]
+fn aligns_without_clusters() {
+    assert_eq!(clmsa("empty", &[], "", ""), "");
+}
+
+#[test]
+fn reads_fastq() {
+    let fastq: String = INPUT
+        .split('>')
+        .skip(1)
+        .map(|record| {
+            let (header, seq) = record.split_once('\n').unwrap();
+            let seq = seq.trim_end();
+            format!("@{header}\n{seq}\n+\n{}\n", "I".repeat(seq.len()))
+        })
+        .collect();
+    assert_eq!(
+        clmsa("fastq", &["--consensus"], HITS, &fastq),
+        r##">centroid=s0;seqs=7;size=23
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>centroid=s2;seqs=6;size=15
+GCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>centroid=s9;seqs=1;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>centroid=s10;seqs=1;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>centroid=s12;seqs=1;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>centroid=t;seqs=1;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+}
+
+#[test]
+fn rejects_hits_not_matching_the_records() {
+    // a label differs, a record is missing, a perfect hit (=) of another
+    // length than its centroid, and a CIGAR not fitting its sequences
+    let renamed = HITS.replacen("\ts1", "\tx1", 1);
+    let shorter = INPUT.rsplitn(3, '>').nth(2).unwrap().to_string();
+    let first_h = HITS.lines().find(|l| l.starts_with('H')).unwrap();
+    let fields: Vec<&str> = first_h.split('\t').collect();
+    let mut perfect = fields.clone();
+    perfect[7] = "=";
+    let mut long = fields.clone();
+    let cigar = format!("{}M", 1000);
+    long[7] = &cigar;
+    let perfect = HITS.replacen(first_h, &perfect.join("\t"), 1);
+    let long = HITS.replacen(first_h, &long.join("\t"), 1);
+    for (name, hits, input) in [
+        ("renamed", renamed.as_str(), INPUT),
+        ("shorter", HITS, shorter.as_str()),
+        ("perfect", perfect.as_str(), INPUT),
+        ("long", long.as_str(), INPUT),
+    ] {
+        let output = run(name, &[], hits, input);
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn rejects_invalid_arguments() {
+    for args in [&["--consensus", "--profile"][..], &["--msa", "--profile"]] {
+        assert_eq!(
+            run("args", args, HITS, INPUT).status.code(),
+            Some(2),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn writes_files() {
+    let out = temp_path("out");
+    let output = run(
+        "files",
+        &["--consensus", "-o", out.to_str().unwrap()],
+        HITS,
+        INPUT,
+    );
+    let written = std::fs::read_to_string(&out).unwrap();
+    let _ = std::fs::remove_file(&out);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        written,
+        r##">centroid=s0;seqs=7;size=23
+TGCCTGGTACATCCGCGAAATGCAGTCAAACCAGGCACTAGTCAATATTCAACATTTGAA
+>centroid=s2;seqs=6;size=15
+GCCAAACTATACCTGTTTAGCCGTGTGTACCCACCTCACCTGACTATCTTGGGACCCCT
+>centroid=s9;seqs=1;size=3
+TTCAAATGTTGAATATTGACTAGTGCCTGGTTTGACTGCATTTCGCGGATGTACCAGGCA
+>centroid=s10;seqs=1;size=5
+AGGGGTCCCAAGATAGTCAGGTGAGGTGGGTACACACGGCTAATCAGGTATAGTTTGGCA
+>centroid=s12;seqs=1;size=1
+AACTATTTTACCTTTTAGCCGTGTGTACCCACCTCACTGACTATTTTCTTGGGGGACCCCT
+>centroid=t;seqs=1;size=1
+TTCACAGGACTTATAATTAAAAGTTTGACA
+"##
+    );
+}
