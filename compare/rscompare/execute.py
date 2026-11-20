@@ -73,6 +73,8 @@ def run_steps(steps: List[Step], bindir: str, cwd: str, outdir: str) -> Run:
             outs.append(s.stdout)
         t = time.time()
         code, err = _proc(s.argv(bindir), s.stdin, s.stdout, cwd)
+        if s.system and code != 0:
+            code = 1  # a corrupt archive: vsearch's exit code for bad input
         info.append({'tool': s.tool, 'exit': code,
                      'seconds': round(time.time() - t, 4)})
         errs.append(err)
