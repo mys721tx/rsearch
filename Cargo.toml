@@ -176,3 +176,7 @@ harness = false
 [[bench]]
 name = "uchime"
 harness = false
+
+[[bench]]
+name = "mchime"
+harness = false
