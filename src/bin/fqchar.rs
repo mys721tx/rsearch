@@ -181,6 +181,15 @@ impl Counts {
 fn main() {
     let matches = Command::new("fqchar")
         .about("Report the residues and score symbols of FASTQ reads, and guess their encoding.")
+        .long_about(
+            "Report the residues and score symbols of FASTQ reads, and guess their encoding.\n\n\
+             As vsearch --fastq_chars: the report gives the number of reads, the lowest \
+             and highest score symbols, and the encoding and score range they suggest; \
+             then for each residue, upper-cased, its count, share and longest run (less \
+             one, as vsearch counts it), with the score symbols of N; then for each score \
+             symbol its count, share and the number of reads ending in a run of at least \
+             --tail of it.",
+        )
         .arg(
             Arg::new("in")
                 .short('i')
@@ -200,9 +209,8 @@ fn main() {
                 .long("tail")
                 .value_name("LEN")
                 .value_parser(value_parser!(u64).range(1..))
-                .help(
-                    "Shortest run of a score symbol ending a read counted as a tail, default to 4",
-                ),
+                .default_value("4")
+                .help("Shortest run of a score symbol ending a read counted as a tail"),
         )
         .get_matches();
     let tail = matches.get_one::<u64>("tail").copied().unwrap_or(4) as usize;
