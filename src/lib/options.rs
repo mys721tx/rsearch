@@ -246,14 +246,16 @@ pub fn search_args(command: Command) -> Command {
                 .long("gapopen")
                 .value_name("PENALTIES")
                 .value_parser(move |s: &str| gaps(s, true))
-                .help("Gap opening penalties, as vsearch's, default to 20I/2E"),
+                .default_value("20I/2E")
+                .help("Gap opening penalties, as vsearch's"),
         )
         .arg(
             Arg::new("gapext")
                 .long("gapext")
                 .value_name("PENALTIES")
                 .value_parser(move |s: &str| gaps(s, false))
-                .help("Gap extension penalties, as vsearch's, default to 2I/1E"),
+                .default_value("2I/1E")
+                .help("Gap extension penalties, as vsearch's"),
         )
         .arg(flag("n-mismatch", "Count N as a mismatch"))
 }
