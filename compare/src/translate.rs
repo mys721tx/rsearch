@@ -818,6 +818,10 @@ impl Translator {
         if self.a.has("n_mismatch") {
             out.push("--n-mismatch".into());
         }
+        if self.cmd == "search_exact" {
+            // every position of an exact hit scores a match
+            out.push("--exact".into());
+        }
         out
     }
 
@@ -1980,7 +1984,11 @@ impl Translator {
         let inp = self.inp.clone();
         let mut hits = Hits::new("exsrch", &inp, base, choice);
         self.no_search_labels()?;
-        self.hit_outputs(&mut hits, &qshown, &dbshown)
+        self.hit_outputs(&mut hits, &qshown, &dbshown)?;
+        // the scores reach only hitfmt (raw), which hit_outputs gave them
+        self.a.take("match");
+        self.a.take("mismatch");
+        Ok(())
     }
 
     fn t_allpairs_global(&mut self) -> R<()> {

@@ -655,6 +655,14 @@ fn main() {
         )
         .arg(flag("n-mismatch", "Count N as a mismatch, as the search did"))
         .arg(
+            flag(
+                "exact",
+                "The hits are exact (exsrch): score every position a match, \
+                 ambiguous symbols included, as vsearch's exact search",
+            )
+            .conflicts_with("n-mismatch"),
+        )
+        .arg(
             Arg::new("match")
                 .long("match")
                 .value_name("SCORE")
@@ -697,6 +705,7 @@ fn main() {
     }
 
     let n_mismatch = matches.get_flag("n-mismatch");
+    let exact = matches.get_flag("exact");
     let mut scoring = Scoring {
         match_score: *matches.get_one::<i64>("match").unwrap(),
         mismatch: *matches.get_one::<i64>("mismatch").unwrap(),
@@ -816,7 +825,7 @@ fn main() {
                     h.cigar
                 };
                 let target = h.target as usize;
-                let stats = Stats::new(
+                let mut stats = Stats::new(
                     &cigar,
                     query.strand(h.minus),
                     &db[target].1,
@@ -824,6 +833,11 @@ fn main() {
                     &table,
                 )
                 .unwrap_or_else(|e| fail(&format!("{e}: hit of query {label}")));
+                if exact {
+                    // vsearch's exact search scores the query's length in
+                    // matches, whatever its symbols
+                    stats.score = query.seq.len() as i64 * formatter.scoring.match_score;
+                }
                 Hit {
                     target,
                     minus: h.minus,
