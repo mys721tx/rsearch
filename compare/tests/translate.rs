@@ -407,6 +407,13 @@ fn search_exact() {
         &render("--search_exact q --db db --uc u"),
         "exsrch -i q --db w/tmp1.db --maxhits 1",
     );
+    // hitfmt scores exact hits as vsearch's exact search does
+    has(
+        &render(
+            "--search_exact q --db db --qmask none --dbmask none --match 3 --userout u --userfields raw",
+        ),
+        "--userout raw --match 3 --exact",
+    );
 }
 
 #[test]

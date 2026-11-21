@@ -11,6 +11,10 @@
 //! `--fasta_width 0`. The search's own options (`--iddef`, `--n-mismatch`,
 //! `--match`, `--mismatch`, `--gapopen`, `--gapext`) are given to hitfmt
 //! too, as the hits do not hold them.
+//!
+//! The tests of `--exact` take their expectations from vsearch
+//! `--search_exact --notrunclabels --qmask none --dbmask none --strand
+//! both` instead, on the hits it writes with `--uc --uc_allhits`.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -2682,4 +2686,117 @@ fn rejects_invalid_arguments() {
             "{args:?}"
         );
     }
+}
+
+const EXACT_DB: &str = r##">d0
+CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG
+>d1 x
+TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG
+>d2
+GCGTTATACCCCCGAATTCAGCAGATCGCCCAAAGCCTAAgtgcttgctgttgggtggtgCCTTAAA
+>d3
+CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG
+>d4
+AAGTTGGTTCAGCATTCTTRATGTCAGACCAATCATTCCAACAACCCACTAAAAACAGTGTTTTT
+>d5
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+"##;
+
+const EXACT_QUERIES: &str = r##">plain
+CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG
+>nn
+TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG
+>rev
+CGATTATTGTAAATAAAGACATTATCGGAAGCGGACTGCCTTCGTCAATCATNNGTTAGAGACA
+>low;size=2
+GCGTTATACCCCCGAATTCAGCAGATCGCCCAAAGCCTAAgtgcttgctgttgggtggtgCCTTAAA
+>iupac
+AAGTTGGTTCAGCATTCTTRATGTCAGACCAATCATTCCAACAACCCACTAAAAACAGTGTTTTT
+>alln
+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN
+>none
+ACGTACGTACGTACGTACGTACGTACGTACGTACG
+"##;
+
+/// The hits of vsearch's exact search, as exsrch writes them too.
+const EXACT_HITS: &str = r##"H	0	64	100.0	+	0	0	=	plain	d0
+H	3	64	100.0	+	0	0	=	plain	d3
+H	1	64	100.0	+	0	0	=	nn	d1 x
+H	1	64	100.0	-	0	0	=	rev	d1 x
+H	2	67	100.0	+	0	0	=	low;size=2	d2
+H	4	65	100.0	+	0	0	=	iupac	d4
+H	5	35	100.0	+	0	0	=	alln	d5
+H	5	35	100.0	-	0	0	=	alln	d5
+N	*	*	*	.	*	*	*	none	*
+"##;
+
+/// Runs hitfmt on the exact search's files.
+fn format_exact(name: &str, args: &[&str]) -> String {
+    let paths = ["hits", "q", "db"].map(|p| temp_path(&format!("{name}-{p}")));
+    std::fs::write(&paths[0], EXACT_HITS).unwrap();
+    std::fs::write(&paths[1], EXACT_QUERIES).unwrap();
+    std::fs::write(&paths[2], EXACT_DB).unwrap();
+    let path = |i: usize| paths[i].to_str().unwrap().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_hitfmt"))
+        .args([path(0), "-i".into(), path(1), "--db".into(), path(2)])
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    for path in &paths {
+        let _ = std::fs::remove_file(path);
+    }
+    assert!(
+        output.status.success(),
+        "hitfmt failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn scores_exact_hits_as_the_exact_search() {
+    // every position a match, Ns and other ambiguous symbols included
+    assert_eq!(
+        format_exact("exact", &["--exact", "--userout", FIELDS]),
+        r##"plain	d0	-1	100.0	100.0	0.0	64	0	1	64	1	64	64	64	64	64	64	64	0	0	128	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	64M	+	+	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	+0	+0	0	64	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	64	1	64	0	100.0	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	................................................................	................................................................	0	63	0	63
+plain	d3	-1	100.0	100.0	0.0	64	0	1	64	1	64	64	64	64	64	64	64	0	0	128	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	64M	+	+	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	+0	+0	0	64	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	64	1	64	0	100.0	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	CAGATGACAGCGCTCTTAAGCCCCACGCATGTGTCAGTAGGCCCCACCGTCCTCACTTGCTATG	................................................................	................................................................	0	63	0	63
+nn	d1 x	-1	100.0	100.0	0.0	64	0	1	64	1	64	64	64	64	64	64	64	0	0	128	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	64M	+	+	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	+0	+0	0	64	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	64	1	64	0	100.0	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	................................................................	................................................................	0	63	0	63
+rev	d1 x	-1	100.0	100.0	0.0	64	0	64	1	1	64	64	64	64	64	64	64	0	0	128	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	64M	-	+	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	+0	+0	0	64	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	64	1	64	0	100.0	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	TGTCTCTAACNNATGATTGACGAAGGCAGTCCGCTTCCGATAATGTCTTTATTTACAATAATCG	................................................................	................................................................	63	0	0	63
+low;size=2	d2	-1	100.0	100.0	0.0	67	0	1	67	1	67	67	67	67	67	67	67	0	0	134	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	67M	+	+	GCGTTATACCCCCGAATTCAGCAGATCGCCCAAAGCCTAAgtgcttgctgttgggtggtgCCTTAAA	GCGTTATACCCCCGAATTCAGCAGATCGCCCAAAGCCTAAgtgcttgctgttgggtggtgCCTTAAA	+0	+0	0	67	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	67	1	67	0	100.0	GCGTTATACCCCCGAATTCAGCAGATCGCCCAAAGCCTAAgtgcttgctgttgggtggtgCCTTAAA	GCGTTATACCCCCGAATTCAGCAGATCGCCCAAAGCCTAAgtgcttgctgttgggtggtgCCTTAAA	...................................................................	...................................................................	0	66	0	66
+iupac	d4	-1	100.0	100.0	0.0	65	0	1	65	1	65	65	65	65	65	65	65	0	0	130	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	65M	+	+	AAGTTGGTTCAGCATTCTTRATGTCAGACCAATCATTCCAACAACCCACTAAAAACAGTGTTTTT	AAGTTGGTTCAGCATTCTTRATGTCAGACCAATCATTCCAACAACCCACTAAAAACAGTGTTTTT	+0	+0	0	65	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	65	1	65	0	100.0	AAGTTGGTTCAGCATTCTTRATGTCAGACCAATCATTCCAACAACCCACTAAAAACAGTGTTTTT	AAGTTGGTTCAGCATTCTTRATGTCAGACCAATCATTCCAACAACCCACTAAAAACAGTGTTTTT	.................................................................	.................................................................	0	64	0	64
+alln	d5	-1	100.0	100.0	0.0	35	0	1	35	1	35	35	35	35	35	35	35	0	0	70	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	35M	+	+	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	+0	+0	0	35	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	35	1	35	0	100.0	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	...................................	...................................	0	34	0	34
+alln	d5	-1	100.0	100.0	0.0	35	0	35	1	1	35	35	35	35	35	35	35	0	0	70	0	MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM	35M	-	+	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	+0	+0	0	35	100.0	100.0	100.0	100.0	100.0	100.0	100.0	1	35	1	35	0	100.0	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN	...................................	...................................	34	0	0	34
+"##
+    );
+}
+
+#[test]
+fn scores_exact_hits_with_the_match_score() {
+    assert_eq!(
+        format_exact(
+            "exact-match",
+            &["--exact", "--match", "3", "--userout", "query+target+raw"]
+        ),
+        r##"plain	d0	192
+plain	d3	192
+nn	d1 x	192
+rev	d1 x	192
+low;size=2	d2	201
+iupac	d4	195
+alln	d5	105
+alln	d5	105
+"##
+    );
+}
+
+#[test]
+fn rejects_exact_with_n_mismatch() {
+    // vsearch's exact search takes no --n_mismatch
+    assert_eq!(
+        hitfmt("exact-n", HITS, &["--exact", "--n-mismatch", "--blast6"])
+            .status
+            .code(),
+        Some(2)
+    );
 }
