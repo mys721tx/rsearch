@@ -171,15 +171,34 @@ Each case records its caveats:
 
 ## Benchmarks
 
-Every benchmark that times vsearch (`benches/<tool>/main.rs`) also asks
-the translator for the pipeline of that vsearch command. It times that
-pipeline as `pipeline/<case>` (`benches/common/translated.rs`:
-`rscompare::translate` then `execute::run_piped`). What is timed against
-vsearch is thus by construction what the comparison checks. The vsearch
-command lines keep the options that leave vsearch's default filters,
-masking and wrapping out where they change nothing on the benchmark's
-input (`--minseqlength 0`, `--qmask soft`, and `--fasta_width 0`). The
-tool-alone timings next to them thus stay comparable too.
+`benches/<tool>/main.rs` (`cargo bench -p rscompare`) times vsearch against
+rsearch. Each benchmark times vsearch commands (`vsearch/<case>`). For each,
+it also times the pipeline the translator gives for that command
+(`pipeline/<case>`: `rscompare::translate` then `execute::run_piped`). What
+is timed against vsearch is thus by construction what the comparison checks.
+Where a tool's output can be compared directly, the benchmark first checks
+that rsearch and vsearch write the same.
+
+The benchmarks run on the input files of rsearch's own benchmark of the
+same tool. Both include its generator (`benches/<tool>/input.rs` at the
+root). They use the same criterion group names, and `target/criterion`
+holds the rsearch, pipeline, and vsearch timings of a case side by side.
+rsearch's benchmarks time rsearch alone.
+
+vsearch is `VSEARCH`, or else the build of `rscompare build-vsearch`.
+Without either, the benchmarks time nothing. The pipelines run rsearch's
+release tools. Build them first:
+
+```sh
+cargo build --release
+cargo bench -p rscompare --bench derep
+```
+
+The vsearch command lines keep the options that leave vsearch's default
+filters, masking and wrapping out where they change nothing on the
+benchmark's input (`--minseqlength 0`, `--qmask soft`, and
+`--fasta_width 0`). They run vsearch with `--threads 1` so that the
+rsearch timings stay comparable.
 
 ## Comparators
 

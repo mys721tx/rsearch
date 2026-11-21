@@ -8,3 +8,166 @@ publish = false
 [dependencies]
 clap = "4.6.8"
 serde_json = "1.0.154"
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "allpr"
+harness = false
+
+[[bench]]
+name = "clmsa"
+harness = false
+
+[[bench]]
+name = "clspl"
+harness = false
+
+[[bench]]
+name = "clust"
+harness = false
+
+[[bench]]
+name = "conv"
+harness = false
+
+[[bench]]
+name = "dbornt"
+harness = false
+
+[[bench]]
+name = "dbsrch"
+harness = false
+
+[[bench]]
+name = "derep"
+harness = false
+
+[[bench]]
+name = "eegrid"
+harness = false
+
+[[bench]]
+name = "eestat"
+harness = false
+
+[[bench]]
+name = "exsrch"
+harness = false
+
+[[bench]]
+name = "fqchar"
+harness = false
+
+[[bench]]
+name = "fqstat"
+harness = false
+
+[[bench]]
+name = "getseq"
+harness = false
+
+[[bench]]
+name = "hitfmt"
+harness = false
+
+[[bench]]
+name = "joinpa"
+harness = false
+
+[[bench]]
+name = "lcatax"
+harness = false
+
+[[bench]]
+name = "lcmask"
+harness = false
+
+[[bench]]
+name = "mchime"
+harness = false
+
+[[bench]]
+name = "mergpa"
+harness = false
+
+[[bench]]
+name = "mkudb"
+harness = false
+
+[[bench]]
+name = "otutab"
+harness = false
+
+[[bench]]
+name = "redig"
+harness = false
+
+[[bench]]
+name = "relab"
+harness = false
+
+[[bench]]
+name = "rerep"
+harness = false
+
+[[bench]]
+name = "revcomp"
+harness = false
+
+[[bench]]
+name = "scrmbl"
+harness = false
+
+[[bench]]
+name = "shufl"
+harness = false
+
+[[bench]]
+name = "sintax"
+harness = false
+
+[[bench]]
+name = "sortby"
+harness = false
+
+[[bench]]
+name = "sqfilt"
+harness = false
+
+[[bench]]
+name = "sqtrim"
+harness = false
+
+[[bench]]
+name = "subseq"
+harness = false
+
+[[bench]]
+name = "subsmp"
+harness = false
+
+[[bench]]
+name = "syncpa"
+harness = false
+
+[[bench]]
+name = "topn"
+harness = false
+
+[[bench]]
+name = "uchime"
+harness = false
+
+[[bench]]
+name = "udbinfo"
+harness = false
+
+[[bench]]
+name = "udbstat"
+harness = false
+
+[[bench]]
+name = "unoise"
+harness = false

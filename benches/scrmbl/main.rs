@@ -2,15 +2,9 @@
 //!
 //! `scramble` measures `Scrambler::scramble` on parsed reads, with k of 1,
 //! 2 and 6; `binary` runs the scrmbl program end to end on a FASTQ file
-//! with the same k. Set `VSEARCH` to a vsearch executable to time
-//! `vsearch --scramble` on the same file for comparison:
-//!
-//! ```sh
-//! VSEARCH=/path/to/vsearch cargo bench --bench scrmbl
-//! ```
+//! with the same k. compare/benches/scrmbl times vsearch on the same file.
 
 use std::hint::black_box;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -19,42 +13,8 @@ use rsearch::fastx::{Reader, Record};
 use rsearch::random::{SplitMix64, substream};
 use rsearch::scramble::Scrambler;
 
-/// Reads of `LENGTH` nucleotides.
-const READS: usize = 100_000;
-const LENGTH: usize = 250;
-
-/// A small deterministic generator (xorshift64*). Every run benchmarks the
-/// same data without extra dependencies.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-}
-
-/// Generates FASTQ reads.
-fn generate() -> String {
-    let mut rng = Rng(0x5eed);
-    let mut fastq = String::new();
-    for i in 0..READS {
-        let seq: String = (0..LENGTH)
-            .map(|_| char::from(b"ACGT"[rng.below(4)]))
-            .collect();
-        let qual: String = (0..LENGTH)
-            .map(|_| char::from(b'#' + rng.below(39) as u8))
-            .collect();
-        fastq.push_str(&format!("@read{i}\n{seq}\n+\n{qual}\n"));
-    }
-    fastq
-}
+mod input;
+use input::*;
 
 fn parse(text: &str) -> Vec<Record> {
     Reader::new(text.as_bytes())
@@ -85,25 +45,15 @@ fn bench_scramble(c: &mut Criterion) {
     group.finish();
 }
 
-fn input_file() -> PathBuf {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scrmbl-bench.fq");
-    std::fs::write(&path, generate()).unwrap();
-    path
-}
-
 fn run(program: &str, args: &[&str]) {
     let status = Command::new(program).args(args).status().unwrap();
     assert!(status.success(), "{program} {args:?} failed");
 }
 
-#[path = "../common/translated.rs"]
-mod translated;
-
 fn bench_binary(c: &mut Criterion) {
     let input = input_file();
     let fq = input.to_str().unwrap();
     let scrmbl = env!("CARGO_BIN_EXE_scrmbl");
-    let vsearch = std::env::var("VSEARCH").ok();
 
     let mut group = c.benchmark_group("scrmbl/binary");
     group.throughput(Throughput::Elements(READS as u64));
@@ -117,22 +67,6 @@ fn bench_binary(c: &mut Criterion) {
                 )
             })
         });
-        if let Some(vsearch) = &vsearch {
-            let args = [
-                "--scramble",
-                fq,
-                "--quiet",
-                "--notrunclabels",
-                "--fastqout",
-                "/dev/null",
-                "--randseed",
-                "42",
-                "--scramble_kmer",
-                k,
-            ];
-            translated::bench(&mut group, format!("vsearch/k{k}"), &args);
-            group.bench_function(format!("vsearch/k{k}"), |b| b.iter(|| run(vsearch, &args)));
-        }
     }
     group.finish();
 }
