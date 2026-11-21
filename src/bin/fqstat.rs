@@ -415,12 +415,10 @@ fn main() {
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of quality scores, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of quality scores"),
         )
-        .arg(score(
-            "qmin",
-            "Minimum quality score accepted in the input, default to 0",
-        ))
+        .arg(score("qmin", "Minimum quality score accepted in the input").default_value("0"))
         .arg(score(
             "qmax",
             "Maximum quality score accepted in the input, default to 126 - ascii",
