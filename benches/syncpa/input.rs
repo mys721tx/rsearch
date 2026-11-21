@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Pairs of reads of `LENGTH` nucleotides.
@@ -62,10 +65,46 @@ pub fn generate() -> (String, String) {
 }
 
 pub fn input_files() -> (PathBuf, PathBuf) {
+    if let (Some(forward), Some(reverse)) =
+        (data::file("syncpa", "reads"), data::file("syncpa", "mate"))
+    {
+        return real_pairs(&forward, &reverse);
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (forward, reverse) = generate();
     let paths = (dir.join("syncpa-bench-1.fq"), dir.join("syncpa-bench-2.fq"));
     std::fs::write(&paths.0, forward).unwrap();
     std::fs::write(&paths.1, reverse).unwrap();
     paths
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("syncpa", &["reads", "mate"])
+}
+
+/// The dataset's pairs made out of step as the generated ones are. One pair
+/// in twenty loses its forward read, one its reverse read, and the reverse
+/// reads are shuffled.
+pub fn real_pairs(forward: &Path, reverse: &Path) -> (PathBuf, PathBuf) {
+    let mut rng = Rng(0x5eed);
+    let (f, r) = (
+        data::parse(&data::read(forward)),
+        data::parse(&data::read(reverse)),
+    );
+    let (mut kept_f, mut kept_r) = (Vec::new(), Vec::new());
+    for (a, b) in f.into_iter().zip(r) {
+        let side = rng.below(20);
+        if side != 0 {
+            kept_f.push(a);
+        }
+        if side != 1 {
+            kept_r.push(b);
+        }
+    }
+    data::shuffle(&mut kept_r, 0x5eed);
+    (
+        data::write("syncpa", "1.fq", data::to_fastq(&kept_f)),
+        data::write("syncpa", "2.fq", data::to_fastq(&kept_r)),
+    )
 }

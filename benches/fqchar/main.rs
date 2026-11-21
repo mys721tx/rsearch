@@ -21,12 +21,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fq = input.to_str().unwrap();
     let fqchar = env!("CARGO_BIN_EXE_fqchar");
 
-    let mut group = c.benchmark_group("fqchar/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("fqchar/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for tail in ["4", "15"] {
         group.bench_function(format!("fqchar/tail_{tail}"), |b| {

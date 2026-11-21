@@ -14,11 +14,14 @@ mod input;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, dbfa, udb) = input_files(env!("CARGO_BIN_EXE_mkudb"));
     let fa = fa.to_str().unwrap();
     let dbornt = env!("CARGO_BIN_EXE_dbornt");
-    let mut group = c.benchmark_group("dbornt/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("dbornt/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, db) in [("fasta", &dbfa), ("udb", &udb)] {
         let rargs = ["-i", fa, "--db", db.to_str().unwrap(), "-o", "/dev/null"];

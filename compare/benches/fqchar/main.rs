@@ -11,14 +11,17 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let input = input_file();
     let fq = input.to_str().unwrap();
 
-    let mut group = c.benchmark_group("fqchar/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("fqchar/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for tail in ["4", "15"] {
         // the report goes to stderr, discarded with the progress lines

@@ -25,12 +25,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (all, _, _) = input_files(dir);
     let all = all.to_str().unwrap();
     let mchime = env!("CARGO_BIN_EXE_mchime");
-    let mut group = c.benchmark_group("mchime/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("mchime/binary"));
+    group.throughput(Throughput::Elements(data::count(all, SEQUENCES)));
     group.sample_size(10);
     let args = ["-i", all, "-o", "/dev/null"];
     group.bench_function("mchime/denovo", |b| b.iter(|| run(mchime, &args)));

@@ -25,9 +25,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_dust(c: &mut Criterion) {
-    let reads = parse(&generate());
-    let mut group = c.benchmark_group("lcmask/dust");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("lcmask/dust"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     let mut seq = Vec::new();
     for (name, style) in [("soft", Style::Soft), ("hard", Style::Hard)] {
         group.bench_function(name, |b| {
@@ -50,12 +53,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fq = input.to_str().unwrap();
     let lcmask = env!("CARGO_BIN_EXE_lcmask");
 
-    let mut group = c.benchmark_group("lcmask/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("lcmask/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for (name, hard) in [("soft", &[][..]), ("hard", &["--hard"])] {
         let args = [&["-i", fq, "-o", "/dev/null"][..], hard].concat();

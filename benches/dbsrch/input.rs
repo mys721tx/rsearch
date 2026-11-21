@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 pub const QUERIES: usize = 2_000;
@@ -28,6 +31,9 @@ impl Rng {
 
 /// the queries and the database.
 pub fn input_files() -> (PathBuf, PathBuf) {
+    if let (Some(q), Some(db)) = (data::file("dbsrch", "uniques"), data::file("dbsrch", "db")) {
+        return (q, db);
+    }
     let mut rng = Rng(0x5eed);
     let templates: Vec<Vec<u8>> = (0..TEMPLATES)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -61,4 +67,9 @@ pub fn input_files() -> (PathBuf, PathBuf) {
     std::fs::write(&qp, q).unwrap();
     std::fs::write(&dbp, db).unwrap();
     (qp, dbp)
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("dbsrch", &["uniques", "db"])
 }

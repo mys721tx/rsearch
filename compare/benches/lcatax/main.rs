@@ -13,18 +13,24 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
-    let hits = tmp("lcatax-bench.uc");
+    let hits = data::output(tmp("lcatax-bench.uc"));
     let hits = hits.to_str().unwrap();
     vsearch::run(
         &vsearch::tool("exsrch"),
         &["-i", fa, "--db", db, "-o", hits, "--strand", "both"],
     );
-    let (r, v) = (tmp("lcatax-bench-r.tsv"), tmp("lcatax-bench-v.tsv"));
+    let (r, v) = (
+        data::output(tmp("lcatax-bench-r.tsv")),
+        data::output(tmp("lcatax-bench-v.tsv")),
+    );
     let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
     let vbase = [
         "--usearch_global",
@@ -57,8 +63,8 @@ fn bench_binary(c: &mut Criterion) {
         std::fs::read(r).unwrap() == std::fs::read(v).unwrap(),
         "lcatax and vsearch wrote different LCA"
     );
-    let mut group = c.benchmark_group("lcatax/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("lcatax/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     let vargs = [
         &vbase[..],

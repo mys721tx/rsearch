@@ -15,7 +15,10 @@ mod input;
 use input::*;
 
 fn bench_shuffle(c: &mut Criterion) {
-    let mut group = c.benchmark_group("shufl/shuffle");
+    if skip() {
+        return;
+    }
+    let mut group = c.benchmark_group(data::group("shufl/shuffle"));
     const DECK: usize = 1_000_000;
     group.throughput(Throughput::Elements(DECK as u64));
     let mut deck: Vec<u32> = (0..DECK as u32).collect();
@@ -34,13 +37,16 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let shufl = env!("CARGO_BIN_EXE_shufl");
     let fq = inputs.fastq.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("shufl/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("shufl/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for (name, file) in [("fasta", fa), ("fastq", fq)] {
         group.bench_function(format!("shufl/{name}"), |b| {

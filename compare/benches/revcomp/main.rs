@@ -10,6 +10,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -17,8 +20,8 @@ fn bench_binary(c: &mut Criterion) {
     let fq = inputs.fastq.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("revcomp/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("revcomp/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for (name, file, output) in [
         ("fastq", fq, &["--fastqout", "/dev/null"][..]),

@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 pub const SEQUENCES: usize = 600;
@@ -26,6 +29,17 @@ impl Rng {
 }
 
 pub fn input_file() -> PathBuf {
+    if let Some(path) = data::file("allpr", "uniques") {
+        // the most abundant ones, as many bases as the generated SEQUENCES
+        // x LENGTH. The work grows with the square of the bases
+        let records = data::parse(&data::read(&path));
+        let (mut n, mut bases) = (0, 0);
+        while n < records.len() && bases < SEQUENCES * LENGTH {
+            bases += records[n].seq.len();
+            n += 1;
+        }
+        return data::write("allpr", "uniques.fa", data::to_fasta(&records[..n]));
+    }
     let mut rng = Rng(0x5eed);
     let templates: Vec<Vec<u8>> = (0..TEMPLATES)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -46,4 +60,9 @@ pub fn input_file() -> PathBuf {
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("allpr-bench.fa");
     std::fs::write(&path, fasta).unwrap();
     path
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("allpr", &["uniques"])
 }

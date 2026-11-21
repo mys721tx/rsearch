@@ -21,19 +21,25 @@ fn files(prefix: &Path) -> Vec<Vec<u8>> {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let input = input_file(dir);
     let fa = input.to_str().unwrap();
-    let hits = dir.join("clspl-bench.uc");
+    let hits = data::output(dir.join("clspl-bench.uc"));
     let hits = hits.to_str().unwrap();
     vsearch::run(
         &vsearch::tool("clust"),
         &["-i", fa, "-o", "/dev/null", "--hits", hits, "--id", "0.97"],
     );
-    let (rdir, vdir) = (dir.join("clspl-bench-r"), dir.join("clspl-bench-v"));
+    let (rdir, vdir) = (
+        data::output(dir.join("clspl-bench-r")),
+        data::output(dir.join("clspl-bench-v")),
+    );
     for d in [&rdir, &vdir] {
         let _ = std::fs::remove_dir_all(d);
         std::fs::create_dir_all(d).unwrap();
@@ -67,8 +73,8 @@ fn bench_binary(c: &mut Criterion) {
         files(&rprefix) == files(&vprefix),
         "clspl and vsearch wrote different files"
     );
-    let mut group = c.benchmark_group("clspl/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("clspl/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     vsearch::bench(&mut group, "vsearch/cluster", &vsearch, &vargs);
     group.finish();

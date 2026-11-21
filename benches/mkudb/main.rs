@@ -24,13 +24,16 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fa = input.to_str().unwrap();
     let mkudb = env!("CARGO_BIN_EXE_mkudb");
     let null = "/dev/null";
 
-    let mut group = c.benchmark_group("mkudb/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("mkudb/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     group.bench_function("mkudb", |b| b.iter(|| run(mkudb, &["-i", fa, "-o", null])));
     group.finish();

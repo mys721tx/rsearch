@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -27,6 +30,23 @@ pub fn tmp(name: &str) -> PathBuf {
 
 /// Writes the FASTA input and builds its UDB file with `mkudb`.
 pub fn input_file(mkudb: &str) -> PathBuf {
+    if let Some(fa) = data::file("udbstat", "db") {
+        let udb = data::tmp("udbstat", "db.udb");
+        let status = Command::new(mkudb)
+            .args([
+                "--word-len",
+                "12",
+                "-i",
+                fa.to_str().unwrap(),
+                "-o",
+                udb.to_str().unwrap(),
+            ])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return udb;
+    }
     let mut rng = Rng(0x5eed);
     let mut fasta = String::new();
     for i in 0..SEQUENCES {
@@ -51,4 +71,9 @@ pub fn input_file(mkudb: &str) -> PathBuf {
         .unwrap();
     assert!(status.success());
     udb
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("udbstat", &["db"])
 }

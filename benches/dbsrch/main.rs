@@ -25,11 +25,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (q, db) = input_files();
     let (q, db) = (q.to_str().unwrap(), db.to_str().unwrap());
     let dbsrch = env!("CARGO_BIN_EXE_dbsrch");
-    let mut group = c.benchmark_group("dbsrch/binary");
-    group.throughput(Throughput::Elements(QUERIES as u64));
+    let mut group = c.benchmark_group(data::group("dbsrch/binary"));
+    group.throughput(Throughput::Elements(data::count(q, QUERIES)));
     group.sample_size(10);
     let wide = [
         "--id",

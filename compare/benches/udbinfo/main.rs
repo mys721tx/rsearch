@@ -13,6 +13,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -25,7 +28,7 @@ fn bench_binary(c: &mut Criterion) {
         .args(["-i", udb])
         .output()
         .unwrap();
-    let log = tmp("udbinfo-bench.log");
+    let log = data::output(tmp("udbinfo-bench.log"));
     let _ = std::fs::remove_file(&log);
     let mut args = vargs.to_vec();
     args.extend(["--log", log.to_str().unwrap()]);
@@ -39,7 +42,7 @@ fn bench_binary(c: &mut Criterion) {
         .collect();
     assert_eq!(String::from_utf8(ours.stdout).unwrap(), theirs);
 
-    let mut group = c.benchmark_group("udbinfo/binary");
+    let mut group = c.benchmark_group(data::group("udbinfo/binary"));
     group.sample_size(20);
     vsearch::bench(&mut group, "vsearch", &vsearch, &vargs);
     group.finish();

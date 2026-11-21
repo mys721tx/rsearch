@@ -25,17 +25,20 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let input = input_file(dir);
     let fa = input.to_str().unwrap();
     let (clust, clspl) = (env!("CARGO_BIN_EXE_clust"), env!("CARGO_BIN_EXE_clspl"));
-    let hits = dir.join("clspl-bench.uc");
+    let hits = data::output(dir.join("clspl-bench.uc"));
     let hits = hits.to_str().unwrap();
     run(
         clust,
         &["-i", fa, "-o", "/dev/null", "--hits", hits, "--id", "0.97"],
     );
-    let rdir = dir.join("clspl-bench-r");
+    let rdir = data::output(dir.join("clspl-bench-r"));
     let _ = std::fs::remove_dir_all(&rdir);
     std::fs::create_dir_all(&rdir).unwrap();
     let rprefix = rdir.join("c");
@@ -47,8 +50,8 @@ fn bench_binary(c: &mut Criterion) {
         "--prefix",
         rprefix.to_str().unwrap(),
     ];
-    let mut group = c.benchmark_group("clspl/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("clspl/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     group.bench_function("clspl/split", |b| b.iter(|| run(clspl, &split)));
     group.finish();

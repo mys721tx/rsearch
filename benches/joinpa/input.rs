@@ -3,6 +3,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Pairs of reads of `LENGTH` nucleotides.
@@ -38,6 +41,11 @@ pub fn read(rng: &mut Rng, i: usize, mate: u8) -> String {
 }
 
 pub fn input_files() -> (PathBuf, PathBuf) {
+    if let (Some(forward), Some(reverse)) =
+        (data::file("joinpa", "reads"), data::file("joinpa", "mate"))
+    {
+        return (forward, reverse);
+    }
     let mut rng = Rng(0x5eed);
     let (mut forward, mut reverse) = (String::new(), String::new());
     for i in 0..PAIRS {
@@ -49,4 +57,9 @@ pub fn input_files() -> (PathBuf, PathBuf) {
     std::fs::write(&paths.0, forward).unwrap();
     std::fs::write(&paths.1, reverse).unwrap();
     paths
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("joinpa", &["reads", "mate"])
 }

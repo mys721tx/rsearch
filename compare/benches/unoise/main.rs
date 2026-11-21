@@ -14,6 +14,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -21,8 +24,17 @@ fn bench_binary(c: &mut Criterion) {
     let fa = input.to_str().unwrap();
     let unoise = vsearch::tool("unoise");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let mut group = c.benchmark_group("unoise/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    // vsearch sorts the input by abundance, ties by label, as the
+    // translated pipeline does with sortby. The check does the same, which
+    // matters for real data, where abundances tie
+    let sorted = data::output(dir.join("unoise-bench-sorted.fa"));
+    let sorted = sorted.to_str().unwrap();
+    vsearch::run(
+        &vsearch::tool("sortby"),
+        &["--size", "-i", fa, "-o", sorted],
+    );
+    let mut group = c.benchmark_group(data::group("unoise/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     for (name, args) in [("default", &[][..]), ("both", &["--strand", "both"][..])] {
         let vbase = [
@@ -42,12 +54,12 @@ fn bench_binary(c: &mut Criterion) {
             "1",
         ];
         // both write the same centroids and hits
-        let path = |name: &str| dir.join(format!("unoise-bench-{name}"));
+        let path = |name: &str| data::output(dir.join(format!("unoise-bench-{name}")));
         let (rc, ru, vc, vu) = (path("r.fa"), path("r.uc"), path("v.fa"), path("v.uc"));
         let s = |p: &PathBuf| p.to_str().unwrap().to_string();
         vsearch::run(
             &unoise,
-            &[&["-i", fa, "-o", &s(&rc), "--hits", &s(&ru)][..], args].concat(),
+            &[&["-i", sorted, "-o", &s(&rc), "--hits", &s(&ru)][..], args].concat(),
         );
         vsearch::run(
             &vsearch,

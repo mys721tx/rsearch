@@ -14,6 +14,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -21,10 +24,11 @@ fn bench_binary(c: &mut Criterion) {
     let fa = input.to_str().unwrap();
     let allpr = vsearch::tool("allpr");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let mut group = c.benchmark_group("allpr/binary");
-    group.throughput(Throughput::Elements(
-        (SEQUENCES * (SEQUENCES - 1) / 2) as u64,
-    ));
+    let mut group = c.benchmark_group(data::group("allpr/binary"));
+    group.throughput(Throughput::Elements({
+        let n = data::count(&input, SEQUENCES);
+        n * n.saturating_sub(1) / 2
+    }));
     group.sample_size(10);
     for (name, rargs, vargs) in [
         ("all", vec!["--accept-all"], vec!["--acceptall"]),
@@ -41,7 +45,10 @@ fn bench_binary(c: &mut Criterion) {
             "1",
         ];
         // both write the same hits
-        let (r, v) = (dir.join("allpr-bench-r.uc"), dir.join("allpr-bench-v.uc"));
+        let (r, v) = (
+            data::output(dir.join("allpr-bench-r.uc")),
+            data::output(dir.join("allpr-bench-v.uc")),
+        );
         vsearch::run(
             &allpr,
             &[&["-i", fa, "-o", r.to_str().unwrap()][..], &rargs].concat(),

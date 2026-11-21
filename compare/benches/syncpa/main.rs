@@ -11,6 +11,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -18,8 +21,8 @@ fn bench_binary(c: &mut Criterion) {
     let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
     let null = "/dev/null";
 
-    let mut group = c.benchmark_group("syncpa/binary");
-    group.throughput(Throughput::Elements(PAIRS as u64));
+    let mut group = c.benchmark_group(data::group("syncpa/binary"));
+    group.throughput(Throughput::Elements(data::count(&forward, PAIRS)));
     group.sample_size(10);
     let args = [
         "--fastx_syncpairs",

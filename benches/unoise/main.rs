@@ -25,11 +25,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fa = input.to_str().unwrap();
     let unoise = env!("CARGO_BIN_EXE_unoise");
-    let mut group = c.benchmark_group("unoise/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("unoise/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     for (name, args) in [("default", &[][..]), ("both", &["--strand", "both"][..])] {
         let rargs = [&["-i", fa, "-o", "/dev/null"][..], args].concat();

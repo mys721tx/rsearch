@@ -21,12 +21,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (forward, reverse) = input_files();
     let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
     let joinpa = env!("CARGO_BIN_EXE_joinpa");
 
-    let mut group = c.benchmark_group("joinpa/binary");
-    group.throughput(Throughput::Elements(PAIRS as u64));
+    let mut group = c.benchmark_group(data::group("joinpa/binary"));
+    group.throughput(Throughput::Elements(data::count(&forward, PAIRS)));
     group.sample_size(10);
     let args = ["-i", fwd, "--reverse", rev, "-o", "/dev/null"];
     group.bench_function("joinpa", |b| b.iter(|| run(joinpa, &args)));

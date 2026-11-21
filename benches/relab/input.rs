@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads of `LENGTH` nucleotides.
@@ -64,6 +67,13 @@ pub struct Inputs {
 }
 
 pub fn input_files() -> Inputs {
+    if let Some(src) = data::file("relab", "uniques_fq") {
+        let reads = data::with_ee_length(&data::parse(&data::read(&src)));
+        return Inputs {
+            fastq: data::write("relab", "reads.fq", data::to_fastq(&reads)),
+            fasta: data::write("relab", "reads.fa", data::to_fasta(&reads)),
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let inputs = Inputs {
         fastq: dir.join("relab-bench.fq"),
@@ -73,4 +83,18 @@ pub fn input_files() -> Inputs {
     std::fs::write(&inputs.fasta, to_fasta(&fastq)).unwrap();
     std::fs::write(&inputs.fastq, fastq).unwrap();
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("relab", &["uniques_fq"])
+}
+
+/// The reads as text: the dataset's dereplicated reads with `;ee=` and
+/// `;length=`, or the generated ones.
+pub fn text() -> String {
+    match data::file("relab", "uniques_fq") {
+        Some(src) => data::to_fastq(&data::with_ee_length(&data::parse(&data::read(&src)))),
+        None => generate(),
+    }
 }

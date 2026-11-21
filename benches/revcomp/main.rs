@@ -24,9 +24,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_complement(c: &mut Criterion) {
-    let reads = parse(&generate().0);
-    let mut group = c.benchmark_group("revcomp/complement");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("revcomp/complement"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     let mut dest = Vec::new();
     group.bench_function("keeping_case", |b| {
         b.iter(|| {
@@ -45,13 +48,16 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let revcomp = env!("CARGO_BIN_EXE_revcomp");
     let fq = inputs.fastq.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("revcomp/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("revcomp/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for (name, file) in [("fastq", fq), ("fasta", fa)] {
         group.bench_function(format!("revcomp/{name}"), |b| {

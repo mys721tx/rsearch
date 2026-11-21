@@ -12,6 +12,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -20,8 +23,8 @@ fn bench_binary(c: &mut Criterion) {
     let dbornt = vsearch::tool("dbornt");
     let null = "/dev/null";
 
-    let mut group = c.benchmark_group("dbornt/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("dbornt/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, db) in [("fasta", &dbfa), ("udb", &udb)] {
         let db = db.to_str().unwrap();
@@ -41,7 +44,10 @@ fn bench_binary(c: &mut Criterion) {
             vargs.extend(["--dbmask", "soft"]);
         }
         // both write the same table
-        let (r, v) = (tmp("dbornt-bench-r.tsv"), tmp("dbornt-bench-v.tsv"));
+        let (r, v) = (
+            data::output(tmp("dbornt-bench-r.tsv")),
+            data::output(tmp("dbornt-bench-v.tsv")),
+        );
         vsearch::run(
             &dbornt,
             &[

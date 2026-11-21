@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads of `LENGTH` nucleotides.
@@ -61,6 +64,14 @@ pub struct Inputs {
 }
 
 pub fn input_files() -> Inputs {
+    if let Some(fastq) = data::file("sqtrim", "reads") {
+        let text = data::read(&fastq);
+        return Inputs {
+            phred64: data::write("sqtrim", "reads-64.fq", data::phred64(&text)),
+            fasta: data::write("sqtrim", "reads.fa", data::to_fasta(&data::parse(&text))),
+            fastq,
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let inputs = Inputs {
         fastq: dir.join("sqtrim-bench.fq"),
@@ -72,4 +83,14 @@ pub fn input_files() -> Inputs {
     std::fs::write(&inputs.fastq, fastq).unwrap();
     std::fs::write(&inputs.phred64, generate(64)).unwrap();
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("sqtrim", &["reads"])
+}
+
+/// The Phred+33 reads as text: the dataset's, or the generated ones.
+pub fn text() -> String {
+    data::text("sqtrim", "reads").unwrap_or_else(|| generate(33))
 }

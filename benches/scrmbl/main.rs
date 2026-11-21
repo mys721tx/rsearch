@@ -24,9 +24,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_scramble(c: &mut Criterion) {
-    let reads = parse(&generate());
-    let mut group = c.benchmark_group("scrmbl/scramble");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("scrmbl/scramble"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     let mut scrambler = Scrambler::default();
     let mut seq = Vec::new();
     for k in [1, 2, 6] {
@@ -51,12 +54,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fq = input.to_str().unwrap();
     let scrmbl = env!("CARGO_BIN_EXE_scrmbl");
 
-    let mut group = c.benchmark_group("scrmbl/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("scrmbl/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for k in ["1", "2", "6"] {
         group.bench_function(format!("scrmbl/k{k}"), |b| {

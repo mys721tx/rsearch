@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads of `LENGTH` nucleotides.
@@ -67,6 +70,17 @@ pub struct Inputs {
 }
 
 pub fn input_files() -> Inputs {
+    if let (Some(fastq), Some(reverse)) =
+        (data::file("sqfilt", "reads"), data::file("sqfilt", "mate"))
+    {
+        let fasta = data::to_fasta(&data::parse(&data::read(&fastq)));
+        let fasta = data::write("sqfilt", "reads.fa", fasta);
+        return Inputs {
+            fastq,
+            reverse,
+            fasta,
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let inputs = Inputs {
         fastq: dir.join("sqfilt-bench.fq"),
@@ -78,4 +92,14 @@ pub fn input_files() -> Inputs {
     std::fs::write(&inputs.fastq, fastq).unwrap();
     std::fs::write(&inputs.reverse, generate("/2", 0xfeed)).unwrap();
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("sqfilt", &["reads", "mate"])
+}
+
+/// The reads as text: the dataset's, or the generated ones.
+pub fn text() -> String {
+    data::text("sqfilt", "reads").unwrap_or_else(|| generate("", 0x5eed))
 }

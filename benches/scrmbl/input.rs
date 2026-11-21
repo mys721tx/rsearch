@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads of `LENGTH` nucleotides.
@@ -41,7 +44,20 @@ pub fn generate() -> String {
     fastq
 }
 pub fn input_file() -> PathBuf {
+    if let Some(path) = data::file("scrmbl", "reads") {
+        return path;
+    }
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("scrmbl-bench.fq");
     std::fs::write(&path, generate()).unwrap();
     path
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("scrmbl", &["reads"])
+}
+
+/// The reads as text: the dataset's, or the generated ones.
+pub fn text() -> String {
+    data::text("scrmbl", "reads").unwrap_or_else(generate)
 }

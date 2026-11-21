@@ -14,6 +14,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -22,8 +25,16 @@ fn bench_binary(c: &mut Criterion) {
     let s = |p: &PathBuf| p.to_str().unwrap().to_string();
     let (all, queries, db) = (s(&all), s(&queries), s(&db));
     let uchime = vsearch::tool("uchime");
-    let mut group = c.benchmark_group("uchime/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    // vsearch sorts de novo input by abundance, ties by label, as the
+    // translated pipeline does with sortby. The check does the same, which
+    // matters for real data, where abundances tie
+    let sorted = s(&data::output(dir.join("uchime-bench-sorted.fa")));
+    vsearch::run(
+        &vsearch::tool("sortby"),
+        &["--size", "-i", &all, "-o", &sorted],
+    );
+    let mut group = c.benchmark_group(data::group("uchime/binary"));
+    group.throughput(Throughput::Elements(data::count(&all, SEQUENCES)));
     group.sample_size(10);
     let common = [
         "--quiet",
@@ -36,7 +47,7 @@ fn bench_binary(c: &mut Criterion) {
         "1",
     ];
     let cases: [(&str, Vec<&str>, Vec<&str>); 2] = [
-        ("denovo", vec!["-i", &all], vec!["--uchime_denovo", &all]),
+        ("denovo", vec!["-i", &sorted], vec!["--uchime_denovo", &all]),
         (
             "ref",
             vec!["-i", &queries, "--db", &db],
@@ -46,8 +57,8 @@ fn bench_binary(c: &mut Criterion) {
     for (name, rargs, vargs) in cases {
         // both write the same tables
         let (r, v) = (
-            dir.join("uchime-bench-r.tab"),
-            dir.join("uchime-bench-v.tab"),
+            data::output(dir.join("uchime-bench-r.tab")),
+            data::output(dir.join("uchime-bench-v.tab")),
         );
         vsearch::run(
             &uchime,

@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 pub const READS: usize = 10_000;
@@ -44,6 +47,25 @@ pub fn tmp(name: &str) -> PathBuf {
 
 /// writes the reads and the database.
 pub fn input_files() -> (PathBuf, PathBuf) {
+    // Not the dataset's `db`. vsearch's command for the LCA aligns every
+    // query with every target (`--id 1 --maxrejects 0`), hours on a
+    // full-length reference. `lca_db`, a small reference with `;tax=`, is
+    // searched against its own sequences. Identical sequences of different
+    // taxa give the last common ancestor its work.
+    if let Some(db) = data::file("lcatax", "lca_db") {
+        let queries: Vec<data::Record> = data::parse(&data::read(&db))
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| data::Record {
+                label: format!("q{i}"),
+                ..r
+            })
+            .collect();
+        return (
+            data::write("lcatax", "queries.fa", data::to_fasta(&queries)),
+            db,
+        );
+    }
     let mut rng = Rng(0x5eed);
     let seqs: Vec<Vec<u8>> = (0..DISTINCT)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -78,4 +100,9 @@ pub fn input_files() -> (PathBuf, PathBuf) {
     std::fs::write(&fa, reads).unwrap();
     std::fs::write(&dbfa, db).unwrap();
     (fa, dbfa)
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("lcatax", &["lca_db"])
 }

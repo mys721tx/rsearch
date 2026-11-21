@@ -13,14 +13,17 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (all, _, _) = input_files(dir);
     let all = all.to_str().unwrap();
-    let mut group = c.benchmark_group("mchime/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("mchime/binary"));
+    group.throughput(Throughput::Elements(data::count(all, SEQUENCES)));
     group.sample_size(10);
     let common = [
         "--chimeras_denovo",
@@ -36,13 +39,22 @@ fn bench_binary(c: &mut Criterion) {
     ];
     // both write the same tables
     let (r, v) = (
-        dir.join("mchime-bench-r.tab"),
-        dir.join("mchime-bench-v.tab"),
+        data::output(dir.join("mchime-bench-r.tab")),
+        data::output(dir.join("mchime-bench-v.tab")),
     );
     let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
+    // vsearch sorts the input by abundance, ties by label, as the
+    // translated pipeline does with sortby. The check does the same, which
+    // matters for real data, where abundances tie
+    let sorted = data::output(dir.join("mchime-bench-sorted.fa"));
+    let sorted = sorted.to_str().unwrap();
+    vsearch::run(
+        &vsearch::tool("sortby"),
+        &["--size", "-i", all, "-o", sorted],
+    );
     vsearch::run(
         &vsearch::tool("mchime"),
-        &["-i", all, "-o", "/dev/null", "--table", r],
+        &["-i", sorted, "-o", "/dev/null", "--table", r],
     );
     vsearch::run(&vsearch, &[&common[..], &["--tabbedout", v]].concat());
     assert!(

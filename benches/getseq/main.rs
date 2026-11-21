@@ -28,10 +28,13 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_matches(c: &mut Criterion) {
-    let reads = parse(&generate());
-    let mut group = c.benchmark_group("getseq/matches");
-    group.throughput(Throughput::Elements(READS as u64));
-    let labels: Vec<String> = (0..READS).step_by(10).map(header).collect();
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("getseq/matches"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
+    let labels = labels();
     for (name, selector) in [
         ("labels", Selector::labels(&labels, false)),
         ("substring", Selector::labels(["SAMPLE=S7;"], true)),
@@ -89,12 +92,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let getseq = env!("CARGO_BIN_EXE_getseq");
     let fq = inputs.fastq.to_str().unwrap();
 
-    let mut group = c.benchmark_group("getseq/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("getseq/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for case in cases(&inputs) {
         let args = [&["-i", fq, "-o", "/dev/null"][..], &case.getseq].concat();
@@ -106,18 +112,21 @@ fn bench_binary(c: &mut Criterion) {
 }
 
 fn bench_hits(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, db) = hit_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let hits = dir.join("getseq-hits.uc");
+    let hits = data::output(dir.join("getseq-hits.uc"));
     let hits = hits.to_str().unwrap();
     run(
         env!("CARGO_BIN_EXE_exsrch"),
         &["-i", fa, "--db", db, "-o", hits],
     );
     let getseq = env!("CARGO_BIN_EXE_getseq");
-    let mut group = c.benchmark_group("getseq/hits");
-    group.throughput(Throughput::Elements(100_000));
+    let mut group = c.benchmark_group(data::group("getseq/hits"));
+    group.throughput(Throughput::Elements(data::count(fa, 100_000)));
     group.sample_size(10);
     for (name, input, args) in [
         ("matched", fa, vec![]),

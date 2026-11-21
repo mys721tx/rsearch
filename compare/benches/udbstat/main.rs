@@ -14,6 +14,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -21,7 +24,7 @@ fn bench_binary(c: &mut Criterion) {
     let udb = udb.to_str().unwrap();
 
     // both report the same statistics
-    let log = tmp("udbstat-bench.log");
+    let log = data::output(tmp("udbstat-bench.log"));
     let vargs = [
         "--udbstats",
         udb,
@@ -47,7 +50,7 @@ fn bench_binary(c: &mut Criterion) {
         .collect();
     assert_eq!(String::from_utf8(ours.stdout).unwrap(), theirs);
 
-    let mut group = c.benchmark_group("udbstat/binary");
+    let mut group = c.benchmark_group(data::group("udbstat/binary"));
     group.sample_size(10);
     vsearch::bench(&mut group, "vsearch", &vsearch, &vargs);
     group.finish();

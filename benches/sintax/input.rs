@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -55,6 +58,18 @@ pub fn tmp(name: &str) -> PathBuf {
 /// Writes the reads, the FASTA database and its UDB file, built with
 /// `mkudb`.
 pub fn input_files(mkudb: &str) -> (PathBuf, PathBuf, PathBuf) {
+    if let (Some(queries), Some(dbfa)) =
+        (data::file("sintax", "uniques"), data::file("sintax", "db"))
+    {
+        let queries = data::parse(&data::read(&queries));
+        let fa = data::write("sintax", "queries.fa", data::to_fasta(&queries));
+        let udb = data::tmp("sintax", "db.udb");
+        run(
+            mkudb,
+            &["-i", dbfa.to_str().unwrap(), "-o", udb.to_str().unwrap()],
+        );
+        return (fa, dbfa, udb);
+    }
     let mut rng = Rng(0x5eed);
     let templates: Vec<Vec<u8>> = (0..TEMPLATES)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -104,4 +119,9 @@ pub fn run(program: &str, args: &[&str]) {
         .status()
         .unwrap();
     assert!(status.success(), "{program} {args:?} failed");
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("sintax", &["uniques", "db"])
 }

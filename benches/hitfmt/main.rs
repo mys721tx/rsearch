@@ -27,9 +27,12 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
-    let hits = tmp("hitfmt-bench.uc");
+    let hits = data::output(tmp("hitfmt-bench.uc"));
     let hits = hits.to_str().unwrap();
     run(
         env!("CARGO_BIN_EXE_exsrch"),
@@ -37,8 +40,8 @@ fn bench_binary(c: &mut Criterion) {
     );
     let hitfmt = env!("CARGO_BIN_EXE_hitfmt");
     let fields = "query+target+id+alnlen+mism+opens+qlo+qhi+tlo+thi+raw+caln+qrow";
-    let mut group = c.benchmark_group("hitfmt/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("hitfmt/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, rargs) in [
         ("userout", vec!["--userout", fields]),

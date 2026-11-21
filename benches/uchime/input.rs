@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 pub const SEQUENCES: usize = 4_000;
@@ -28,6 +31,11 @@ impl Rng {
 /// the input, sorted by decreasing abundance, the queries (the input but
 /// the parents) and the parents.
 pub fn input_files(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    if let (Some(uniques), Some(db)) = (data::file("uchime", "uniques"), data::file("uchime", "db"))
+    {
+        // de novo among the uniques; against the reference with --db
+        return (uniques.clone(), uniques, db);
+    }
     let mut rng = Rng(0x5eed);
     let parents: Vec<Vec<u8>> = (0..PARENTS)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -71,4 +79,9 @@ pub fn input_files(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     }
     let [a, q, d] = paths;
     (a, q, d)
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("uchime", &["uniques", "db"])
 }

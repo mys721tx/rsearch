@@ -44,10 +44,13 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let rerep = env!("CARGO_BIN_EXE_rerep");
 
-    let mut group = c.benchmark_group("rerep/binary");
+    let mut group = c.benchmark_group(data::group("rerep/binary"));
     group.throughput(Throughput::Elements(inputs.copies as u64));
     group.sample_size(10);
     for case in cases(&inputs) {

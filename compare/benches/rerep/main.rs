@@ -11,13 +11,16 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let inputs = input_files();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("rerep/binary");
+    let mut group = c.benchmark_group(data::group("rerep/binary"));
     group.throughput(Throughput::Elements(inputs.copies as u64));
     group.sample_size(10);
     for (name, extra) in [("fasta", &["--sizeout"][..]), ("fasta_no_sizeout", &[])] {

@@ -25,9 +25,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_format(c: &mut Criterion) {
-    let reads = parse(&generate());
-    let mut group = c.benchmark_group("relab/format");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("relab/format"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     for (name, label) in [
         (
             "prefix",
@@ -119,11 +122,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let relab = env!("CARGO_BIN_EXE_relab");
 
-    let mut group = c.benchmark_group("relab/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("relab/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for case in cases(&inputs) {
         group.bench_function(format!("relab/{}", case.name), |b| {

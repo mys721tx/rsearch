@@ -26,13 +26,16 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (all, queries, db) = input_files(dir);
     let s = |p: &PathBuf| p.to_str().unwrap().to_string();
     let (all, queries, db) = (s(&all), s(&queries), s(&db));
     let uchime = env!("CARGO_BIN_EXE_uchime");
-    let mut group = c.benchmark_group("uchime/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("uchime/binary"));
+    group.throughput(Throughput::Elements(data::count(&all, SEQUENCES)));
     group.sample_size(10);
     let cases: [(&str, Vec<&str>); 2] = [
         ("denovo", vec!["-i", &all]),

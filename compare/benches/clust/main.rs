@@ -15,6 +15,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -22,8 +25,8 @@ fn bench_binary(c: &mut Criterion) {
     let fa = input.to_str().unwrap();
     let clust = vsearch::tool("clust");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let mut group = c.benchmark_group("clust/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("clust/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     let wide = ["--id", "0.9", "--maxaccepts", "4", "--strand", "both"];
     for (name, args) in [("id97", &["--id", "0.97"][..]), ("both", &wide[..])] {
@@ -43,7 +46,7 @@ fn bench_binary(c: &mut Criterion) {
             "1",
         ];
         // both write the same centroids and hits
-        let path = |name: &str| dir.join(format!("clust-bench-{name}"));
+        let path = |name: &str| data::output(dir.join(format!("clust-bench-{name}")));
         let (rc, ru, vc, vu) = (path("r.fa"), path("r.uc"), path("v.fa"), path("v.uc"));
         let s = |p: &PathBuf| p.to_str().unwrap().to_string();
         vsearch::run(

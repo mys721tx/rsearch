@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads of `LENGTH` nucleotides.
@@ -48,6 +51,11 @@ pub struct Inputs {
 }
 
 pub fn input_files() -> Inputs {
+    if let Some(fastq) = data::file("shufl", "reads") {
+        let reads = data::parse(&data::read(&fastq));
+        let fasta = data::write("shufl", "reads.fa", data::to_fasta(&reads));
+        return Inputs { fastq, fasta };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (fastq, fasta) = generate();
     let inputs = Inputs {
@@ -57,4 +65,9 @@ pub fn input_files() -> Inputs {
     std::fs::write(&inputs.fastq, fastq).unwrap();
     std::fs::write(&inputs.fasta, fasta).unwrap();
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("shufl", &["reads"])
 }

@@ -17,13 +17,16 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let subseq = env!("CARGO_BIN_EXE_subseq");
     let fq = inputs.fastq.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("subseq/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("subseq/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     let regions: [(&str, &[&str]); 2] = [
         ("middle", &["--start", "50", "--end", "200"]),

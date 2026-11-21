@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Sequences of `LENGTH` nucleotides, copies of `TEMPLATES` templates.
@@ -54,7 +57,15 @@ pub fn tmp(name: &str) -> PathBuf {
 
 /// Writes the FASTA input into the target directory.
 pub fn input_file() -> PathBuf {
+    if let Some(path) = data::file("mkudb", "db") {
+        return path;
+    }
     let path = tmp("mkudb-bench.fa");
     std::fs::write(&path, generate()).unwrap();
     path
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("mkudb", &["db"])
 }

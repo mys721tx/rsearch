@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Dereplicated reads of `LENGTH` nucleotides, with abundances from 1 to
@@ -56,6 +59,16 @@ pub struct Inputs {
 }
 
 pub fn input_files() -> Inputs {
+    if let Some(fastq) = data::file("rerep", "uniques_fq") {
+        let text = data::read(&fastq);
+        let fasta = data::write("rerep", "uniques.fa", data::to_fasta(&data::parse(&text)));
+        let copies = data::total_size(&text) as usize;
+        return Inputs {
+            fastq,
+            fasta,
+            copies,
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let (fastq, fasta, copies) = generate();
     let inputs = Inputs {
@@ -66,4 +79,9 @@ pub fn input_files() -> Inputs {
     std::fs::write(&inputs.fastq, fastq).unwrap();
     std::fs::write(&inputs.fasta, fasta).unwrap();
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("rerep", &["uniques_fq"])
 }

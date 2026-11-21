@@ -26,9 +26,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_trim(c: &mut Criterion) {
-    let reads = parse(&generate(33));
-    let mut group = c.benchmark_group("sqtrim/trim");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("sqtrim/trim"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     let trimming = Filter {
         min_len: 0,
         ..Filter::default()
@@ -113,11 +116,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let sqtrim = env!("CARGO_BIN_EXE_sqtrim");
 
-    let mut group = c.benchmark_group("sqtrim/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("sqtrim/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for case in cases(&inputs) {
         group.bench_function(format!("sqtrim/{}", case.name), |b| {

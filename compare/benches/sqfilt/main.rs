@@ -107,13 +107,16 @@ fn cases(inputs: &Inputs) -> Vec<(&'static str, Vec<&str>)> {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let inputs = input_files();
 
-    let mut group = c.benchmark_group("sqfilt/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("sqfilt/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for (name, args) in cases(&inputs) {
         vsearch::bench(&mut group, format!("vsearch/{name}"), &vsearch, &args);

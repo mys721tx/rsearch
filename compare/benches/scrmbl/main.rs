@@ -11,14 +11,17 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let input = input_file();
     let fq = input.to_str().unwrap();
 
-    let mut group = c.benchmark_group("scrmbl/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("scrmbl/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for k in ["1", "2", "6"] {
         let args = [

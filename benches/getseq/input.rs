@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads of `LENGTH` nucleotides, from `SAMPLES` samples.
@@ -54,6 +57,28 @@ pub struct Inputs {
 }
 
 pub fn input_files() -> Inputs {
+    if let Some(fastq) = data::file("getseq", "reads") {
+        let labels: String = real_labels().into_iter().map(|l| l + "\n").collect();
+        // the first words of the labels (run accessions in ENA's labels),
+        // every other one
+        let mut words: Vec<String> = Vec::new();
+        for r in data::parse(&data::read(&fastq)) {
+            let word: String = r
+                .label
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        let words: String = words.iter().step_by(2).map(|w| format!("{w}\n")).collect();
+        return Inputs {
+            fastq,
+            labels: data::write("getseq", "labels.txt", labels),
+            words: data::write("getseq", "words.txt", words),
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let inputs = Inputs {
         fastq: dir.join("getseq-bench.fq"),
@@ -70,6 +95,13 @@ pub fn input_files() -> Inputs {
 /// writes reads drawn from 20,000 sequences, a tenth of them changed, and
 /// a database of those sequences and 5,000 duplicates.
 pub fn hit_files() -> (PathBuf, PathBuf) {
+    if let Some(fastq) = data::file("getseq", "reads") {
+        let reads = data::parse(&data::read(&fastq));
+        return (
+            data::write("getseq", "hits.fa", data::to_fasta(&reads)),
+            data::write("getseq", "hits-db.fa", data::exact_db(&reads)),
+        );
+    }
     let mut rng = Rng(0x5eed);
     let seqs: Vec<String> = (0..20_000)
         .map(|_| (0..150).map(|_| b"ACGT"[rng.below(4)] as char).collect())
@@ -95,4 +127,33 @@ pub fn hit_files() -> (PathBuf, PathBuf) {
     std::fs::write(&fa, reads).unwrap();
     std::fs::write(&dbfa, db).unwrap();
     (fa, dbfa)
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("getseq", &["reads"])
+}
+
+/// Every tenth label of the dataset's reads.
+pub fn real_labels() -> Vec<String> {
+    let text = data::text("getseq", "reads").unwrap_or_default();
+    data::parse(&text)
+        .into_iter()
+        .step_by(10)
+        .map(|r| r.label)
+        .collect()
+}
+
+/// The reads as text: the dataset's, or the generated ones.
+pub fn text() -> String {
+    data::text("getseq", "reads").unwrap_or_else(generate)
+}
+
+/// The labels the in-memory selection looks for: every tenth read's.
+pub fn labels() -> Vec<String> {
+    if data::id().is_some() {
+        real_labels()
+    } else {
+        (0..READS).step_by(10).map(header).collect()
+    }
 }

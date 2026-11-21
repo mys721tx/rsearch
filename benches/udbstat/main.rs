@@ -23,11 +23,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let udb = input_file(env!("CARGO_BIN_EXE_mkudb"));
     let udb = udb.to_str().unwrap();
     let udbstat = env!("CARGO_BIN_EXE_udbstat");
 
-    let mut group = c.benchmark_group("udbstat/binary");
+    let mut group = c.benchmark_group(data::group("udbstat/binary"));
     group.sample_size(10);
     group.bench_function("udbstat", |b| b.iter(|| run(udbstat, &["-i", udb])));
     group.finish();

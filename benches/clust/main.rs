@@ -25,11 +25,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fa = input.to_str().unwrap();
     let clust = env!("CARGO_BIN_EXE_clust");
-    let mut group = c.benchmark_group("clust/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("clust/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     let wide = ["--id", "0.9", "--maxaccepts", "4", "--strand", "both"];
     for (name, args) in [("id97", &["--id", "0.97"][..]), ("both", &wide[..])] {

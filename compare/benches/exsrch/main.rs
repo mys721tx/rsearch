@@ -11,12 +11,18 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
-    let (r, v) = (tmp("exsrch-bench-r.uc"), tmp("exsrch-bench-v.uc"));
+    let (r, v) = (
+        data::output(tmp("exsrch-bench-r.uc")),
+        data::output(tmp("exsrch-bench-v.uc")),
+    );
     let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
     let vargs = [
         "--search_exact",
@@ -43,8 +49,8 @@ fn bench_binary(c: &mut Criterion) {
         std::fs::read(r).unwrap() == std::fs::read(v).unwrap(),
         "exsrch and vsearch wrote different hits"
     );
-    let mut group = c.benchmark_group("exsrch/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("exsrch/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     vsearch::bench(&mut group, "vsearch", &vsearch, &vargs);
     group.finish();

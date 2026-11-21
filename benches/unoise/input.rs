@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 pub const SEQUENCES: usize = 10_000;
@@ -26,6 +29,9 @@ impl Rng {
 }
 
 pub fn input_file() -> PathBuf {
+    if let Some(path) = data::file("unoise", "uniques") {
+        return path;
+    }
     let mut rng = Rng(0x5eed);
     let templates: Vec<Vec<u8>> = (0..TEMPLATES)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -56,4 +62,9 @@ pub fn input_file() -> PathBuf {
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("unoise-bench.fa");
     std::fs::write(&path, fasta).unwrap();
     path
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("unoise", &["uniques"])
 }

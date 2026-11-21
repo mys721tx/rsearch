@@ -12,6 +12,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -20,8 +23,8 @@ fn bench_binary(c: &mut Criterion) {
     let fq64 = inputs.phred64.to_str().unwrap();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("sqtrim/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("sqtrim/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for (name, file, options) in [
         (

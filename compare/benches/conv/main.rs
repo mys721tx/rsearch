@@ -84,6 +84,9 @@ fn cases(inputs: &Inputs) -> Vec<(&'static str, Vec<&str>)> {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -91,7 +94,10 @@ fn bench_binary(c: &mut Criterion) {
 
     // conv writes the FASTA vsearch --udb2fasta writes
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let (r, v) = (dir.join("conv-bench-r.fa"), dir.join("conv-bench-v.fa"));
+    let (r, v) = (
+        data::output(dir.join("conv-bench-r.fa")),
+        data::output(dir.join("conv-bench-v.fa")),
+    );
     let udb = inputs.udb.to_str().unwrap();
     vsearch::run(
         &vsearch::tool("conv"),
@@ -112,8 +118,8 @@ fn bench_binary(c: &mut Criterion) {
         "conv and vsearch wrote different FASTA"
     );
 
-    let mut group = c.benchmark_group("conv/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("conv/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.phred33, READS)));
     group.sample_size(10);
     for (name, args) in cases(&inputs) {
         vsearch::bench(&mut group, format!("vsearch/{name}"), &vsearch, &args);

@@ -26,6 +26,9 @@ fn vsearch_args<'a>(fa: &'a str, out: &'a str) -> [&'a str; 10] {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -33,7 +36,10 @@ fn bench_binary(c: &mut Criterion) {
     let fa = input.to_str().unwrap();
 
     // both write the same file
-    let (r, v) = (tmp("mkudb-bench-r.udb"), tmp("mkudb-bench-v.udb"));
+    let (r, v) = (
+        data::output(tmp("mkudb-bench-r.udb")),
+        data::output(tmp("mkudb-bench-v.udb")),
+    );
     vsearch::run(
         &vsearch::tool("mkudb"),
         &["-i", fa, "-o", r.to_str().unwrap()],
@@ -44,8 +50,8 @@ fn bench_binary(c: &mut Criterion) {
         "mkudb and vsearch wrote different files"
     );
 
-    let mut group = c.benchmark_group("mkudb/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("mkudb/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     vsearch::bench(
         &mut group,

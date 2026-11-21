@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Reads drawn from `UNIQUES` distinct sequences of `LENGTH` nucleotides.
@@ -93,6 +96,14 @@ pub struct Inputs {
 
 /// Writes the generated input files once, into the target directory.
 pub fn input_files() -> Inputs {
+    if let Some(fastq) = data::file("derep", "reads") {
+        let text = data::read(&fastq);
+        return Inputs {
+            fasta: data::write("derep", "reads.fa", data::to_fasta(&data::parse(&text))),
+            phred64: data::write("derep", "reads-64.fq", data::phred64(&text)),
+            fastq,
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let inputs = Inputs {
         fasta: dir.join("derep-bench.fa"),
@@ -104,4 +115,19 @@ pub fn input_files() -> Inputs {
     std::fs::write(&inputs.phred64, to_phred64(&fastq)).unwrap();
     std::fs::write(&inputs.fastq, fastq).unwrap();
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("derep", &["reads"])
+}
+
+/// The reads as text, FASTQ or FASTA: the dataset's, or the generated
+/// ones.
+pub fn text(fastq: bool) -> String {
+    match data::text("derep", "reads") {
+        Some(text) if fastq => text,
+        Some(text) => data::to_fasta(&data::parse(&text)),
+        None => generate(fastq),
+    }
 }

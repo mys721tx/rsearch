@@ -31,9 +31,12 @@ fn settings() -> Settings {
 }
 
 fn bench_merge(c: &mut Criterion) {
-    let pairs = generate();
-    let mut group = c.benchmark_group("mergpa/merge");
-    group.throughput(Throughput::Elements(PAIRS as u64));
+    if skip() {
+        return;
+    }
+    let pairs = pairs();
+    let mut group = c.benchmark_group(data::group("mergpa/merge"));
+    group.throughput(Throughput::Elements(pairs.len() as u64));
     group.sample_size(10);
     group.bench_function("merge", |b| {
         let mut merger = Merger::new(settings());
@@ -60,12 +63,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
-    let (forward, reverse) = input_files(&generate());
+    if skip() {
+        return;
+    }
+    let (forward, reverse) = pair_files();
     let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
     let mergpa = env!("CARGO_BIN_EXE_mergpa");
 
-    let mut group = c.benchmark_group("mergpa/binary");
-    group.throughput(Throughput::Elements(PAIRS as u64));
+    let mut group = c.benchmark_group(data::group("mergpa/binary"));
+    group.throughput(Throughput::Elements(data::count(&forward, PAIRS)));
     group.sample_size(10);
     let args = ["-i", fwd, "--reverse", rev, "-o", "/dev/null"];
     group.bench_function("mergpa", |b| b.iter(|| run(mergpa, &args)));

@@ -20,12 +20,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fq = input.to_str().unwrap();
     let eestat = env!("CARGO_BIN_EXE_eestat");
 
-    let mut group = c.benchmark_group("eestat/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("eestat/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     group.bench_function("eestat", |b| {
         b.iter(|| run(eestat, &["-i", fq, "-o", "/dev/null"]))

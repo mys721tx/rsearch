@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 pub const READS: usize = 100_000;
@@ -44,6 +47,13 @@ pub fn tmp(name: &str) -> PathBuf {
 
 /// writes the reads and the database.
 pub fn input_files() -> (PathBuf, PathBuf) {
+    if let Some(fastq) = data::file("otutab", "reads") {
+        let reads = data::parse(&data::read(&fastq));
+        return (
+            data::write("otutab", "reads.fa", data::to_fasta(&reads)),
+            data::write("otutab", "db.fa", data::exact_db(&reads)),
+        );
+    }
     let mut rng = Rng(0x5eed);
     let seqs: Vec<Vec<u8>> = (0..DISTINCT)
         .map(|_| (0..LENGTH).map(|_| b"ACGT"[rng.below(4)]).collect())
@@ -83,4 +93,9 @@ pub fn input_files() -> (PathBuf, PathBuf) {
     std::fs::write(&fa, reads).unwrap();
     std::fs::write(&dbfa, db).unwrap();
     (fa, dbfa)
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("otutab", &["reads"])
 }

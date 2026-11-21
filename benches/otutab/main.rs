@@ -27,17 +27,20 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
-    let hits = tmp("otutab-bench.uc");
+    let hits = data::output(tmp("otutab-bench.uc"));
     let hits = hits.to_str().unwrap();
     run(
         env!("CARGO_BIN_EXE_exsrch"),
         &["-i", fa, "--db", db, "-o", hits, "--strand", "both"],
     );
     let otutab = env!("CARGO_BIN_EXE_otutab");
-    let mut group = c.benchmark_group("otutab/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("otutab/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, rargs) in [
         ("classic", vec![]),

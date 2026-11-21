@@ -25,19 +25,22 @@ fn output(program: &str, args: &[&str]) -> Vec<u8> {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let input = input_file(dir);
     let fa = input.to_str().unwrap();
-    let hits = dir.join("clmsa-bench.uc");
+    let hits = data::output(dir.join("clmsa-bench.uc"));
     let hits = hits.to_str().unwrap();
     vsearch::run(
         &vsearch::tool("clust"),
         &["-i", fa, "-o", "/dev/null", "--hits", hits, "--id", "0.9"],
     );
-    let path = |name: &str| dir.join(format!("clmsa-bench-{name}"));
+    let path = |name: &str| data::output(dir.join(format!("clmsa-bench-{name}")));
     let (msa, cons, prof) = (path("v.msa"), path("v.cons"), path("v.prof"));
     let s = |p: &PathBuf| p.to_str().unwrap().to_string();
     let (msa, cons, prof) = (s(&msa), s(&cons), s(&prof));
@@ -75,8 +78,8 @@ fn bench_binary(c: &mut Criterion) {
             "clmsa and vsearch wrote different alignments"
         );
     }
-    let mut group = c.benchmark_group("clmsa/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("clmsa/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     vsearch::bench(&mut group, "vsearch/all", &vsearch, &vargs);
     group.finish();

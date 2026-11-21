@@ -13,18 +13,24 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
-    let hits = tmp("otutab-bench.uc");
+    let hits = data::output(tmp("otutab-bench.uc"));
     let hits = hits.to_str().unwrap();
     vsearch::run(
         &vsearch::tool("exsrch"),
         &["-i", fa, "--db", db, "-o", hits, "--strand", "both"],
     );
-    let (r, v) = (tmp("otutab-bench-r.tsv"), tmp("otutab-bench-v.tsv"));
+    let (r, v) = (
+        data::output(tmp("otutab-bench-r.tsv")),
+        data::output(tmp("otutab-bench-v.tsv")),
+    );
     let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
     let vbase = [
         "--search_exact",
@@ -45,8 +51,8 @@ fn bench_binary(c: &mut Criterion) {
         std::fs::read(r).unwrap() == std::fs::read(v).unwrap(),
         "otutab and vsearch wrote different tables"
     );
-    let mut group = c.benchmark_group("otutab/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("otutab/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, output) in [
         ("classic", vec!["--otutabout", "/dev/null"]),

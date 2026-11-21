@@ -26,17 +26,20 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
-    let hits = tmp("lcatax-bench.uc");
+    let hits = data::output(tmp("lcatax-bench.uc"));
     let hits = hits.to_str().unwrap();
     run(
         env!("CARGO_BIN_EXE_exsrch"),
         &["-i", fa, "--db", db, "-o", hits, "--strand", "both"],
     );
     let lcatax = env!("CARGO_BIN_EXE_lcatax");
-    let mut group = c.benchmark_group("lcatax/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("lcatax/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     let rargs = [hits, "--db", db, "-o", "/dev/null", "--cutoff", "0.6"];
     group.bench_function("lcatax", |b| b.iter(|| run(lcatax, &rargs)));

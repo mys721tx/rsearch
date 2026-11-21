@@ -16,7 +16,10 @@ mod input;
 use input::*;
 
 fn bench_draw(c: &mut Criterion) {
-    let mut group = c.benchmark_group("subsmp/draw");
+    if skip() {
+        return;
+    }
+    let mut group = c.benchmark_group(data::group("subsmp/draw"));
     let masses = vec![1u64; 1_000_000];
     group.throughput(Throughput::Elements(masses.len() as u64));
     group.bench_function("half_of_a_million", |b| {
@@ -31,12 +34,15 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fq = input.to_str().unwrap();
     let subsmp = env!("CARGO_BIN_EXE_subsmp");
 
-    let mut group = c.benchmark_group("subsmp/binary");
-    group.throughput(Throughput::Elements(RECORDS as u64));
+    let mut group = c.benchmark_group(data::group("subsmp/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, RECORDS)));
     group.sample_size(10);
     for (name, by_size) in [("records", &[][..]), ("by_size", &["--by-size"])] {
         let args = [

@@ -14,14 +14,17 @@ mod input;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, dbfa, udb) = input_files(env!("CARGO_BIN_EXE_mkudb"));
     let fa = fa.to_str().unwrap();
     let sintax = env!("CARGO_BIN_EXE_sintax");
-    let r = tmp("sintax-bench-r.tsv");
+    let r = data::output(tmp("sintax-bench-r.tsv"));
     let r = r.to_str().unwrap();
 
-    let mut group = c.benchmark_group("sintax/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("sintax/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, db) in [("fasta", &dbfa), ("udb", &udb)] {
         let db = db.to_str().unwrap();

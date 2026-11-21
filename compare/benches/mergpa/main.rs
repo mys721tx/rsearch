@@ -11,14 +11,17 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
-    let (forward, reverse) = input_files(&generate());
+    let (forward, reverse) = pair_files();
     let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
 
-    let mut group = c.benchmark_group("mergpa/binary");
-    group.throughput(Throughput::Elements(PAIRS as u64));
+    let mut group = c.benchmark_group(data::group("mergpa/binary"));
+    group.throughput(Throughput::Elements(data::count(&forward, PAIRS)));
     group.sample_size(10);
     let args = [
         "--fastq_mergepairs",

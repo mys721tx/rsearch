@@ -25,10 +25,13 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let (fa, db) = input_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
     let exsrch = env!("CARGO_BIN_EXE_exsrch");
-    let r = tmp("exsrch-bench-r.uc");
+    let r = data::output(tmp("exsrch-bench-r.uc"));
     let rargs = [
         "-i",
         fa,
@@ -39,8 +42,8 @@ fn bench_binary(c: &mut Criterion) {
         "--strand",
         "both",
     ];
-    let mut group = c.benchmark_group("exsrch/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("exsrch/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     group.bench_function("exsrch", |b| b.iter(|| run(exsrch, &rargs)));
     group.finish();

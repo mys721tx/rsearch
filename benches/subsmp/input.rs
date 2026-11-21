@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Records of `LENGTH` nucleotides, with abundances from 1 to 20.
@@ -42,7 +45,15 @@ pub fn generate() -> String {
     fastq
 }
 pub fn input_file() -> PathBuf {
+    if let Some(path) = data::file("subsmp", "uniques_fq") {
+        return path;
+    }
     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("subsmp-bench.fq");
     std::fs::write(&path, generate()).unwrap();
     path
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("subsmp", &["uniques_fq"])
 }

@@ -12,6 +12,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -19,12 +22,15 @@ fn bench_binary(c: &mut Criterion) {
     let fa = fa.to_str().unwrap();
     let sintax = vsearch::tool("sintax");
 
-    let mut group = c.benchmark_group("sintax/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("sintax/binary"));
+    group.throughput(Throughput::Elements(data::count(fa, READS)));
     group.sample_size(10);
     for (name, db) in [("fasta", &dbfa), ("udb", &udb)] {
         let db = db.to_str().unwrap();
-        let (r, v) = (tmp("sintax-bench-r.tsv"), tmp("sintax-bench-v.tsv"));
+        let (r, v) = (
+            data::output(tmp("sintax-bench-r.tsv")),
+            data::output(tmp("sintax-bench-v.tsv")),
+        );
         let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
         let vargs = [
             "--sintax",

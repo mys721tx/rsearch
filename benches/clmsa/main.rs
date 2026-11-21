@@ -27,19 +27,22 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let input = input_file(dir);
     let fa = input.to_str().unwrap();
     let (clust, clmsa) = (env!("CARGO_BIN_EXE_clust"), env!("CARGO_BIN_EXE_clmsa"));
-    let hits = dir.join("clmsa-bench.uc");
+    let hits = data::output(dir.join("clmsa-bench.uc"));
     let hits = hits.to_str().unwrap();
     run(
         clust,
         &["-i", fa, "-o", "/dev/null", "--hits", hits, "--id", "0.9"],
     );
     let formats: [&[&str]; 3] = [&[], &["--consensus"], &["--profile"]];
-    let mut group = c.benchmark_group("clmsa/binary");
-    group.throughput(Throughput::Elements(SEQUENCES as u64));
+    let mut group = c.benchmark_group(data::group("clmsa/binary"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     for (name, format) in ["msa", "consensus", "profile"].into_iter().zip(formats) {
         let args = [&["--hits", hits, "-i", fa, "-o", "/dev/null"][..], format].concat();

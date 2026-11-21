@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,6 +128,37 @@ pub struct Inputs {
 
 /// Writes the input files, the UDB file built with `mkudb`.
 pub fn input_files(mkudb: &str) -> Inputs {
+    if let Some(phred33) = data::file("conv", "reads") {
+        let text = data::read(&phred33);
+        let reads = data::parse(&text);
+        let fasta = data::write("conv", "reads.fa", data::to_fasta(&reads));
+        // the dataset's own Phred+64 and SFF files where it has them
+        let phred64 = data::optional("conv", "phred64")
+            .unwrap_or_else(|| data::write("conv", "reads-64.fq", data::phred64(&text)));
+        // Phred scores at +64 are valid Solexa scores
+        let solexa = data::write("conv", "reads-solexa.fq", data::phred64(&text));
+        let sff = data::optional("conv", "sff").unwrap_or_else(|| {
+            // to_sff clips five bases at each end
+            let long: Vec<_> = reads.into_iter().filter(|r| r.seq.len() >= 10).collect();
+            data::write("conv", "reads.sff", to_sff(&data::to_fastq(&long)))
+        });
+        let udb = data::tmp("conv", "reads.udb");
+        let status = Command::new(mkudb)
+            .args(["-i", fasta.to_str().unwrap()])
+            .args(["-o", udb.to_str().unwrap()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return Inputs {
+            phred33,
+            phred64,
+            solexa,
+            fasta,
+            sff,
+            udb,
+        };
+    }
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
     let inputs = Inputs {
         phred33: dir.join("conv-bench.fq"),
@@ -148,4 +182,14 @@ pub fn input_files(mkudb: &str) -> Inputs {
         .unwrap();
     assert!(status.success());
     inputs
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("conv", &["reads"])
+}
+
+/// The Phred+33 reads as text: the dataset's, or the generated ones.
+pub fn text() -> String {
+    data::text("conv", "reads").unwrap_or_else(|| generate(33, 0))
 }

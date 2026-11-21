@@ -14,6 +14,9 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
@@ -21,8 +24,8 @@ fn bench_binary(c: &mut Criterion) {
     let (q, db) = (q.to_str().unwrap(), db.to_str().unwrap());
     let dbsrch = vsearch::tool("dbsrch");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let mut group = c.benchmark_group("dbsrch/binary");
-    group.throughput(Throughput::Elements(QUERIES as u64));
+    let mut group = c.benchmark_group(data::group("dbsrch/binary"));
+    group.throughput(Throughput::Elements(data::count(q, QUERIES)));
     group.sample_size(10);
     let wide = [
         "--id",
@@ -51,7 +54,10 @@ fn bench_binary(c: &mut Criterion) {
             "1",
         ];
         // both write the same hits
-        let (r, v) = (dir.join("dbsrch-bench-r.uc"), dir.join("dbsrch-bench-v.uc"));
+        let (r, v) = (
+            data::output(dir.join("dbsrch-bench-r.uc")),
+            data::output(dir.join("dbsrch-bench-v.uc")),
+        );
         vsearch::run(
             &dbsrch,
             &[&["-i", q, "--db", db, "-o", r.to_str().unwrap()][..], args].concat(),

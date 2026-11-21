@@ -11,14 +11,17 @@ mod vsearch;
 use input::*;
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let inputs = input_files();
     let fa = inputs.fasta.to_str().unwrap();
 
-    let mut group = c.benchmark_group("topn/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("topn/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     let args = [
         "--fastx_uniques",

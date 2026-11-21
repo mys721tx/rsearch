@@ -2,6 +2,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../common/data.rs"]
+pub mod data;
+
 use std::path::{Path, PathBuf};
 
 /// Pairs of reads of `LENGTH` nucleotides.
@@ -87,4 +90,33 @@ pub fn input_files(pairs: &[(Read, Read)]) -> (PathBuf, PathBuf) {
     std::fs::write(&paths.0, forward).unwrap();
     std::fs::write(&paths.1, reverse).unwrap();
     paths
+}
+
+/// Whether a dataset is set that lacks the files this bench reads.
+pub fn skip() -> bool {
+    data::skip("mergpa", &["reads", "mate"])
+}
+
+/// The pairs to merge in memory: the dataset's, or the generated ones.
+pub fn pairs() -> Vec<(Read, Read)> {
+    match (data::file("mergpa", "reads"), data::file("mergpa", "mate")) {
+        (Some(f), Some(r)) => {
+            let read = |rec: data::Record| (rec.seq.into_bytes(), rec.qual.unwrap().into_bytes());
+            let f = data::parse(&data::read(&f));
+            let r = data::parse(&data::read(&r));
+            f.into_iter()
+                .map(read)
+                .zip(r.into_iter().map(read))
+                .collect()
+        }
+        _ => generate(),
+    }
+}
+
+/// The files of pairs: the dataset's, or the generated ones written out.
+pub fn pair_files() -> (PathBuf, PathBuf) {
+    match (data::file("mergpa", "reads"), data::file("mergpa", "mate")) {
+        (Some(f), Some(r)) => (f, r),
+        _ => input_files(&generate()),
+    }
 }

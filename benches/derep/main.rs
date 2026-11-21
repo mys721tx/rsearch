@@ -36,11 +36,14 @@ fn dereplicate(reads: &[Record], strand: bool) -> Vec<Cluster> {
 }
 
 fn bench_cluster(c: &mut Criterion) {
-    let fasta_reads = parse(&generate(false));
-    let fastq_reads = parse(&generate(true));
+    if skip() {
+        return;
+    }
+    let fasta_reads = parse(&text(false));
+    let fastq_reads = parse(&text(true));
 
-    let mut group = c.benchmark_group("derep/cluster");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("derep/cluster"));
+    group.throughput(Throughput::Elements(fasta_reads.len() as u64));
     for (name, reads, strand) in [
         ("fasta", &fasta_reads, false),
         ("fasta_strand", &fasta_reads, true),
@@ -91,11 +94,14 @@ fn cases<'a>(inputs: &'a Inputs) -> Vec<Case<'a>> {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let derep = env!("CARGO_BIN_EXE_derep");
 
-    let mut group = c.benchmark_group("derep/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("derep/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for case in cases(&inputs) {
         group.bench_function(format!("derep/{}", case.name), |b| {

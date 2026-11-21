@@ -26,9 +26,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_filter(c: &mut Criterion) {
-    let reads = parse(&generate("", 0x5eed));
-    let mut group = c.benchmark_group("sqfilt/filter");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("sqfilt/filter"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     for (name, filter) in [
         (
             "max_ee",
@@ -139,11 +142,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files();
     let sqfilt = env!("CARGO_BIN_EXE_sqfilt");
 
-    let mut group = c.benchmark_group("sqfilt/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("sqfilt/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for case in cases(&inputs) {
         group.bench_function(format!("sqfilt/{}", case.name), |b| {

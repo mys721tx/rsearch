@@ -24,13 +24,17 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let input = input_file();
     let fa = input.to_str().unwrap();
     let allpr = env!("CARGO_BIN_EXE_allpr");
-    let mut group = c.benchmark_group("allpr/binary");
-    group.throughput(Throughput::Elements(
-        (SEQUENCES * (SEQUENCES - 1) / 2) as u64,
-    ));
+    let mut group = c.benchmark_group(data::group("allpr/binary"));
+    group.throughput(Throughput::Elements({
+        let n = data::count(&input, SEQUENCES);
+        n * n.saturating_sub(1) / 2
+    }));
     group.sample_size(10);
     for (name, rargs) in [("all", vec!["--accept-all"]), ("id90", vec!["--id", "0.9"])] {
         let rargs = [&["-i", fa, "-o", "/dev/null"][..], &rargs].concat();

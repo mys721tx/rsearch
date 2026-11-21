@@ -38,14 +38,17 @@ fn cases(inputs: &Inputs) -> Vec<(&'static str, &'static str, Vec<&str>)> {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let inputs = input_files();
     let fq = inputs.fastq.to_str().unwrap();
 
-    let mut group = c.benchmark_group("getseq/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("getseq/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
     group.sample_size(10);
     for (name, command, options) in cases(&inputs) {
         let args = [
@@ -66,13 +69,16 @@ fn bench_binary(c: &mut Criterion) {
 }
 
 fn bench_hits(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let Some(vsearch) = vsearch::vsearch() else {
         return;
     };
     let (fa, db) = hit_files();
     let (fa, db) = (fa.to_str().unwrap(), db.to_str().unwrap());
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let hits = dir.join("getseq-hits.uc");
+    let hits = data::output(dir.join("getseq-hits.uc"));
     let hits = hits.to_str().unwrap();
     vsearch::run(
         &vsearch::tool("exsrch"),
@@ -95,7 +101,10 @@ fn bench_hits(c: &mut Criterion) {
         "none",
     ];
     // both select the same queries
-    let (r, v) = (dir.join("getseq-hits-r.fa"), dir.join("getseq-hits-v.fa"));
+    let (r, v) = (
+        data::output(dir.join("getseq-hits-r.fa")),
+        data::output(dir.join("getseq-hits-v.fa")),
+    );
     vsearch::run(
         &vsearch::tool("getseq"),
         &["--hits", hits, "-i", fa, "-o", r.to_str().unwrap()],
@@ -108,8 +117,8 @@ fn bench_hits(c: &mut Criterion) {
         std::fs::read(&r).unwrap() == std::fs::read(&v).unwrap(),
         "getseq and vsearch selected different queries"
     );
-    let mut group = c.benchmark_group("getseq/hits");
-    group.throughput(Throughput::Elements(100_000));
+    let mut group = c.benchmark_group(data::group("getseq/hits"));
+    group.throughput(Throughput::Elements(data::count(fa, 100_000)));
     group.sample_size(10);
     for (name, output) in [
         ("matched", vec!["--matched", "/dev/null"]),

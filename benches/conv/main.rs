@@ -26,9 +26,12 @@ fn parse(text: &str) -> Vec<Record> {
 }
 
 fn bench_converter(c: &mut Criterion) {
-    let reads = parse(&generate(33, 0));
-    let mut group = c.benchmark_group("conv/converter");
-    group.throughput(Throughput::Elements(READS as u64));
+    if skip() {
+        return;
+    }
+    let reads = parse(&text());
+    let mut group = c.benchmark_group(data::group("conv/converter"));
+    group.throughput(Throughput::Elements(reads.len() as u64));
     for (name, conversion) in [
         (
             "phred64",
@@ -103,11 +106,14 @@ fn run(program: &str, args: &[&str]) {
 }
 
 fn bench_binary(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
     let inputs = input_files(env!("CARGO_BIN_EXE_mkudb"));
     let conv = env!("CARGO_BIN_EXE_conv");
 
-    let mut group = c.benchmark_group("conv/binary");
-    group.throughput(Throughput::Elements(READS as u64));
+    let mut group = c.benchmark_group(data::group("conv/binary"));
+    group.throughput(Throughput::Elements(data::count(&inputs.phred33, READS)));
     group.sample_size(10);
     for case in cases(&inputs) {
         group.bench_function(format!("conv/{}", case.name), |b| {
