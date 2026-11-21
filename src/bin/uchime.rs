@@ -135,28 +135,32 @@ fn main() {
                 .value_name("SKEW")
                 .value_parser(above(1.0, true))
                 .conflicts_with("db")
-                .help("De novo, parents at least this many times as abundant, default to 2"),
+                .default_value("2")
+                .help("De novo, parents at least this many times as abundant"),
         )
         .arg(
             Arg::new("minh")
                 .long("minh")
                 .value_name("SCORE")
                 .value_parser(above(0.0, false))
-                .help("Minimum score of a chimera, default to 0.28"),
+                .default_value("0.28")
+                .help("Minimum score of a chimera"),
         )
         .arg(
             Arg::new("mindiv")
                 .long("mindiv")
                 .value_name("PERCENT")
                 .value_parser(above(0.0, false))
-                .help("Minimum divergence of a chimera from its closest parent, default to 0.8"),
+                .default_value("0.8")
+                .help("Minimum divergence of a chimera from its closest parent"),
         )
         .arg(
             Arg::new("mindiffs")
                 .long("mindiffs")
                 .value_name("N")
                 .value_parser(value_parser!(i32).range(1..))
-                .help("Minimum differences on each side of a chimera's crossover, default to 3"),
+                .default_value("3")
+                .help("Minimum differences on each side of a chimera's crossover"),
         )
         .arg(
             Arg::new("xn")
