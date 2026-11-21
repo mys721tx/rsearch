@@ -134,12 +134,15 @@ fn main() {
         Arg::new(name).long(name).value_name(value).help(help)
     };
     let mut command = Command::new("getseq")
-        .about("Select records by their headers.")
+        .about("Select records by their headers or by hits.")
         .long_about(
-            "Select records by their headers.\n\n\
+            "Select records by their headers or by hits.\n\n\
              A label matches the whole header, ignoring case, or with --substr any part \
              of it. A word matches between characters that are not letters or digits, \
              case included, or with --field the value of NAME=word between semicolons. \
+             With --hits, the records are the queries of a UC file, selected when they \
+             have a hit, matched to its records in order by label; with --targets, they \
+             are its database, selected when hit, by their number. \
              Records are written unchanged, in the input format, FASTA unwrapped.",
         )
         .arg(
