@@ -67,7 +67,7 @@ fn main() {
                 .value_name("OUTPUT")
                 .help("Output file in the input format, default to stdout"),
         )
-        .arg(position("start", "First base kept, default to 1"))
+        .arg(position("start", "First base kept").default_value("1"))
         .arg(position(
             "end",
             "Last base kept, default to the end of the read",
