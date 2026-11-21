@@ -78,7 +78,8 @@ fn main() {
                 .long("pad")
                 .value_name("SEQ")
                 .value_parser(ascii)
-                .help("Sequence put between the mates, default to NNNNNNNN"),
+                .default_value("NNNNNNNN")
+                .help("Sequence put between the mates"),
         )
         .arg(
             Arg::new("pad-qual")
@@ -92,7 +93,8 @@ fn main() {
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of the default pad scores, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of the default pad scores"),
         );
     let matches = command.get_matches_mut();
 
