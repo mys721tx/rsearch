@@ -208,14 +208,16 @@ fn main() {
                 .long("min-overlap")
                 .value_name("LEN")
                 .value_parser(value_parser!(u32).range(5..))
-                .help("Shortest overlap, at least 5, default to 10"),
+                .default_value("10")
+                .help("Shortest overlap, at least 5"),
         )
         .arg(
             Arg::new("max-diffs")
                 .long("max-diffs")
                 .value_name("COUNT")
                 .value_parser(value_parser!(u32))
-                .help("Most differences in the overlap, default to 10"),
+                .default_value("10")
+                .help("Most differences in the overlap"),
         )
         .arg(
             Arg::new("max-diff-pct")
@@ -223,7 +225,8 @@ fn main() {
                 .value_name("PCT")
                 .allow_negative_numbers(true)
                 .value_parser(percentage)
-                .help("Highest percentage of differences in the overlap, default to 100"),
+                .default_value("100")
+                .help("Highest percentage of differences in the overlap"),
         )
         .arg(
             Arg::new("stagger")
@@ -236,24 +239,16 @@ fn main() {
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of quality scores, read and written, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of quality scores, read and written"),
         )
-        .arg(score(
-            "qmin",
-            "Minimum quality score accepted in the input, default to 0",
-        ))
+        .arg(score("qmin", "Minimum quality score accepted in the input").default_value("0"))
         .arg(score(
             "qmax",
             "Maximum quality score accepted in the input, default to 126 - ascii",
         ))
-        .arg(score(
-            "qmin-out",
-            "Minimum quality score of merged bases, default to 0",
-        ))
-        .arg(score(
-            "qmax-out",
-            "Maximum quality score of merged bases, default to 41",
-        ));
+        .arg(score("qmin-out", "Minimum quality score of merged bases").default_value("0"))
+        .arg(score("qmax-out", "Maximum quality score of merged bases").default_value("41"));
     let matches = command.get_matches_mut();
 
     let offset: u8 = matches
