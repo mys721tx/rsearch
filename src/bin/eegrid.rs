@@ -221,34 +221,30 @@ fn main() {
                 .value_name("OUTPUT")
                 .help("Output file of the grid, default to stdout"),
         )
-        .arg(length("min-len", "First length cutoff, default to 50"))
+        .arg(length("min-len", "First length cutoff").default_value("50"))
         .arg(length(
             "max-len",
             "Last length cutoff, default to the longest read",
         ))
-        .arg(length(
-            "len-step",
-            "Step between length cutoffs, default to 50",
-        ))
+        .arg(length("len-step", "Step between length cutoffs").default_value("50"))
         .arg(
             Arg::new("max-ee")
                 .long("max-ee")
                 .value_name("EE,...")
                 .value_delimiter(',')
                 .value_parser(cutoff)
-                .help("Expected-error cutoffs, in the order given, default to 0.5,1,2"),
+                .default_value("0.5,1,2")
+                .help("Expected-error cutoffs, in the order given"),
         )
         .arg(
             Arg::new("ascii")
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of quality scores, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of quality scores"),
         )
-        .arg(score(
-            "qmin",
-            "Minimum quality score accepted in the input, default to 0",
-        ))
+        .arg(score("qmin", "Minimum quality score accepted in the input").default_value("0"))
         .arg(score(
             "qmax",
             "Maximum quality score accepted in the input, default to 126 - ascii",
