@@ -81,7 +81,7 @@ fn uniques() {
              --sizeout --fastaout o"
         ),
         "sqfilt -i in --min-len 32 --max-len 50000 | derep --no-sizein | sqfilt --min-size 2 | \
-         topn 10 | relab --relabel U | conv --fasta > w/tmp6.fastaout"
+         topn 10 | relab --relabel U --sizeout | conv --fasta > w/tmp6.fastaout"
     );
 }
 
@@ -103,6 +103,15 @@ fn rereplicate() {
     assert_eq!(
         render("--rereplicate in --output out"),
         "rerep -i in --no-sizeout | conv --fasta > w/tmp2.output"
+    );
+    // relab drops ;size= unless it writes it again
+    assert_eq!(
+        render("--rereplicate in --relabel R --sizeout --output out"),
+        "rerep -i in | relab --relabel R --sizeout | conv --fasta > w/tmp3.output"
+    );
+    assert_eq!(
+        render("--rereplicate in --relabel R --output out"),
+        "rerep -i in --no-sizeout | relab --relabel R | conv --fasta > w/tmp3.output"
     );
 }
 
@@ -341,8 +350,21 @@ fn uchime() {
     );
     assert_eq!(
         render("--uchime_ref in --db ref --nonchimeras n"),
-        "lcmask -i in > w/tmp1.lcmask\nlcmask -i ref | sqfilt --max-len 50000 > \
-         w/tmp3.db\nuchime --db w/tmp3.db < w/tmp1.lcmask | conv --fasta > w/tmp5.nonchimeras"
+        "lcmask -i ref | sqfilt --max-len 50000 > w/tmp2.db\nuchime -i in --db w/tmp2.db | \
+         conv --fasta > w/tmp4.nonchimeras"
+    );
+    // vsearch masks no query of --uchime_ref: dust and soft both skip the
+    // words of its lower case as read, and the outputs are the queries as
+    // read
+    assert_eq!(
+        render("--uchime_ref in --db ref --qmask soft --dbmask soft --nonchimeras n"),
+        "sqfilt -i ref --max-len 50000 > w/tmp1.db\nuchime -i in --db w/tmp1.db | conv --fasta \
+         > w/tmp3.nonchimeras"
+    );
+    assert!(
+        caveats("--uchime_ref in --db ref --qmask none --nonchimeras n --threads 1")
+            .iter()
+            .any(|c| c.contains("--qmask none"))
     );
 }
 
@@ -810,6 +832,34 @@ fn caveat_lists() {
     assert!(
         caveats("--fastx_uniques in --minseqlength 1 --sizein --notrunclabels --fastaout o")
             .is_empty()
+    );
+    // vsearch cuts these labels at spaces too, the abundance after one
+    // included
+    for cmd in [
+        "--rereplicate in --output o",
+        "--fastx_getseq in --label a --fastaout o",
+        "--fastx_getseqs in --label_word a --fastaout o",
+        "--fastx_getsubseq in --label a --subseq_start 2 --fastaout o",
+    ] {
+        assert!(
+            caveats(cmd).iter().any(|x| x.contains("--notrunclabels")),
+            "{cmd}"
+        );
+    }
+    // vsearch dusts each strand of a query on its own; lcmask masks the plus
+    // strand, which dbsrch turns round
+    let each = |c: &str| caveats(c).iter().any(|x| x.contains("each strand"));
+    assert!(each(
+        "--usearch_global q --db d --id 0.9 --strand both --uc u"
+    ));
+    assert!(!each("--usearch_global q --db d --id 0.9 --uc u"));
+    assert!(!each(
+        "--usearch_global q --db d --id 0.9 --strand both --qmask soft --uc u"
+    ));
+    assert!(
+        !caveats("--fastx_syncpairs in --reverse r --fastqout o")
+            .iter()
+            .any(|x| x.contains("--notrunclabels"))
     );
     assert!(
         caveats("--sintax q --db d --tabbedout t")
