@@ -346,11 +346,7 @@ pub const WHOLE_HEADERS: &[&str] = &[
     "fastq_mergepairs",
     "fastx_syncpairs",
     "cut",
-    "rereplicate",
     "scramble",
-    "fastx_getseq",
-    "fastx_getseqs",
-    "fastx_getsubseq",
 ];
 
 type R<T> = Result<T, TranslationError>;
@@ -658,8 +654,18 @@ impl Translator {
         out
     }
 
+    /// relab for the label options, `skip` left to an earlier step. relab
+    /// drops `;size=` and writes it again only with `--sizeout`. A
+    /// `--sizeout` left to the earlier step therefore goes to relab too.
     fn labels(&mut self, src: &str, offset: Option<&str>, skip: &[&str]) -> String {
-        let args = self.label_args(offset, skip);
+        let mut args = self.label_args(offset, skip);
+        if !args.is_empty()
+            && skip.contains(&"sizeout")
+            && self.a.flag("sizeout")
+            && !args.iter().any(|a| a == "--sizeout")
+        {
+            args.push("--sizeout".into());
+        }
         if args.is_empty() {
             src.to_string()
         } else {
@@ -1893,6 +1899,13 @@ impl Translator {
         if !self.a.has("id") {
             return err("--usearch_global needs --id");
         }
+        if self.opt_or("qmask", "dust") == "dust" && self.a.peek("strand") == Some("both") {
+            self.caveat(
+                "--qmask dust with --strand both: vsearch dusts each strand of a query on its \
+                 own, where lcmask masks the plus strand and dbsrch reverse-complements it"
+                    .into(),
+            );
+        }
         let (q, qshown) = self.queries()?;
         let (db, dbshown) = self.database(32.0, Some("standard"))?;
         let mut choice = Vec::new();
@@ -2236,7 +2249,23 @@ impl Translator {
             cmds.push(("sortby", s(&["--size"])));
             (self.masked(&src, cmds), vec![])
         } else {
-            let (q, _) = self.queries()?;
+            // vsearch masks no query of --uchime_ref: dust and soft both skip
+            // the words of its lower case as read, which uchime does, and it
+            // writes the queries as read
+            let mode = self.take_or("qmask", "dust");
+            let inp = self.inp.clone();
+            let q = match mode.as_str() {
+                "dust" | "soft" => inp,
+                "none" => {
+                    self.caveat(
+                        "--qmask none: lcmask --clear upper-cases the queries, which --uchime_ref \
+                         writes as read"
+                            .into(),
+                    );
+                    self.chain(inp, vec![("lcmask", s(&["--clear"]))])
+                }
+                m => return err(format!("--qmask {m}: not dust, soft or none")),
+            };
             let (db, _) = self.database(1.0, Some("standard"))?;
             self.a.take("abskew"); // used de novo only
             if self.a.peek("strand") == Some("plus") {
