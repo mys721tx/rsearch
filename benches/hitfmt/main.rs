@@ -48,7 +48,12 @@ fn bench_binary(c: &mut Criterion) {
         ("blast6", vec!["--blast6"]),
         ("alignments", vec!["--alignments"]),
     ] {
-        let rargs = [&[hits, "-i", fa, "--db", db, "-o", "/dev/null"][..], &rargs].concat();
+        // exact hits, scored as vsearch's exact search scores them
+        let rargs = [
+            &[hits, "-i", fa, "--db", db, "-o", "/dev/null", "--exact"][..],
+            &rargs,
+        ]
+        .concat();
         group.bench_function(format!("hitfmt/{name}"), |b| b.iter(|| run(hitfmt, &rargs)));
     }
     group.finish();

@@ -53,7 +53,18 @@ fn bench_binary(c: &mut Criterion) {
     let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
     vsearch::run(
         &vsearch::tool("hitfmt"),
-        &[hits, "-i", fa, "--db", db, "-o", r, "--userout", fields],
+        &[
+            hits,
+            "-i",
+            fa,
+            "--db",
+            db,
+            "-o",
+            r,
+            "--exact",
+            "--userout",
+            fields,
+        ],
     );
     vsearch::run(
         &vsearch,
