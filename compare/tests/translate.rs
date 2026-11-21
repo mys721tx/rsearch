@@ -417,6 +417,24 @@ fn search_exact() {
 }
 
 #[test]
+fn search_hits_tie() {
+    // hits tying on vsearch's sort key may come in either order. Their
+    // comparators read the queries
+    for cmd in [
+        "--search_exact q --db db --strand both",
+        "--usearch_global q --db db --id 0.9 --strand both",
+    ] {
+        let o = outputs(&format!("{cmd} --uc u --blast6out b --samout s"));
+        assert_eq!(o["uc"].1, "uc-ties:q", "{cmd}");
+        assert_eq!(o["blast6out"].1, "blast6-ties:q", "{cmd}");
+        assert_eq!(o["samout"].1, "sam-ties:q", "{cmd}");
+    }
+    // the other formats stay exact
+    let o = outputs("--search_exact q --db db --userout u --userfields query+target");
+    assert_eq!(o["userout"].1, "bytes");
+}
+
+#[test]
 fn allpairs() {
     assert_eq!(
         render("--allpairs_global in --id 0.9 --uc u"),
