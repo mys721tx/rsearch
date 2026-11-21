@@ -61,7 +61,8 @@ fn main() {
                 .long("kmer")
                 .value_name("K")
                 .value_parser(value_parser!(u8).range(1..=9))
-                .help("Keep the counts of words of up to K bases, 1 to 9, default to 1"),
+                .default_value("1")
+                .help("Keep the counts of words of up to K bases, 1 to 9"),
         )
         .arg(
             Arg::new("seed")
