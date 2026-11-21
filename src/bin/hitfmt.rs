@@ -685,14 +685,14 @@ fn main() {
                 .long("gapopen")
                 .value_name("PENALTIES")
                 .value_parser(move |s: &str| gaps(s, true))
-                .help("Gap opening penalties, as the search's, default to 20I/2E"),
+                .default_value("20I/2E").help("Gap opening penalties, as the search's"),
         )
         .arg(
             Arg::new("gapext")
                 .long("gapext")
                 .value_name("PENALTIES")
                 .value_parser(move |s: &str| gaps(s, false))
-                .help("Gap extension penalties, as the search's, default to 2I/1E"),
+                .default_value("2I/1E").help("Gap extension penalties, as the search's"),
         );
     let matches = command.get_matches_mut();
     if matches.get_flag("sam-header") && !matches.get_flag("sam") {
