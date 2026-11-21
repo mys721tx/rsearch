@@ -28,9 +28,9 @@ fn cutoff(text: &str) -> Result<f64, String> {
 
 fn main() {
     let matches = Command::new("lcatax")
-        .about("Last common ancestor of each query's top hits.")
+        .about("Write the last common ancestor of each query's top hits.")
         .long_about(
-            "Last common ancestor of each query's top hits.\n\n\
+            "Write the last common ancestor of each query's top hits.\n\n\
              As vsearch's --lcaout: for each query of the hits, its label, a tab, and \
              the ;tax= levels of the database sequences it hits agree on, level by level \
              while at least --cutoff of them agree, as vsearch's majority vote picks the \
