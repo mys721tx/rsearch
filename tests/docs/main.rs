@@ -1,11 +1,11 @@
-//! Checks that every tool's `--help` and its page in `man/` agree.
+//! Checks that every tool's `--help` and its page in `docs/` agree.
 //!
-//! For every tool in `src/bin/`: `--help` succeeds and has a long
-//! description that begins with the short one; its long options are those
-//! the page lists under "Options", no more and no fewer; fixed defaults are
-//! shown by clap rather than written in the help text; and every example
-//! of the page, a `console` block of `$ ` commands and their output, gives
-//! that output when run in a copy of `man/examples/`. The examples of
+//! For every tool in `src/bin/`, `--help` succeeds and has a long
+//! description that begins with the short one. Its long options are those
+//! the page lists under "Options", no more and no fewer. Fixed defaults are
+//! shown by clap rather than written in the help text. Every example of the
+//! page, a `console` block of `$ ` commands and their output, gives that
+//! output when run in a copy of `docs/examples/`. The examples of
 //! `README.md` are run the same way.
 
 use std::collections::BTreeSet;
@@ -181,8 +181,8 @@ fn every_tool_has_a_page() {
     assert_eq!(bins, tools, "the tools tested are those of src/bin");
     for tool in &tools {
         assert!(
-            root().join("man").join(format!("{tool}.md")).is_file(),
-            "man/{tool}.md is missing"
+            root().join("docs").join(format!("{tool}.md")).is_file(),
+            "docs/{tool}.md is missing"
         );
     }
 }
@@ -222,7 +222,7 @@ fn help_shows_fixed_defaults_through_clap() {
 #[test]
 fn page_options_are_those_of_help() {
     for (tool, bin) in TOOLS {
-        let path = root().join("man").join(format!("{tool}.md"));
+        let path = root().join("docs").join(format!("{tool}.md"));
         let page = fs::read_to_string(&path).unwrap_or_default();
         let in_help = help_options(&help(bin, "--help"));
         let in_page = page_options(&page);
@@ -248,7 +248,7 @@ fn page_examples_give_their_output() {
         .map(|(tool, _)| {
             (
                 tool.to_string(),
-                root().join("man").join(format!("{tool}.md")),
+                root().join("docs").join(format!("{tool}.md")),
             )
         })
         .chain([("README".to_string(), root().join("README.md"))]);
@@ -256,7 +256,7 @@ fn page_examples_give_their_output() {
         let page = fs::read_to_string(page).unwrap_or_default();
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("docs-{tool}"));
         let _ = fs::remove_dir_all(&dir);
-        copy_dir(&root().join("man/examples"), &dir);
+        copy_dir(&root().join("docs/examples"), &dir);
         for (command, expected) in examples(&page) {
             let output = Command::new("sh")
                 .arg("-c")
