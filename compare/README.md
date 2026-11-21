@@ -200,6 +200,15 @@ benchmark's input (`--minseqlength 0`, `--qmask soft`, and
 `--fasta_width 0`). They run vsearch with `--threads 1` so that the
 rsearch timings stay comparable.
 
+On a real dataset instead of the synthetic input, both crates'
+benchmarks read the files of `RSEARCH_BENCH_DATA=<id>` (fetched by
+`rscompare fetch`). Their group names then end in `@<id>` (see
+"Benchmarks on real data" in `docs/datasets.md`):
+
+```sh
+RSEARCH_BENCH_DATA=geo-miseq-16s-v3v4 cargo bench -p rscompare --bench derep
+```
+
 ## Comparators
 
 `src/comparators.rs` holds the normalisations. It names each once:

@@ -305,6 +305,17 @@
      "max_n": 0,
      "min_size": 2,
      "prefix": "R1u"
+    },
+    {
+     "op": "derep",
+     "input": "all_R1.fastq",
+     "output": "r1_250.derep.fastq",
+     "truncate": 250,
+     "min_len": 250,
+     "max_n": 0,
+     "min_size": 2,
+     "prefix": "R1u",
+     "fastq": true
     }
    ],
    "tools": [
@@ -373,7 +384,14 @@
     "--fastq_eestats2 all_R2.fastq --output eestats2.txt --length_cutoffs 100,300,50",
     "--fastx_subsample all_R1.fastq --sample_size 1000 --randseed 1 --fastqout sub.fq"
    ],
-   "total_bytes": 63354614
+   "total_bytes": 63354614,
+   "benches": {
+    "reads": "all_R1.fastq",
+    "mate": "all_R2.fastq",
+    "uniques": "r1_250.derep.fasta",
+    "uniques_fq": "r1_250.derep.fastq",
+    "db": "{dir}/../ref-rdp-16s/rdp_16s_v18.fa"
+   }
   },
   {
    "id": "geo-454-16s-aquifer",
@@ -909,6 +927,27 @@
      "max_n": 0,
      "min_size": 1,
      "prefix": "P"
+    },
+    {
+     "op": "derep",
+     "input": "all.fastq",
+     "output": "r200.derep2.fasta",
+     "truncate": 200,
+     "min_len": 200,
+     "max_n": 0,
+     "min_size": 2,
+     "prefix": "P"
+    },
+    {
+     "op": "derep",
+     "input": "all.fastq",
+     "output": "r200.derep2.fastq",
+     "truncate": 200,
+     "min_len": 200,
+     "max_n": 0,
+     "min_size": 2,
+     "prefix": "P",
+     "fastq": true
     }
    ],
    "tools": [
@@ -982,7 +1021,13 @@
     "--shuffle all.fasta --randseed 7 --output shuffled.fa",
     "--fastx_getsubseq all.fastq --label_substr_match --label SRR407416. --subseq_start 20 --subseq_end 219 --fastqout sub.fq"
    ],
-   "total_bytes": 14551394
+   "total_bytes": 14551394,
+   "benches": {
+    "reads": "all.fastq",
+    "uniques": "r200.derep2.fasta",
+    "uniques_fq": "r200.derep2.fastq",
+    "db": "{dir}/../ref-rdp-16s/rdp_16s_v18.fa"
+   }
   },
   {
    "id": "ena-454-sff-mouse",
@@ -1092,7 +1137,29 @@
      "source": "ENA FASTQ (Phred+33, SRA-normalised)"
     }
    ],
-   "prepare": [],
+   "prepare": [
+    {
+     "op": "derep",
+     "input": "ERR550421.fastq",
+     "output": "r200.derep.fasta",
+     "truncate": 200,
+     "min_len": 200,
+     "max_n": 0,
+     "min_size": 1,
+     "prefix": "M"
+    },
+    {
+     "op": "derep",
+     "input": "ERR550421.fastq",
+     "output": "r200.derep.fastq",
+     "truncate": 200,
+     "min_len": 200,
+     "max_n": 0,
+     "min_size": 1,
+     "prefix": "M",
+     "fastq": true
+    }
+   ],
    "tools": [
     "conv",
     "fqchar",
@@ -1112,7 +1179,14 @@
     "--fastq_chars ERR550421.fastq --log chars.log",
     "--fastq_filter ERR550421.fastq --fastq_trunclen 300 --fastq_maxee 2 --fastaout filtered.fa"
    ],
-   "total_bytes": 21516939
+   "total_bytes": 21516939,
+   "benches": {
+    "reads": "ERR550421.fastq",
+    "sff": "N.sff",
+    "uniques": "r200.derep.fasta",
+    "uniques_fq": "r200.derep.fastq",
+    "db": "{dir}/../ref-rdp-16s/rdp_16s_v18.fa"
+   }
   },
   {
    "id": "sra-miseq-its1-soil",
@@ -1324,6 +1398,17 @@
      "max_n": 0,
      "min_size": 2,
      "prefix": "I"
+    },
+    {
+     "op": "derep",
+     "input": "all_R1.fastq",
+     "output": "r1_200.derep.fastq",
+     "truncate": 200,
+     "min_len": 200,
+     "max_n": 0,
+     "min_size": 2,
+     "prefix": "I",
+     "fastq": true
     }
    ],
    "tools": [
@@ -1367,7 +1452,14 @@
     "--cut r1_200.derep.fasta --cut_pattern G^AATT_C --fastaout cut.fa --fastaout_discarded uncut.fa",
     "--fastx_syncpairs all_R1.fastq --reverse all_R2.fastq --fastqout s_R1.fq --fastqout_rev s_R2.fq"
    ],
-   "total_bytes": 32395291
+   "total_bytes": 32395291,
+   "benches": {
+    "reads": "all_R1.fastq",
+    "mate": "all_R2.fastq",
+    "uniques": "r1_200.derep.fasta",
+    "uniques_fq": "r1_200.derep.fastq",
+    "db": "{dir}/../ref-rdp-its/rdp_its_v2.fa"
+   }
   },
   {
    "id": "geo-pacbio-16s-full",
@@ -1669,6 +1761,27 @@
      "input": "{dir}/../ref-rdp-16s/rdp_16s_v18.fa",
      "output": "rdp_16s_v18.udb",
      "requires": "vsearch"
+    },
+    {
+     "op": "derep",
+     "input": "all.fastq",
+     "output": "full.derep5.fasta",
+     "min_len": 1300,
+     "max_len": 1650,
+     "max_n": 0,
+     "min_size": 5,
+     "prefix": "L"
+    },
+    {
+     "op": "derep",
+     "input": "all.fastq",
+     "output": "full.derep5.fastq",
+     "min_len": 1300,
+     "max_len": 1650,
+     "max_n": 0,
+     "min_size": 5,
+     "prefix": "L",
+     "fastq": true
     }
    ],
    "tools": [
@@ -1725,7 +1838,14 @@
     "--udbstats rdp_16s_v18.udb --log udbstats.log",
     "--udb2fasta rdp_16s_v18.udb --output udb.fa"
    ],
-   "total_bytes": 24626370
+   "total_bytes": 24626370,
+   "benches": {
+    "reads": "all.fastq",
+    "uniques": "full.derep5.fasta",
+    "uniques_fq": "full.derep5.fastq",
+    "long": "full.derep2.fasta",
+    "db": "{dir}/../ref-rdp-16s/rdp_16s_v18.fa"
+   }
   },
   {
    "id": "ena-gaiix-18s-v9-phred64",
@@ -1888,6 +2008,16 @@
      "max_n": 0,
      "min_size": 2,
      "prefix": "V"
+    },
+    {
+     "op": "derep",
+     "input": "ERR205066.fastq",
+     "output": "v9.derep.fastq",
+     "min_len": 120,
+     "max_n": 0,
+     "min_size": 2,
+     "prefix": "V",
+     "fastq": true
     }
    ],
    "tools": [
@@ -1932,7 +2062,13 @@
     "--cluster_fast v9.derep.fasta --id 0.97 --sizein --sizeout --centroids otus.fa --uc otus.uc",
     "--sintax v9.derep.fasta --db {dir}/../ref-pr2-18s/pr2_version_5.1.1_SSU_UTAX.fasta --sintax_cutoff 0.8 --randseed 1 --tabbedout sintax.tsv"
    ],
-   "total_bytes": 14549135
+   "total_bytes": 14549135,
+   "benches": {
+    "reads": "ERR205066.fastq",
+    "phred64": "all64.fastq",
+    "uniques": "v9.derep.fasta",
+    "uniques_fq": "v9.derep.fastq"
+   }
   },
   {
    "id": "ref-rdp-16s",
@@ -1990,7 +2126,8 @@
    "used_by": [
     "geo-miseq-16s-v3v4",
     "geo-454-16s-aquifer",
-    "geo-pacbio-16s-full"
+    "geo-pacbio-16s-full",
+    "ena-454-sff-mouse"
    ],
    "notes": "The training set vsearch's and USEARCH's SINTAX documentation uses; also a --db for uchime_ref, orient and usearch_global (it holds no chimera-free guarantee, unlike the retired gold.fa).",
    "total_bytes": 6845899

@@ -266,16 +266,31 @@ fn fastq_record(f: &mut dyn BufRead) -> io::Result<Option<[Vec<u8>; 4]>> {
 
 /// The (label, sequence) pairs of a FASTA or FASTQ file.
 fn sequences(path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    Ok(records(path)?
+        .into_iter()
+        .map(|(label, seq, _)| (label, seq))
+        .collect())
+}
+
+/// A record: label, sequence and, from FASTQ, qualities.
+type Rec = (Vec<u8>, Vec<u8>, Option<Vec<u8>>);
+
+/// The records of a FASTA or FASTQ file.
+fn records(path: &Path) -> io::Result<Vec<Rec>> {
     let mut f = open(path)?;
     let fastq = f.fill_buf()?.first() == Some(&b'@');
     let mut out = Vec::new();
     if fastq {
         while let Some(rec) = fastq_record(&mut *f)? {
-            out.push((trim_eol(&rec[0][1..]).to_vec(), trim(&rec[1]).to_vec()));
+            out.push((
+                trim_eol(&rec[0][1..]).to_vec(),
+                trim(&rec[1]).to_vec(),
+                Some(trim(&rec[3]).to_vec()),
+            ));
         }
         return Ok(out);
     }
-    let mut cur: Option<(Vec<u8>, Vec<u8>)> = None;
+    let mut cur: Option<Rec> = None;
     loop {
         let l = line(&mut *f)?;
         if l.is_empty() {
@@ -283,8 +298,8 @@ fn sequences(path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
         }
         if l.starts_with(b">") {
             out.extend(cur.take());
-            cur = Some((trim_eol(&l[1..]).to_vec(), Vec::new()));
-        } else if let Some((_, s)) = &mut cur {
+            cur = Some((trim_eol(&l[1..]).to_vec(), Vec::new(), None));
+        } else if let Some((_, s, _)) = &mut cur {
             s.extend_from_slice(trim(&l));
         }
     }
@@ -384,9 +399,12 @@ fn op_fasta(step: &Value, d: &Path) -> io::Result<()> {
 
 /// Exact dereplication, a stand-in for merging-free pipelines: upper case,
 /// optionally truncated, filtered by length and Ns; sorted by decreasing
-/// count, then first appearance; labels PREFIXn;size=N. It only makes
-/// realistic inputs; it is not compared with anything.
+/// count, then first appearance; labels PREFIXn;size=N. With `"fastq":
+/// true` it writes FASTQ, each sequence with the qualities of its first
+/// read (from FASTQ input). It only makes realistic inputs; it is not
+/// compared with anything.
 fn op_derep(step: &Value, d: &Path) -> io::Result<()> {
+    let fastq = step["fastq"].as_bool().unwrap_or(false);
     let trunc = step["truncate"]
         .as_u64()
         .filter(|&t| t > 0)
@@ -399,10 +417,13 @@ fn op_derep(step: &Value, d: &Path) -> io::Result<()> {
     let max_n = step["max_n"].as_u64().map(|n| n as usize);
     let min_size = step["min_size"].as_u64().unwrap_or(1);
     let mut counts: HashMap<Vec<u8>, (u64, usize)> = HashMap::new();
-    for (_, seq) in sequences(&resolve(text(step, "input")?, d))? {
+    let mut quals: Vec<Vec<u8>> = Vec::new();
+    for (_, seq, qual) in records(&resolve(text(step, "input")?, d))? {
         let mut seq = seq.to_ascii_uppercase();
+        let mut qual = qual.unwrap_or_default();
         if let Some(t) = trunc {
             seq.truncate(t);
+            qual.truncate(t);
         }
         if seq.len() < lo || hi.is_some_and(|h| seq.len() > h) {
             continue;
@@ -411,7 +432,11 @@ fn op_derep(step: &Value, d: &Path) -> io::Result<()> {
             continue;
         }
         let order = counts.len();
-        counts.entry(seq).or_insert((0, order)).0 += 1;
+        let entry = counts.entry(seq).or_insert((0, order));
+        if entry.1 == quals.len() {
+            quals.push(qual);
+        }
+        entry.0 += 1;
     }
     let mut keep: Vec<(Vec<u8>, (u64, usize))> = counts
         .into_iter()
@@ -420,13 +445,53 @@ fn op_derep(step: &Value, d: &Path) -> io::Result<()> {
     keep.sort_by_key(|(_, (c, o))| (std::cmp::Reverse(*c), *o));
     let prefix = step["prefix"].as_str().unwrap_or("U");
     write_atomic(&resolve(text(step, "output")?, d), |out| {
-        for (k, (s, (c, _))) in keep.iter().enumerate() {
-            writeln!(out, ">{prefix}{};size={c}", k + 1)?;
-            out.write_all(s)?;
+        for (k, (s, (c, o))) in keep.iter().enumerate() {
+            if fastq {
+                let q = &quals[*o];
+                if q.len() != s.len() {
+                    return Err(fail("derep to FASTQ needs FASTQ input"));
+                }
+                writeln!(out, "@{prefix}{};size={c}", k + 1)?;
+                out.write_all(s)?;
+                out.write_all(b"\n+\n")?;
+                out.write_all(q)?;
+            } else {
+                writeln!(out, ">{prefix}{};size={c}", k + 1)?;
+                out.write_all(s)?;
+            }
             out.write_all(b"\n")?;
         }
         Ok(())
     })
+}
+
+/// Writes `benches.tsv`, the roles of the entry's `"benches"` field with
+/// their resolved paths, which the benchmarks read
+/// (`benches/common/data.rs`). Without the field, it removes the file.
+/// Returns the roles whose files are missing.
+fn write_bench_table(e: &Value, d: &Path) -> io::Result<Vec<String>> {
+    let table = d.join("benches.tsv");
+    let Some(roles) = e["benches"].as_object() else {
+        if table.exists() {
+            fs::remove_file(&table)?;
+        }
+        return Ok(Vec::new());
+    };
+    let mut missing = Vec::new();
+    write_atomic(&table, |out| {
+        for (role, path) in roles {
+            let path = path
+                .as_str()
+                .ok_or_else(|| fail(format!("benches.{role} is not a path")))?;
+            let path = resolve(path, d);
+            if !path.exists() {
+                missing.push(role.clone());
+            }
+            writeln!(out, "{role}\t{}", path.display())?;
+        }
+        Ok(())
+    })?;
+    Ok(missing)
 }
 
 /// Builds a UDB file with vsearch; false when it cannot (no vsearch, or
@@ -564,7 +629,7 @@ fn fetch_one(e: &Value, opts: &Options) -> io::Result<()> {
             .and_then(|t| serde_json::from_str(&t).ok());
         if old.as_ref() == Some(&state) {
             println!("  working files up to date");
-            return Ok(());
+            return bench_table(e, &d);
         }
     }
     for f in fs_ {
@@ -595,6 +660,18 @@ fn fetch_one(e: &Value, opts: &Options) -> io::Result<()> {
         .map(|r| format!(" (first {r} reads of each FASTQ)"))
         .unwrap_or_default();
     println!("  working files in {}{cut}", d.display());
+    bench_table(e, &d)
+}
+
+/// Writes the benchmarks' table, warning of missing files.
+fn bench_table(e: &Value, d: &Path) -> io::Result<()> {
+    let missing = write_bench_table(e, d)?;
+    if !missing.is_empty() {
+        eprintln!(
+            "  benches.tsv: no file yet for {} (a skipped prepare step?)",
+            missing.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -700,6 +777,58 @@ mod tests {
             fs::read_to_string(d.join("u.fa")).unwrap(),
             ">X1;size=2\nACGT\n"
         );
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn derep_to_fastq_keeps_the_first_qualities() {
+        let d = std::env::temp_dir().join(format!("rscompare-fetch-fq-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join("a.fq"),
+            "@r1\nacgtA\n+\nABCDE\n@r2\nTT\n+\nII\n@r3\nACGTT\n+\nFGHIJ\n",
+        )
+        .unwrap();
+        op_derep(
+            &json!({"input": "a.fq", "output": "u.fq", "truncate": 4, "fastq": true}),
+            &d,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(d.join("u.fq")).unwrap(),
+            "@U1;size=2\nACGT\n+\nABCD\n@U2;size=1\nTT\n+\nII\n"
+        );
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn bench_table() {
+        let d = std::env::temp_dir().join(format!("rscompare-fetch-tsv-{}", std::process::id()));
+        let data = d.join("set");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("r.fq"), "").unwrap();
+        fs::create_dir_all(d.join("ref")).unwrap();
+        fs::write(d.join("ref/x.fa"), "").unwrap();
+        let entry = json!({"benches": {
+            "reads": "r.fq",
+            "db": "{dir}/../ref/x.fa",
+            "mate": "absent.fq"
+        }});
+        let missing = write_bench_table(&entry, &data).unwrap();
+        assert_eq!(missing, ["mate"]);
+        let table = fs::read_to_string(data.join("benches.tsv")).unwrap();
+        assert_eq!(
+            table,
+            format!(
+                "db\t{}\nmate\t{}\nreads\t{}\n",
+                d.join("ref/x.fa").display(),
+                data.join("absent.fq").display(),
+                data.join("r.fq").display()
+            )
+        );
+        // an entry without benches leaves no table behind
+        write_bench_table(&json!({}), &data).unwrap();
+        assert!(!data.join("benches.tsv").exists());
         fs::remove_dir_all(&d).unwrap();
     }
 }
