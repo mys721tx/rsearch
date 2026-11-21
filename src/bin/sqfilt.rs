@@ -224,10 +224,7 @@ fn main() {
         ))
         .arg(file("rev-out", "Output file of kept reverse reads").requires("reverse"))
         .arg(file("rev-discarded", "Output file of discarded reverse reads").requires("reverse"))
-        .arg(length(
-            "min-len",
-            "Discard reads shorter than this, default to 1",
-        ))
+        .arg(length("min-len", "Discard reads shorter than this").default_value("1"))
         .arg(length("max-len", "Discard reads longer than this"))
         .arg(
             Arg::new("max-ns")
@@ -292,12 +289,10 @@ fn main() {
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of quality scores, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of quality scores"),
         )
-        .arg(score(
-            "qmin",
-            "Minimum quality score accepted in the input, default to 0",
-        ))
+        .arg(score("qmin", "Minimum quality score accepted in the input").default_value("0"))
         .arg(score(
             "qmax",
             "Maximum quality score accepted in the input, default to 126 - ascii",
