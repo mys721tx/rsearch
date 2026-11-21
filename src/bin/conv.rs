@@ -143,7 +143,7 @@ fn main() {
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of input quality scores, default to 33"),
+                .default_value("33").help("ASCII offset of input quality scores"),
         )
         .arg(score(
             "qmin",
@@ -166,12 +166,9 @@ fn main() {
                 .long("ascii-out")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of output quality scores, default to 33"),
+                .default_value("33").help("ASCII offset of output quality scores"),
         )
-        .arg(score(
-            "qmin-out",
-            "Lowest quality score written, default to 0",
-        ))
+        .arg(score("qmin-out", "Lowest quality score written").default_value("0"))
         .arg(score(
             "qmax-out",
             "Highest quality score written, default to 126 - ascii-out, or 41 for FASTA input",
@@ -194,7 +191,7 @@ fn main() {
                 .value_name("WIDTH")
                 .value_parser(value_parser!(usize))
                 .requires("fasta")
-                .help("Wrap FASTA sequence lines at this width, 0 for no wrapping, default to 80"),
+                .default_value("80").help("Wrap FASTA sequence lines at this width, 0 for no wrapping"),
         );
     let matches = command.get_matches_mut();
     let as_fasta = matches.get_flag("fasta");
