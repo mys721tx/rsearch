@@ -223,6 +223,7 @@ RSEARCH_BENCH_DATA=geo-miseq-16s-v3v4 cargo bench -p rscompare --bench derep
 | `alnout`, `sam` | `--alnout` without its opening lines, SAM without `@PG` and the database's file name |
 | `cluster-files` | the files of `--clusters` by number |
 | `upper-seq`, `fastq-to-fasta` | vsearch's output upper-cased or in FASTA for two probes |
+| `uc-ties:Q`, `blast6-ties:Q`, `sam-ties:Q` | a search's UC, BLAST tabular, or SAM (as `sam`) with a query's hits that tie on vsearch's sort key (target and identity) compared as a set, and either strand kept by `--maxhits` for a query of the file `Q` that is its own reverse complement. vsearch's `std::sort` leaves such ties in an order its C++ library chooses. rsearch puts the plus strand first |
 
 Errors are compared by kind: `exit` (exit code only), `exact` (vsearch's
 `Fatal error: X` against rsearch's `Error: X`), or a mapping of messages

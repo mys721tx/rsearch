@@ -1723,14 +1723,20 @@ impl Translator {
                 "top"
             };
             let h = hits.get(self, kind);
-            self.output("uc", &h, "bytes");
+            // vsearch's std::sort leaves hits that tie on its sort key (the
+            // two strands of one target) in either order, where rsearch
+            // writes the plus strand first. The comparators accept both,
+            // reading the queries to know which are their own reverse
+            // complement
+            let ties = format!("uc-ties:{}", self.inp);
+            self.output("uc", &h, &ties);
         }
         self.a.take("uc_allhits");
         let fmts: [(&str, &[&str], &str); 7] = [
             ("alnout", &["--alignments"], "alnout"),
-            ("blast6out", &["--blast6"], "bytes"),
+            ("blast6out", &["--blast6"], "blast6-ties"),
             ("userout", &[], "bytes"),
-            ("samout", &["--sam"], "sam"),
+            ("samout", &["--sam"], "sam-ties"),
             ("fastapairs", &["--fasta-pairs"], "bytes"),
             ("qsegout", &["--qsegs"], "bytes"),
             ("tsegout", &["--tsegs"], "bytes"),
@@ -1765,6 +1771,9 @@ impl Translator {
             let out = self.run("hitfmt", all, None, None, opt);
             if opt == "qsegout" || opt == "tsegout" {
                 self.fasta(opt, &out, Some("fasta"));
+            } else if comp.ends_with("-ties") {
+                let comp = format!("{comp}:{}", self.inp);
+                self.output(opt, &out, &comp);
             } else {
                 self.output(opt, &out, comp);
             }

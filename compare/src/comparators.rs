@@ -334,6 +334,193 @@ fn cluster_files(v: &str, r: &str) -> Option<String> {
     None
 }
 
+// Hits that tie. vsearch sorts a query's hits (accepted before weak, by
+// decreasing identity, then target) with C++'s std::sort. That leaves hits
+// equal on that key in an order its library chooses. With --strand both,
+// these are the two strands of one target at one identity, one match when
+// the query is its own reverse complement. rsearch keeps its own order, the
+// plus strand first, and keeps that strand where --maxhits keeps one. These
+// comparators accept either order, and either strand for such a query.
+
+/// The labels of the queries that are their own reverse complement, from a
+/// FASTA or FASTQ file (none when it cannot be read).
+fn self_complementary(path: Option<&str>) -> std::collections::HashSet<Vec<u8>> {
+    let mut out = std::collections::HashSet::new();
+    let Some(data) = path.map(read) else {
+        return out;
+    };
+    let fastq = data.first() == Some(&b'@');
+    let mut records: Vec<(&[u8], Vec<u8>)> = Vec::new();
+    for (k, l) in lines(&data).into_iter().enumerate() {
+        let l = l.strip_suffix(b"\r").unwrap_or(l);
+        if fastq {
+            match k % 4 {
+                0 if !l.is_empty() => records.push((&l[1..], Vec::new())),
+                1 => {
+                    if let Some(r) = records.last_mut() {
+                        r.1.extend_from_slice(l);
+                    }
+                }
+                _ => {}
+            }
+        } else if let Some(label) = l.strip_prefix(b">") {
+            records.push((label, Vec::new()));
+        } else if let Some(r) = records.last_mut() {
+            r.1.extend_from_slice(l);
+        }
+    }
+    let complement = |c: u8| match c.to_ascii_uppercase() {
+        b'A' => b'T',
+        b'T' | b'U' => b'A',
+        b'C' => b'G',
+        b'G' => b'C',
+        b'R' => b'Y',
+        b'Y' => b'R',
+        b'K' => b'M',
+        b'M' => b'K',
+        b'B' => b'V',
+        b'V' => b'B',
+        b'D' => b'H',
+        b'H' => b'D',
+        c => c, // N, S, W
+    };
+    for (label, seq) in records {
+        let up: Vec<u8> = seq
+            .iter()
+            .map(|c| match c.to_ascii_uppercase() {
+                b'U' => b'T',
+                c => c,
+            })
+            .collect();
+        let rc: Vec<u8> = seq.iter().rev().map(|&c| complement(c)).collect();
+        if up == rc {
+            out.insert(label.to_vec());
+        }
+    }
+    out
+}
+
+/// A hit line of a search output: its query, its tie key (none for a line
+/// compared in place: a query without hits, a header), and the line with
+/// its strand made neutral.
+struct HitLine<'a> {
+    line: &'a [u8],
+    query: Vec<u8>,
+    key: Option<Vec<u8>>,
+    unstranded: Vec<u8>,
+}
+
+/// Reads the lines of a hit output in format `fmt`: `uc`, `blast6`, `sam`.
+fn hit_lines<'a>(fmt: &str, data: &'a [u8]) -> Vec<HitLine<'a>> {
+    let mut out = Vec::new();
+    for line in lines(data) {
+        if line.is_empty() {
+            continue;
+        }
+        let f: Vec<&[u8]> = line.split(|&c| c == b'\t').collect();
+        let tab = |fields: &[&[u8]]| fields.join(&b'\t');
+        let (query, key, unstranded) = match fmt {
+            // H type target length identity strand . . cigar query target
+            "uc" if f.len() > 9 && f[0] == b"H" => {
+                let mut u = f.clone();
+                u[4] = b"*";
+                (f[8].to_vec(), Some([f[1], f[3]].join(&b'\t')), tab(&u))
+            }
+            // query target identity ... qlo qhi: the minus strand has qlo > qhi
+            "blast6" if f.len() > 7 => {
+                let mut u = f.clone();
+                if f[6].len() > f[7].len() || (f[6].len() == f[7].len() && f[6] > f[7]) {
+                    u.swap(6, 7);
+                }
+                (f[0].to_vec(), Some([f[1], f[2]].join(&b'\t')), tab(&u))
+            }
+            // QNAME FLAG RNAME ...: the minus strand is the flag's bit 16
+            "sam" if f.len() > 2 && !line.starts_with(b"@") => {
+                let flag: u32 = std::str::from_utf8(f[1])
+                    .ok()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                let neutral = (flag & !16).to_string();
+                let mut u = f.clone();
+                u[1] = neutral.as_bytes();
+                let key = (flag & 4 == 0).then(|| f[2].to_vec());
+                (f[0].to_vec(), key, tab(&u))
+            }
+            _ => (Vec::new(), None, line.to_vec()),
+        };
+        out.push(HitLine {
+            line,
+            query,
+            key,
+            unstranded,
+        });
+    }
+    out
+}
+
+/// Compares two hit outputs of format `fmt`, a query's hits that tie in any
+/// order. Where `--maxhits` keeps one strand of a tie, it accepts either
+/// strand of a query that is its own reverse complement (`queries`, a FASTA
+/// or FASTQ file).
+fn hit_ties(fmt: &str, v: &str, r: &str, queries: Option<&str>) -> Option<String> {
+    let (vd, rd) = (read(v), read(r));
+    let (vd, rd) = if fmt == "sam" {
+        (sam(&vd), sam(&rd))
+    } else {
+        (vd, rd)
+    };
+    let (vl, rl) = (hit_lines(fmt, &vd), hit_lines(fmt, &rd));
+    let palindromes = self_complementary(queries);
+    // blocks: runs of lines with one query and one tie key
+    let blocks = |ls: &[HitLine]| -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut start = 0;
+        for k in 1..=ls.len() {
+            let end = k == ls.len()
+                || ls[k].key.is_none()
+                || ls[k].key != ls[start].key
+                || ls[k].query != ls[start].query;
+            if end {
+                out.push((start, k));
+                start = k;
+            }
+        }
+        out
+    };
+    let (vb, rb) = (blocks(&vl), blocks(&rl));
+    for (&(va, vz), &(ra, rz)) in vb.iter().zip(&rb) {
+        let (vs, rs) = (&vl[va..vz], &rl[ra..rz]);
+        let mut a: Vec<&[u8]> = vs.iter().map(|h| h.line).collect();
+        let mut b: Vec<&[u8]> = rs.iter().map(|h| h.line).collect();
+        a.sort();
+        b.sort();
+        if a == b {
+            continue;
+        }
+        let mut au: Vec<&[u8]> = vs.iter().map(|h| h.unstranded.as_slice()).collect();
+        let mut bu: Vec<&[u8]> = rs.iter().map(|h| h.unstranded.as_slice()).collect();
+        au.sort();
+        bu.sort();
+        if au == bu && vs[0].key.is_some() && palindromes.contains(&vs[0].query) {
+            continue;
+        }
+        return Some(format!(
+            "line {}: vsearch {} | rsearch {}",
+            va + 1,
+            show(vs[0].line),
+            show(rs[0].line)
+        ));
+    }
+    if vb.len() != rb.len() {
+        return Some(format!(
+            "lengths differ: vsearch {} lines, rsearch {} lines",
+            vl.len(),
+            rl.len()
+        ));
+    }
+    None
+}
+
 /// The file comparators, by name.
 pub const FILES: &[&str] = &[
     "bytes",
@@ -350,11 +537,18 @@ pub const FILES: &[&str] = &[
     "fastq-to-fasta",
     "fastq-to-fasta0",
     "cluster-files",
+    "uc-ties",
+    "blast6-ties",
+    "sam-ties",
 ];
 
 /// Compares vsearch's file `v` with rsearch's `r` by the comparator
 /// `name`: `None` when they agree.
 pub fn compare_files(name: &str, v: &str, r: &str) -> Option<String> {
+    // the tie comparators take the queries after a colon: uc-ties:QUERIES
+    if let Some(fmt) = name.split(':').next().and_then(|n| n.strip_suffix("-ties")) {
+        return hit_ties(fmt, v, r, name.split_once(':').map(|(_, q)| q));
+    }
     let sides = |f: fn(&[u8]) -> Vec<u8>, both: bool| {
         let rv = read(r);
         first_diff(&f(&read(v)), &if both { f(&rv) } else { rv })
@@ -651,6 +845,138 @@ mod tests {
                 "Invalid (zero) abundance annotation in FASTA file header".into(),
                 "Invalid (zero) abundance annotation in FASTA file header".into()
             )
+        );
+    }
+
+    /// Writes the vsearch, rsearch and query files of a tie test and
+    /// compares them with `comparator`.
+    fn ties(comparator: &str, v: &str, r: &str, queries: &str) -> Option<String> {
+        let dir = std::env::temp_dir().join(format!(
+            "rscompare-ties-{}-{}",
+            std::process::id(),
+            v.len() + 7 * r.len() + 31 * queries.len()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
+        std::fs::write(path("v"), v).unwrap();
+        std::fs::write(path("r"), r).unwrap();
+        std::fs::write(path("q.fa"), queries).unwrap();
+        let got = compare_files(
+            &format!("{comparator}:{}", path("q.fa")),
+            &path("v"),
+            &path("r"),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        got
+    }
+
+    const QUERIES: &str = ">q1\ncg\n>q2\nACG\n>none\nAAAA\n";
+
+    #[test]
+    fn uc_ties_in_any_order() {
+        // vsearch's std::sort leaves the two strands of a target in either
+        // order; rsearch writes the plus strand first
+        let v = "H\t0\t2\t100.0\t-\t0\t0\t=\tq1\ts0\nH\t0\t2\t100.0\t+\t0\t0\t=\tq1\ts0\n\
+                 H\t1\t2\t100.0\t+\t0\t0\t=\tq1\td1\nH\t1\t2\t100.0\t-\t0\t0\t=\tq1\td1\n\
+                 N\t*\t*\t*\t.\t*\t*\t*\tnone\t*\n";
+        let r = "H\t0\t2\t100.0\t+\t0\t0\t=\tq1\ts0\nH\t0\t2\t100.0\t-\t0\t0\t=\tq1\ts0\n\
+                 H\t1\t2\t100.0\t+\t0\t0\t=\tq1\td1\nH\t1\t2\t100.0\t-\t0\t0\t=\tq1\td1\n\
+                 N\t*\t*\t*\t.\t*\t*\t*\tnone\t*\n";
+        assert_eq!(ties("uc-ties", v, r, QUERIES), None);
+        // targets out of order are not a tie
+        let swapped = "H\t1\t2\t100.0\t+\t0\t0\t=\tq1\td1\nH\t1\t2\t100.0\t-\t0\t0\t=\tq1\td1\n\
+                       H\t0\t2\t100.0\t+\t0\t0\t=\tq1\ts0\nH\t0\t2\t100.0\t-\t0\t0\t=\tq1\ts0\n\
+                       N\t*\t*\t*\t.\t*\t*\t*\tnone\t*\n";
+        assert!(ties("uc-ties", v, swapped, QUERIES).is_some());
+        // nor are hits of another identity
+        let worse = v.replace("H\t1\t2\t100.0\t-", "H\t1\t2\t50.0\t-");
+        assert!(ties("uc-ties", &worse, r, QUERIES).is_some());
+        // a missing hit is a difference
+        assert!(ties("uc-ties", v, &r[r.find('\n').unwrap() + 1..], QUERIES).is_some());
+    }
+
+    #[test]
+    fn uc_ties_cut_by_maxhits() {
+        // --maxhits 1 keeps either strand of a query that is its own
+        // reverse complement. The two hits are one match
+        let v = "H\t0\t2\t100.0\t-\t0\t0\t=\tq1\ts0\n";
+        let r = "H\t0\t2\t100.0\t+\t0\t0\t=\tq1\ts0\n";
+        assert_eq!(ties("uc-ties", v, r, QUERIES), None);
+        // for any other query the strand is the hit
+        let v = "H\t0\t3\t100.0\t-\t0\t0\t=\tq2\ts0\n";
+        let r = "H\t0\t3\t100.0\t+\t0\t0\t=\tq2\ts0\n";
+        assert!(ties("uc-ties", v, r, QUERIES).is_some());
+        // and without the queries nothing is known of them
+        let dir = std::env::temp_dir().join(format!("rscompare-ties-noq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (vp, rp) = (dir.join("v"), dir.join("r"));
+        std::fs::write(&vp, "H\t0\t2\t100.0\t-\t0\t0\t=\tq1\ts0\n").unwrap();
+        std::fs::write(&rp, "H\t0\t2\t100.0\t+\t0\t0\t=\tq1\ts0\n").unwrap();
+        let got = compare_files("uc-ties", &vp.to_string_lossy(), &rp.to_string_lossy());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(got.is_some());
+    }
+
+    #[test]
+    fn blast6_ties() {
+        let v = "q1\ts0\t100.0\t2\t0\t0\t2\t1\t1\t2\t-1\t0\nq1\ts0\t100.0\t2\t0\t0\t1\t2\t1\t2\t-1\t0\n";
+        let r = "q1\ts0\t100.0\t2\t0\t0\t1\t2\t1\t2\t-1\t0\nq1\ts0\t100.0\t2\t0\t0\t2\t1\t1\t2\t-1\t0\n";
+        assert_eq!(ties("blast6-ties", v, r, QUERIES), None);
+        // cut by --maxhits: the minus strand shows as qlo above qhi
+        let v1 = "q1\ts0\t100.0\t2\t0\t0\t2\t1\t1\t2\t-1\t0\n";
+        let r1 = "q1\ts0\t100.0\t2\t0\t0\t1\t2\t1\t2\t-1\t0\n";
+        assert_eq!(ties("blast6-ties", v1, r1, QUERIES), None);
+        let v2 = "q2\ts0\t100.0\t3\t0\t0\t3\t1\t1\t3\t-1\t0\n";
+        let r2 = "q2\ts0\t100.0\t3\t0\t0\t1\t3\t1\t3\t-1\t0\n";
+        assert!(ties("blast6-ties", v2, r2, QUERIES).is_some());
+    }
+
+    #[test]
+    fn sam_ties() {
+        let head = "@HD\tVN:1.0\tSO:unsorted\tGO:query\n@SQ\tSN:s0\tLN:2\n";
+        let plus = "q1\t0\ts0\t1\t255\t2M\t*\t0\t0\tCG\t*\tAS:i:100\tMD:Z:2\n";
+        let minus = "q1\t16\ts0\t1\t255\t2M\t*\t0\t0\tCG\t*\tAS:i:100\tMD:Z:2\n";
+        let pg_v = "@PG\tID:vsearch\n";
+        let pg_r = "@PG\tID:rsearch\n";
+        assert_eq!(
+            ties(
+                "sam-ties",
+                &format!("{head}{pg_v}{minus}{plus}"),
+                &format!("{head}{pg_r}{plus}{minus}"),
+                QUERIES
+            ),
+            None
+        );
+        // cut by --maxhits: the strand is the flag's bit 16
+        assert_eq!(
+            ties(
+                "sam-ties",
+                &format!("{head}{minus}"),
+                &format!("{head}{plus}"),
+                QUERIES
+            ),
+            None
+        );
+        let plus2 = "q2\t0\ts0\t1\t255\t3M\t*\t0\t0\tACG\t*\tAS:i:100\tMD:Z:3\n";
+        let minus2 = "q2\t16\ts0\t1\t255\t3M\t*\t0\t0\tCGT\t*\tAS:i:100\tMD:Z:3\n";
+        assert!(
+            ties(
+                "sam-ties",
+                &format!("{head}{minus2}"),
+                &format!("{head}{plus2}"),
+                QUERIES
+            )
+            .is_some()
+        );
+        // the header still has to agree
+        assert!(
+            ties(
+                "sam-ties",
+                &format!("{head}{plus}"),
+                &format!("@HD\tVN:1.0\n{plus}"),
+                QUERIES
+            )
+            .is_some()
         );
     }
 
