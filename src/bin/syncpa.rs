@@ -133,7 +133,8 @@ fn main() {
             Arg::new("separators")
                 .long("separators")
                 .value_name("CHARS")
-                .help("Characters that may come before a final 1 or 2, default to /"),
+                .default_value("/")
+                .help("Characters that may come before a final 1 or 2"),
         )
         .get_matches();
     let separators = matches
