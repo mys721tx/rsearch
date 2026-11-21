@@ -131,9 +131,9 @@ fn database(path: &str, word_len: u32) -> Database {
 
 fn main() {
     let matches = Command::new("sintax")
-        .about("SINTAX taxonomic classification.")
+        .about("Classify sequences by taxonomy with SINTAX.")
         .long_about(
-            "SINTAX taxonomic classification.\n\n\
+            "Classify sequences by taxonomy with SINTAX.\n\n\
              As vsearch --sintax: a hundred times, 32 words drawn at random from a \
              query pick the database sequence sharing the most of them; with fifty \
              picks or more, each level of the ;tax= annotations takes the name most \
