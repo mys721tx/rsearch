@@ -73,7 +73,8 @@ fn main() {
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
                 .requires("ee")
-                .help("ASCII offset of quality scores for --ee, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of quality scores for --ee"),
         );
     let mut command = options::label_args(command);
     let matches = command.get_matches_mut();
