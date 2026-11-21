@@ -131,7 +131,20 @@ fn write_tabbed(out: &mut impl Write, clusters: &[Cluster]) -> io::Result<()> {
 
 fn main() {
     let mut command = Command::new("DeRep")
-        .about("Remove duplications in FASTA or FASTQ sequences.")
+        .about("Group identical sequences and count them.")
+        .long_about(
+            "Group identical sequences and count them.\n\n\
+             Sequences are identical when equal ignoring case and taking U for T; with \
+             --strand, also when one is the reverse complement of the other; with \
+             --same-label, only when their headers are equal too. With --prefix, each \
+             sequence joins the longest sequence it is a prefix of (FASTA only). Each \
+             group is written once, as its first sequence and header, with the sum of \
+             the abundances (;size=) of its members, 1 for a member without one. FASTQ \
+             scores are merged by averaging their error probabilities, or with \
+             --best-qual by keeping the best. Groups are written by decreasing \
+             abundance, then header, then first appearance, or with --unsorted in order \
+             of first appearance; in the input format, FASTA unwrapped.",
+        )
         .arg(
             Arg::new("in")
                 .short('i')
@@ -204,7 +217,8 @@ fn main() {
                 .long("ascii")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of input quality scores, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of input quality scores"),
         )
         .arg(
             Arg::new("qmin")
@@ -212,7 +226,8 @@ fn main() {
                 .value_name("QUAL")
                 .allow_negative_numbers(true)
                 .value_parser(value_parser!(i16))
-                .help("Minimum quality score accepted in the input, default to 0"),
+                .default_value("0")
+                .help("Minimum quality score accepted in the input"),
         )
         .arg(
             Arg::new("qmax")
@@ -227,14 +242,16 @@ fn main() {
                 .long("ascii-out")
                 .value_name("OFFSET")
                 .value_parser(["33", "64"])
-                .help("ASCII offset of output quality scores, default to 33"),
+                .default_value("33")
+                .help("ASCII offset of output quality scores"),
         )
         .arg(
             Arg::new("qmin-out")
                 .long("qmin-out")
                 .value_name("QUAL")
                 .value_parser(value_parser!(u8))
-                .help("Lowest quality score written, default to 0"),
+                .default_value("0")
+                .help("Lowest quality score written"),
         )
         .arg(
             Arg::new("qmax-out")
