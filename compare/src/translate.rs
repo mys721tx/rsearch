@@ -2308,7 +2308,10 @@ impl Translator {
             }
         }
         self.a.take("sizein");
-        self.no_labels("uchime writes its records unchanged, relabelling is relab's", &[])?;
+        self.no_labels(
+            "uchime writes its records unchanged, relabelling is relab's",
+            &[],
+        )?;
         let mut outs = Vec::new();
         for (v, r) in [("chimeras", "--chimeras"), ("borderline", "--borderline")] {
             if self.a.has(v) {
@@ -2355,7 +2358,10 @@ impl Translator {
             ("alignwidth", "--width"),
         ]);
         self.a.take("sizein");
-        self.no_labels("mchime writes its records unchanged, relabelling is relab's", &[])?;
+        self.no_labels(
+            "mchime writes its records unchanged, relabelling is relab's",
+            &[],
+        )?;
         let mut chim = None;
         if self.a.has("chimeras") {
             let c = self.tmp("chimeras");
