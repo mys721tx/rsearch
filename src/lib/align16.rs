@@ -105,8 +105,13 @@ enum Kernel {
     Scalar(Engine<Scalar>),
     #[cfg(target_arch = "x86_64")]
     Sse2(Engine<Sse2>),
+    /// sixteen lanes, and eight for a call of eight targets or fewer,
+    /// which would leave half of sixteen idle
     #[cfg(target_arch = "x86_64")]
-    Avx2(Engine<Avx2>),
+    Avx2 {
+        wide: Engine<Avx2>,
+        narrow: Engine<Sse2>,
+    },
     #[cfg(target_arch = "aarch64")]
     Neon(Engine<Neon>),
 }
@@ -115,7 +120,10 @@ impl Search16 {
     pub fn new(scoring: &Scoring) -> Search16 {
         let kernel = match level() {
             #[cfg(target_arch = "x86_64")]
-            Level::Avx2 => Kernel::Avx2(Engine::new(scoring)),
+            Level::Avx2 => Kernel::Avx2 {
+                wide: Engine::new(scoring),
+                narrow: Engine::new(scoring),
+            },
             #[cfg(target_arch = "x86_64")]
             Level::Sse2 => Kernel::Sse2(Engine::new(scoring)),
             #[cfg(target_arch = "aarch64")]
@@ -132,7 +140,12 @@ impl Search16 {
             #[cfg(target_arch = "x86_64")]
             Kernel::Sse2(e) => e.set_query(query),
             #[cfg(target_arch = "x86_64")]
-            Kernel::Avx2(e) => e.set_query(query),
+            Kernel::Avx2 { wide, narrow } => {
+                narrow.set_query(query);
+                // SAFETY: the kernel is AVX2 only when `simd::level` found
+                // the processor has it
+                unsafe { set_query_avx2(wide, query) };
+            }
             #[cfg(target_arch = "aarch64")]
             Kernel::Neon(e) => e.set_query(query),
         }
@@ -144,14 +157,24 @@ impl Search16 {
             Kernel::Scalar(e) => e.align(targets),
             #[cfg(target_arch = "x86_64")]
             Kernel::Sse2(e) => e.align(targets),
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Avx2 { narrow, .. } if targets.len() <= Sse2::N => narrow.align(targets),
             // SAFETY: the kernel is AVX2 only when `simd::level` found the
             // processor has it
             #[cfg(target_arch = "x86_64")]
-            Kernel::Avx2(e) => unsafe { align_avx2(e, targets) },
+            Kernel::Avx2 { wide, .. } => unsafe { align_avx2(wide, targets) },
             #[cfg(target_arch = "aarch64")]
             Kernel::Neon(e) => e.align(targets),
         }
     }
+}
+
+/// [`Engine::set_query`] compiled with AVX2, so that the lanes'
+/// instructions inline into it.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn set_query_avx2(engine: &mut Engine<Avx2>, query: &[u8]) {
+    engine.set_query(query)
 }
 
 /// [`Engine::align`] compiled with AVX2, so that the lanes' instructions
@@ -243,6 +266,7 @@ impl<L: Lanes> Engine<L> {
     }
 
     /// vsearch's `search16_qprep`.
+    #[inline(always)]
     fn set_query(&mut self, query: &[u8]) {
         self.qseq = query.to_vec();
         self.qcodes = query.iter().map(|&c| FOUR_BIT[usize::from(c)]).collect();
