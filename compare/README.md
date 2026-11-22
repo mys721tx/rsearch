@@ -164,6 +164,9 @@ Each case records its caveats:
   outputs otherwise.
 - Without `--randseed`, random draws differ.
 - `sqfilt` checks `;size=`. Dereplication reads it only with `--sizein`.
+- With `--strand both` and `--qmask dust`, `--usearch_global` dusts each
+  strand of a query on its own. `lcmask` masks the plus strand once, and
+  `dbsrch` reverse-complements it.
 - `getseq --targets` counts weak hits, and vsearch's `--dbmatched`
   counts accepted hits only. `clspl` writes the abundances of
   `--clusters` with `--sizeout` as they are. vsearch's `--search_exact`

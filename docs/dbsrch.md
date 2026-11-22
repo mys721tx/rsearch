@@ -127,7 +127,20 @@ names in words (`--maxdiffs` is `--max-diffs`, `--query_cov` `--query-cov`,
 vsearch masks both files with DUST by default. It also drops database
 sequences shorter than 32 or longer than 50000. In rsearch that is
 [lcmask](lcmask.md) on both and [sqfilt](sqfilt.md) on the database before
-dbsrch. dbsrch itself only skips the words holding lower case. Hits that tie
+dbsrch. dbsrch itself only skips the words holding lower case.
+
+With `--strand both`, vsearch reverse-complements each query and then runs
+DUST on each strand on its own. DUST does not give the same regions on the
+two strands, so a run of one base near the end of a read can be masked on
+the minus strand only. lcmask masks the plus strand once, and dbsrch
+reverse-complements that, keeping its case. The minus strand then keeps
+words that vsearch masks. The ranking of the candidates changes, and with
+the default `--maxaccepts 1` another target can be accepted first. dbsrch
+keeps the masking it is given, whoever made it, rather than running DUST
+again and upper-casing the queries as vsearch does. `--qmask soft` and
+`--qmask none` give vsearch's results, and so does `--strand plus`.
+
+Hits that tie
 on vsearch's sort key (the two strands of a target at one identity) are
 written by target, plus strand first; vsearch leaves their order to its C++
 library.
