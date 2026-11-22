@@ -9,7 +9,7 @@ hits.
 clust --id SHARE [-i FILE] [-o FILE] [--hits FILE] [--strand plus|both]
       [--maxaccepts N] [--maxrejects N] [--word-len N]
       [--min-word-matches N] [--size-order] [--no-sizein] [--no-sizeout]
-      [criteria] [scores]
+      [criteria] [scores] [-t N]
 ```
 
 ## Description
@@ -39,6 +39,9 @@ clustering commands. `sortby --length` with `--maxrejects 8` gives
 - `-o`, `--out FILE`: Output file of the centroids, in the input format.
   Default: standard output.
 - `--hits FILE`: Output UC file of the clusters.
+- `-t`, `--threads N`: Cluster on N threads, 0 for one per logical core.
+  The clusters are the same, written in the same order, on any number.
+  Default: 0.
 - `--strand plus|both`: Search the plus strand of the sequences, or both.
   Default: plus.
 - `--maxaccepts N`: Stop after N accepted centroids on a strand, 0 for no
@@ -80,6 +83,18 @@ other tools. `--minseqlength 32` and `--maxseqlength 50000` are `sqfilt
 [clmsa](clmsa.md) on the hits. Where
 `--cluster_fast` writes `=` for an alignment that is perfect but for
 terminal gaps, clust writes the whole CIGAR, which clmsa needs.
+
+vsearch clusters on several threads in rounds of one sequence a thread,
+searched at once against the centroids so far. Each sequence of a round is
+then matched against the round's new centroids too. clust searches batches
+of two sequences a thread at once against the centroids so far, then decides
+them in order. A sequence is searched again, against the centroids then,
+when a centroid found earlier in its batch could have changed its search.
+That is when the centroid shares enough words with it and would have come
+before the last candidate the search took, or when the search ran out of
+candidates. Any other centroid would have been a candidate the search never
+reached, so the sequence gets the same hits it gets on one thread. Like
+vsearch's, its clusters are the same on any number of threads.
 
 ## Examples
 

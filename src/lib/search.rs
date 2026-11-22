@@ -314,6 +314,27 @@ struct Tally {
     hits: Vec<Hit>,
 }
 
+/// A candidate's place in the order targets are aligned in: the most
+/// words shared first, then the shorter, then the first.
+type Key = (Reverse<u16>, usize, usize);
+
+/// How far a search went down its candidates. A target added to the
+/// database after the search can change it only if it would have come
+/// before the last candidate the search took, or if the search ran out of
+/// candidates before it ran out of room for them ([`Searcher::would_change`]).
+#[derive(Clone, Debug, Default)]
+pub struct Horizon {
+    /// the distinct words of the query, sorted.
+    words: Vec<u32>,
+    /// the words a target had to share with the query.
+    min_matches: u32,
+    /// the key of the last candidate taken.
+    last: Option<Key>,
+    /// whether the search took every candidate, and there were fewer than
+    /// it keeps.
+    open: bool,
+}
+
 /// Searches queries against a database, one strand at a time.
 pub struct Searcher {
     criteria: Criteria,
@@ -394,10 +415,23 @@ impl Searcher {
 
     /// the candidates for `query`, best first: the targets sharing the
     /// most words, then the shorter, then the first; at most `top_hits`.
-    fn candidates(&mut self, db: &Database, query: &[u8]) -> Vec<usize> {
+    /// With `words`, the distinct words of the query, sorted, and the words
+    /// a candidate has to share.
+    fn candidates(
+        &mut self,
+        db: &Database,
+        query: &[u8],
+        words_out: Option<&mut (Vec<u32>, u32)>,
+    ) -> Vec<Key> {
         let postings = &db.postings;
         let words = self.uniquer.words(query);
         let min_matches = self.min_word_matches.min(words.len() as u32);
+        if let Some((sorted, min)) = words_out {
+            sorted.clear();
+            sorted.extend_from_slice(words);
+            sorted.sort_unstable();
+            *min = min_matches;
+        }
         self.counts.clear();
         self.counts.resize(postings.seqnos.len(), 0);
         for &word in words {
@@ -409,16 +443,14 @@ impl Searcher {
             }
         }
         // the worst kept on top
-        let mut heap: BinaryHeap<(Reverse<u16>, usize, usize)> = BinaryHeap::new();
+        let mut heap: BinaryHeap<Key> = BinaryHeap::new();
         if self.top_hits == 0 {
             return Vec::new();
         }
         for (t, &count) in self.counts.iter().enumerate() {
             let c = u32::from(count);
             let kmers = postings.words[t];
-            let eligible = c >= min_matches
-                || (kmers != 0 && kmers < self.min_word_matches && c >= min_matches.min(kmers));
-            if !eligible {
+            if !self.eligible(c, kmers, min_matches) {
                 continue;
             }
             let s = postings.seqnos[t] as usize;
@@ -431,9 +463,58 @@ impl Searcher {
             }
         }
         heap.into_sorted_vec()
-            .into_iter()
-            .map(|(_, _, s)| s)
-            .collect()
+    }
+
+    /// whether a target of `kmers` distinct words, sharing `shared` with a
+    /// query, is a candidate for it.
+    fn eligible(&self, shared: u32, kmers: u32, min_matches: u32) -> bool {
+        shared >= min_matches
+            || (kmers != 0 && kmers < self.min_word_matches && shared >= min_matches.min(kmers))
+    }
+
+    /// the distinct words of `seq`, sorted, as [`Searcher::would_change`]
+    /// takes them.
+    pub fn distinct_words(&mut self, seq: &[u8]) -> Vec<u32> {
+        let mut words = self.uniquer.words(seq).to_vec();
+        words.sort_unstable();
+        words
+    }
+
+    /// whether making `seqno` of `db` a target, with the sorted distinct
+    /// `words`, could change the search that went as far as `horizon`.
+    /// When it cannot, the search finds the same with the target as without it.
+    /// Then the target is no candidate, or it comes after every candidate the
+    /// search took and the search stopped before its last.
+    pub fn would_change(
+        &self,
+        db: &Database,
+        horizon: &Horizon,
+        seqno: usize,
+        words: &[u32],
+    ) -> bool {
+        if self.top_hits == 0 {
+            return false;
+        }
+        // the words the query and the target share, counted as candidates
+        // counts them
+        let (mut i, mut j, mut shared) = (0, 0, 0u32);
+        while i < horizon.words.len() && j < words.len() {
+            match horizon.words[i].cmp(&words[j]) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    shared += 1;
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        let count = shared.min(u32::from(MAX_COUNT)) as u16;
+        if !self.eligible(u32::from(count), words.len() as u32, horizon.min_matches) {
+            return false;
+        }
+        let key = (Reverse(count), db.seqs[seqno].len(), seqno);
+        horizon.open || horizon.last.is_none_or(|last| key < last)
     }
 
     /// searches one strand of a query (reverse-complemented for the minus
@@ -447,8 +528,41 @@ impl Searcher {
         query: &[u8],
         minus: bool,
     ) -> Vec<Hit> {
+        self.search_inner(db, label, size, query, minus, None)
+    }
+
+    /// searches as [`Searcher::search`] does, and returns how far it went
+    /// down its candidates too.
+    pub fn search_seen(
+        &mut self,
+        db: &Database,
+        label: &str,
+        size: i64,
+        query: &[u8],
+        minus: bool,
+    ) -> (Vec<Hit>, Horizon) {
+        let mut horizon = Horizon::default();
+        let hits = self.search_inner(db, label, size, query, minus, Some(&mut horizon));
+        (hits, horizon)
+    }
+
+    fn search_inner(
+        &mut self,
+        db: &Database,
+        label: &str,
+        size: i64,
+        query: &[u8],
+        minus: bool,
+        mut horizon: Option<&mut Horizon>,
+    ) -> Vec<Hit> {
         self.query_size = size;
-        let candidates = self.candidates(db, query);
+        let mut words = horizon.as_ref().map(|_| (Vec::new(), 0));
+        let candidates = self.candidates(db, query, words.as_mut());
+        let kept = candidates.len();
+        if let (Some(h), Some((sorted, min))) = (horizon.as_deref_mut(), words) {
+            h.words = sorted;
+            h.min_matches = min;
+        }
         self.simd.set_query(query);
         let (max_accepts, max_rejects) = (self.max_accepts, self.max_rejects);
         let mut pending: Vec<Candidate> = Vec::new();
@@ -459,7 +573,16 @@ impl Searcher {
             && tally.rejects < max_rejects
             && tally.accepts < max_accepts
         {
-            let Some(t) = next.next() else { break };
+            let Some(key) = next.next() else {
+                if let Some(h) = horizon.as_deref_mut() {
+                    h.open = kept < self.top_hits;
+                }
+                break;
+            };
+            if let Some(h) = horizon.as_deref_mut() {
+                h.last = Some(key);
+            }
+            let t = key.2;
             let mut ok = self.criteria.unaligned(
                 label,
                 query,

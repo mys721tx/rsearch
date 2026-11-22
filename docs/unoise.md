@@ -8,7 +8,7 @@ Denoise amplicons with the UNOISE3 rule; write centroids and hits.
 unoise [-i FILE] [-o FILE] [--hits FILE] [--alpha ALPHA] [--id SHARE]
        [--strand plus|both] [--maxaccepts N] [--maxrejects N]
        [--word-len N] [--min-word-matches N] [--size-order] [--no-sizein]
-       [--no-sizeout] [criteria] [scores]
+       [--no-sizeout] [criteria] [scores] [-t N]
 ```
 
 ## Description
@@ -28,6 +28,9 @@ a centroid. The centroids and hits are written as by clust.
 - `-o`, `--out FILE`: Output file of the centroids, in the input format.
   Default: standard output.
 - `--hits FILE`: Output UC file of the clusters.
+- `-t`, `--threads N`: Denoise on N threads, 0 for one per logical core.
+  The clusters are the same, written in the same order, on any number.
+  Default: 0.
 - `--strand plus|both`: Search the plus strand of the sequences, or both.
   Default: plus.
 - `--maxaccepts N`: Stop after N accepted centroids on a strand, 0 for no
@@ -61,6 +64,7 @@ unoise is `--cluster_unoise` on input sorted by `sortby --size`, with
 `--weak_id` there, as `--id` (vsearch ignores `--id` for this command).
 vsearch's defaults `--minsize 8`, `--minseqlength 32` and `--maxseqlength
 50000` are `sqfilt --min-size 8 --min-len 32 --max-len 50000` before it.
+It runs on several threads as [clust](clust.md) does.
 
 ## Examples
 

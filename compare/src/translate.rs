@@ -342,7 +342,7 @@ const UNORDERED: &[&str] = &[
 ];
 /// rsearch's tools that take `-t/--threads`.
 pub const THREADED_TOOLS: &[&str] = &[
-    "allpr", "dbornt", "dbsrch", "lcmask", "mergpa", "sintax", "uchime",
+    "allpr", "clust", "dbornt", "dbsrch", "lcmask", "mergpa", "sintax", "uchime", "unoise",
 ];
 /// Commands that keep whole headers without `--notrunclabels`, or read none.
 pub const WHOLE_HEADERS: &[&str] = &[

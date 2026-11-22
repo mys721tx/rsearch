@@ -1,7 +1,14 @@
-//! Greedy centroid clustering, as vsearch's `cluster.cpp` with one thread.
-//! Each sequence, in input order, is searched against the centroids so far.
-//! It joins the cluster of its best accepted hit, or becomes a centroid
-//! whose words are added to the index. Shared by clust and unoise.
+//! Greedy centroid clustering, as vsearch's `cluster.cpp`. Each sequence,
+//! in input order, is searched against the centroids so far. It joins the
+//! cluster of its best accepted hit, or becomes a centroid whose words are
+//! added to the index. Shared by clust and unoise.
+//!
+//! On several threads a batch of sequences is searched at once against the
+//! centroids found before the batch. The batch is then decided in order.
+//! A sequence is searched again, against the centroids so far, when a
+//! centroid found earlier in the batch could have changed its search (see
+//! [`Searcher::would_change`]). Every sequence thus gets the hits it gets on
+//! one thread.
 
 use std::fs::File;
 use std::io;
@@ -14,7 +21,8 @@ use crate::fastx::{Reader, Record};
 use crate::hits::write_hit;
 use crate::label::{Label, checked_abundance};
 use crate::options::{search_args, search_options};
-use crate::search::{Database, Hit, Limits, MIN_WORD_MATCHES, Searcher};
+use crate::search::{Database, Hit, Horizon, Limits, MIN_WORD_MATCHES, Searcher};
+use crate::threads::{Workers, threads, threads_args};
 use crate::words::{MAX_WORD_LEN, MIN_WORD_LEN, word_counts};
 use crate::writer::Writer;
 
@@ -56,7 +64,7 @@ fn better(a: &Hit, b: &Hit, iddef: usize, sizes: &[i64], by_size: bool) -> bool 
 /// adds the arguments of the clustering tools: the input, the centroids
 /// and the hits, the search's limits, words and criteria, and abundances.
 pub fn cluster_args(command: Command) -> Command {
-    search_args(
+    threads_args(search_args(
         command
         .arg(
                 Arg::new("in")
@@ -137,8 +145,12 @@ pub fn cluster_args(command: Command) -> Command {
                     .action(ArgAction::SetTrue)
                     .help("Do not annotate the centroids with their cluster's abundance"),
             ),
-    )
+    ))
 }
+
+/// The searches of a sequence on each strand searched, and how far they
+/// went.
+type Searched = Vec<(Vec<Hit>, Horizon)>;
 
 /// clusters as the arguments say, writing the centroids and the hits, and
 /// exits on an error. With `unoise_alpha`, a hit is accepted only by
@@ -211,57 +223,101 @@ pub fn run(matches: &ArgMatches, unoise_alpha: Option<f64>) {
     }
 
     let mut db = Database::growing(labels, seqs, sizes, word_len);
-    let mut searcher = Searcher::new(&db, criteria, scoring, limits);
-    if let Some(alpha) = unoise_alpha {
-        searcher.set_unoise(alpha);
-    }
+    let new_searcher = || {
+        let mut searcher = Searcher::new(&db, criteria.clone(), scoring, limits);
+        if let Some(alpha) = unoise_alpha {
+            searcher.set_unoise(alpha);
+        }
+        (searcher, Vec::new())
+    };
+    let threads = threads(matches);
+    let workers = Workers::new(threads, new_searcher);
+    // a batch of two sequences a thread, one at a time on one thread. A larger
+    // batch searches more sequences at once but against older centroids, so
+    // that more are searched again. On real amplicons two a thread did best
+    let batch = if threads == 1 { 1 } else { 2 * threads };
     let written = |r: io::Result<()>| r.unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
     // the cluster of each sequence, and the centroid of each cluster
     let mut cluster_of: Vec<usize> = Vec::with_capacity(db.len());
     let mut centroids: Vec<usize> = Vec::new();
-    let mut minus = Vec::new();
-    for seqno in 0..db.len() {
-        let (label, query, size) = (&db.labels[seqno], &db.seqs[seqno], db.sizes[seqno]);
-        let mut hits = searcher.search(&db, label, size, query, false);
-        if both {
-            reverse_complement_keeping_case(&mut minus, query);
-            hits.extend(searcher.search(&db, label, size, &minus, true));
-        }
-        let mut best: Option<&Hit> = None;
-        for h in hits.iter().filter(|h| !h.weak) {
-            if best.is_none_or(|b| better(h, b, iddef, &db.sizes, by_size)) {
-                best = Some(h);
+    // each strand of a sequence searched, against the centroids so far
+    let search =
+        |(searcher, minus): &mut (Searcher, Vec<u8>), db: &Database, seqno: usize| -> Searched {
+            let (label, query, size) = (&db.labels[seqno], &db.seqs[seqno], db.sizes[seqno]);
+            let mut searched = vec![searcher.search_seen(db, label, size, query, false)];
+            if both {
+                reverse_complement_keeping_case(minus, query);
+                searched.push(searcher.search_seen(db, label, size, minus, true));
+            }
+            searched
+        };
+    let mut start = 0;
+    while start < db.len() {
+        let end = (start + batch).min(db.len());
+        let batch_searched = {
+            let db = &db;
+            workers.map((start..end).collect(), |state, seqno| {
+                search(state, db, seqno)
+            })
+        };
+        // the centroids found in this batch so far, with their words
+        let mut fresh: Vec<(usize, Vec<u32>)> = Vec::new();
+        for (seqno, searched) in (start..end).zip(batch_searched) {
+            let mut state = workers.state();
+            let stale = fresh.iter().any(|(centroid, words)| {
+                searched
+                    .iter()
+                    .any(|(_, horizon)| state.0.would_change(&db, horizon, *centroid, words))
+            });
+            let searched = if stale {
+                search(&mut state, &db, seqno)
+            } else {
+                searched
+            };
+            let hits: Vec<Hit> = searched.into_iter().flat_map(|(hits, _)| hits).collect();
+            let (label, query) = (&db.labels[seqno], &db.seqs[seqno]);
+            let mut best: Option<&Hit> = None;
+            for h in hits.iter().filter(|h| !h.weak) {
+                if best.is_none_or(|b| better(h, b, iddef, &db.sizes, by_size)) {
+                    best = Some(h);
+                }
+            }
+            if let Some(h) = best {
+                let cluster = cluster_of[h.target];
+                cluster_of.push(cluster);
+                if let Some(out) = &mut hits_out {
+                    let perfect = h.stats.matches == h.stats.length;
+                    written(write_hit(
+                        out,
+                        cluster as u64,
+                        query.len(),
+                        h.stats.id[iddef],
+                        h.minus,
+                        if perfect { b"=" } else { h.cigar.as_bytes() },
+                        label.as_bytes(),
+                        db.labels[h.target].as_bytes(),
+                    ));
+                }
+            } else {
+                let cluster = centroids.len();
+                if let Some(out) = &mut hits_out {
+                    written(writeln!(
+                        out,
+                        "S\t{cluster}\t{}\t*\t*\t*\t*\t*\t{label}\t*",
+                        query.len()
+                    ));
+                }
+                cluster_of.push(cluster);
+                centroids.push(seqno);
+                if end - start > 1 {
+                    let words = state.0.distinct_words(&db.seqs[seqno]);
+                    fresh.push((seqno, words));
+                }
+                drop(state);
+                db.add(seqno);
             }
         }
-        if let Some(h) = best {
-            let cluster = cluster_of[h.target];
-            cluster_of.push(cluster);
-            if let Some(out) = &mut hits_out {
-                let perfect = h.stats.matches == h.stats.length;
-                written(write_hit(
-                    out,
-                    cluster as u64,
-                    query.len(),
-                    h.stats.id[iddef],
-                    h.minus,
-                    if perfect { b"=" } else { h.cigar.as_bytes() },
-                    label.as_bytes(),
-                    db.labels[h.target].as_bytes(),
-                ));
-            }
-        } else {
-            let cluster = centroids.len();
-            if let Some(out) = &mut hits_out {
-                written(writeln!(
-                    out,
-                    "S\t{cluster}\t{}\t*\t*\t*\t*\t*\t{label}\t*",
-                    query.len()
-                ));
-            }
-            cluster_of.push(cluster);
-            centroids.push(seqno);
-            db.add(seqno);
-        }
+        start = end;
     }
 
     // the abundance of each cluster
