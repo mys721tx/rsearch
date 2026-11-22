@@ -39,7 +39,7 @@ impl Rng {
         (0..n).map(|_| self.base()).collect()
     }
 
-    /// `k` random substitutions, deletions and insertions.
+    /// `k` random substitutions, deletions, and insertions.
     fn edit(&mut self, seq: &str, k: usize) -> String {
         let mut x: Vec<char> = seq.chars().collect();
         for _ in 0..k {
@@ -126,15 +126,89 @@ fn run(args: &[&str], input: &str) -> Output {
     output
 }
 
-/// Runs allpr, which must succeed, and returns its hits.
+/// The thread counts every run is made with. Its hits must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs allpr on each of `THREADS`, which must succeed and write the same
+/// hits each time, and returns its hits.
 fn allpr(args: &[&str], input: &str) -> String {
-    let output = run(args, input);
-    assert!(
-        output.status.success(),
-        "allpr failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<String> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let output = run(&with_threads, input);
+        assert!(
+            output.status.success(),
+            "allpr -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let hits = String::from_utf8(output.stdout).unwrap();
+        match &first {
+            None => first = Some(hits),
+            Some(one) => assert_eq!(&hits, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// Runs allpr with `args` at -t 1 and at each count of `counts`, and checks
+/// that the hits, the messages, and the exit code are the same.
+fn same_on_threads(args: &[&str], input: &str, counts: &[&str]) -> Output {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = run(
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        input,
     );
-    String::from_utf8(output.stdout).unwrap()
+    for &t in counts {
+        let these = with(t);
+        let other = run(&these.iter().map(String::as_str).collect::<Vec<_>>(), input);
+        assert_eq!(
+            other.status.code(),
+            one.status.code(),
+            "-t {t}, {args:?}: {}",
+            String::from_utf8_lossy(&other.stderr)
+        );
+        assert!(
+            other.stdout == one.stdout,
+            "-t {t} writes other hits, {args:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&other.stderr),
+            String::from_utf8_lossy(&one.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
+}
+
+/// Many sequences, more than a batch of every thread count: variants of a few
+/// templates, unrelated, short, and empty ones, some with abundances.
+fn many_sequences(n: usize) -> String {
+    let mut r = Rng::new(23);
+    let templates: Vec<String> = (0..4).map(|_| r.seq(90)).collect();
+    let mut out = String::new();
+    for k in 0..n {
+        let t = &templates[k % templates.len()];
+        let seq = match k % 8 {
+            0 => r.seq(90),
+            1 => String::new(),
+            2 => t[..25].to_string(),
+            3 => r.edit(t, 1).to_lowercase(),
+            _ => r.edit(t, k % 9 + 1),
+        };
+        let label = if k % 5 == 0 {
+            format!("m{k};size={}", k % 7 + 1)
+        } else {
+            format!("m{k}")
+        };
+        out.push_str(&format!(">{label}\n{seq}\n"));
+    }
+    out
 }
 
 #[test]
@@ -1713,5 +1787,58 @@ H	8	80	97.5	+	0	0	41MD38M	s7	s8
 H	9	79	97.3	+	0	0	5D36MI38M12I	s8	s9
 N	*	*	*	.	*	*	*	s9	*
 "##
+    );
+}
+
+#[test]
+fn writes_the_same_hits_on_any_thread_count() {
+    let input = many_sequences(400);
+    for args in [
+        &["--id", "0.8"][..],
+        &["--accept-all", "--maxhits", "3"],
+        &["--id", "0.7", "--top-hits-only", "--iddef", "1"],
+        &["--id", "0.9", "--max-diffs", "4", "--query-cov", "0.9"],
+    ] {
+        let one = same_on_threads(args, &input, &["2", "3", "5", "16", "0"]);
+        assert!(one.status.success(), "{args:?}");
+        assert!(!one.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn stops_at_an_invalid_sequence_as_on_one_thread() {
+    let input = many_sequences(300);
+    for bad in [">bad;size=0\nACGT\n", ">bad\nAC\u{1}GT\n"] {
+        for whole in [format!("{input}{bad}{input}"), format!("{bad}{input}")] {
+            let one = same_on_threads(&["--id", "0.8"], &whole, &["2", "3", "8"]);
+            assert_eq!(one.status.code(), Some(1));
+        }
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let main = inputs().main;
+    let expected = allpr(&["--id", "0.8"], &main);
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let args: Vec<&str> = ["--id", "0.8"]
+            .iter()
+            .copied()
+            .chain(t.iter().copied())
+            .collect();
+        let output = run(&args, &main);
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{t:?}");
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(
+            run(&["--id", "0.8", "-t", t], &main).status.code(),
+            Some(2),
+            "{t:?}"
+        );
+    }
+    assert_eq!(
+        same_on_threads(&["--id", "0.8"], "", &["2", "8"]).stdout,
+        b""
     );
 }
