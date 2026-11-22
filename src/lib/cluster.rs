@@ -803,6 +803,40 @@ mod test {
     use super::*;
 
     #[test]
+    fn reverse_complements_at_every_level() {
+        // each SIMD level this processor has complements every byte as the
+        // table does, at every place of sequences that end within, on, and
+        // after the 16- and 32-byte chunks
+        let table = |seq: &[u8]| -> Vec<u8> {
+            seq.iter()
+                .rev()
+                .map(|&c| COMPLEMENT[usize::from(c)])
+                .collect()
+        };
+        let mut dest = Vec::new();
+        for level in crate::simd::available() {
+            for len in [0, 1, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 65, 100] {
+                let seq: Vec<u8> = (0..len)
+                    .map(|i| b"ACGTUacgtuRYKMBDHVNSW-.*"[i % 24])
+                    .collect();
+                reverse_complement_at(level, &mut dest, &seq);
+                assert_eq!(dest, table(&seq), "{level:?} {len}");
+                for byte in 0..=255u8 {
+                    for at in [0, len / 2, len.saturating_sub(1)]
+                        .into_iter()
+                        .filter(|&at| at < len)
+                    {
+                        let mut seq = seq.clone();
+                        seq[at] = byte;
+                        reverse_complement_at(level, &mut dest, &seq);
+                        assert_eq!(dest, table(&seq), "{level:?} {len} {at} {byte}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_complement_keeping_case() {
         let mut dest = Vec::new();
         reverse_complement_keeping_case(&mut dest, b"ACGUuRYKMBVDHSWNacgtrykmbvdhswn");
