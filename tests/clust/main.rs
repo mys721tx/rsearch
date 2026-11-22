@@ -13,6 +13,10 @@
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
+use rsearch::accept::Criteria;
+use rsearch::scoring::Scoring;
+use rsearch::search::{Database, Hit, Limits, MIN_WORD_MATCHES, Searcher};
+
 /// 44 variants of three templates, in mixed case, with Ns, reverse
 /// complements, abundances, a random sequence, an empty one, a short one
 /// and a shared label.
@@ -144,15 +148,164 @@ fn run(name: &str, args: &[&str], input: &str) -> (Output, String) {
     (output, written)
 }
 
-/// Runs clust, which must succeed, and returns its centroids and hits.
+/// The thread counts every run is made with. The clusters must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs clust on each of `THREADS`, which must succeed and write the same
+/// centroids and hits each time, and returns them.
 fn clust(name: &str, args: &[&str], input: &str) -> (String, String) {
-    let (output, hits) = run(name, args, input);
-    assert!(
-        output.status.success(),
-        "clust failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<(String, String)> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let (output, hits) = run(name, &with_threads, input);
+        assert!(
+            output.status.success(),
+            "clust -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let this = (String::from_utf8(output.stdout).unwrap(), hits);
+        match &first {
+            None => first = Some(this),
+            Some(one) => assert_eq!(&this, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// Runs clust with `args` at -t 1 and at each count of `counts`, and checks
+/// that the centroids, the hits, the messages, and the exit code are the same.
+fn same_on_threads(name: &str, args: &[&str], input: &str, counts: &[&str]) -> (Output, String) {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = run(
+        name,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        input,
     );
-    (String::from_utf8(output.stdout).unwrap(), hits)
+    for &t in counts {
+        let these = with(t);
+        let other = run(
+            name,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            input,
+        );
+        assert_eq!(
+            other.0.status.code(),
+            one.0.status.code(),
+            "-t {t}, {args:?}"
+        );
+        assert!(
+            other.0.stdout == one.0.stdout,
+            "-t {t} writes other centroids, {args:?}"
+        );
+        assert!(other.1 == one.1, "-t {t} writes other hits, {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&other.0.stderr),
+            String::from_utf8_lossy(&one.0.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
+}
+
+/// xorshift64, for the inputs of the thread tests.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng(seed.wrapping_mul(2_654_435_761).wrapping_add(1))
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    fn base(&mut self) -> char {
+        b"ACGT"[(self.next() >> 62) as usize] as char
+    }
+
+    fn seq(&mut self, n: usize) -> String {
+        (0..n).map(|_| self.base()).collect()
+    }
+
+    /// `k` random substitutions, deletions, and insertions.
+    fn edit(&mut self, seq: &str, k: usize) -> String {
+        let mut x: Vec<char> = seq.chars().collect();
+        for _ in 0..k {
+            let p = self.below(x.len().max(1) as u64) as usize;
+            match self.below(3) {
+                0 if !x.is_empty() => x[p] = self.base(),
+                1 if !x.is_empty() => {
+                    x.remove(p);
+                }
+                _ => {
+                    let c = self.base();
+                    x.insert(p.min(x.len()), c);
+                }
+            }
+        }
+        x.into_iter().collect()
+    }
+}
+
+/// the reverse complement of an upper-case sequence.
+fn revcomp(seq: &str) -> String {
+    seq.chars()
+        .rev()
+        .map(|c| match c {
+            'A' => 'T',
+            'C' => 'G',
+            'G' => 'C',
+            'T' => 'A',
+            c => c,
+        })
+        .collect()
+}
+
+/// `n` sequences in which new clusters keep starting. Each template is followed
+/// closely by variants of itself and of the templates before it, some
+/// reverse-complemented, so that centroids found within a batch of queries are
+/// hits of the queries after them in the same batch.
+fn many_sequences(n: usize, seed: u64) -> Vec<(String, String)> {
+    let mut r = Rng::new(seed);
+    let mut templates: Vec<String> = Vec::new();
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let seq = if templates.is_empty() || r.below(5) == 0 {
+            let len = 120 + r.below(60) as usize;
+            let t = r.seq(len);
+            templates.push(t.clone());
+            t
+        } else {
+            // mostly the newest templates
+            let back = (r.below(4) as usize).min(templates.len() - 1);
+            let t = &templates[templates.len() - 1 - back];
+            let k = r.below(14) as usize;
+            let v = r.edit(t, k);
+            if r.below(6) == 0 { revcomp(&v) } else { v }
+        };
+        out.push((format!("c{k};size={}", 1 + r.below(40)), seq));
+    }
+    out
+}
+
+fn fasta_of(records: &[(String, String)]) -> String {
+    records
+        .iter()
+        .map(|(h, s)| format!(">{h}\n{s}\n"))
+        .collect()
 }
 
 #[test]
@@ -3111,5 +3264,170 @@ CTGAAGCATTGCTTTGTGAAGGGGACTCATCAGCCAATAGACCTGATACCGGACTCATTCTTCATTGCAGCAACCTAGGG
 >s42;size=12
 GGCTTCGGAGAGACCTGGTTTACCTCAGGTTAGGTCCTGAATAGGAGGAATCGGAGTATCCGCTCCGTAAAATCGTTACTAATTCGCTACATTACGGACATGGTTTGAATTGCATGAGGAAA
 "##
+    );
+}
+
+#[test]
+fn clusters_the_same_on_any_thread_count() {
+    let input = fasta_of(&many_sequences(1200, 3));
+    for args in [
+        &["--id", "0.97"][..],
+        &["--id", "0.9", "--strand", "both"],
+        &[
+            "--id",
+            "0.93",
+            "--maxaccepts",
+            "2",
+            "--maxrejects",
+            "3",
+            "--size-order",
+        ],
+        &[
+            "--id",
+            "0.85",
+            "--maxaccepts",
+            "0",
+            "--maxrejects",
+            "0",
+            "--word-len",
+            "6",
+        ],
+        &[
+            "--id",
+            "0.95",
+            "--maxrejects",
+            "1",
+            "--strand",
+            "both",
+            "--min-word-matches",
+            "1",
+        ],
+    ] {
+        let (output, hits) =
+            same_on_threads("threads-many", args, &input, &["2", "3", "5", "16", "0"]);
+        assert!(output.status.success(), "{args:?}");
+        // centroids found within batches, and hits of them
+        let centroids = hits.lines().filter(|l| l.starts_with('S')).count();
+        assert!(centroids > 100 && centroids < 1100, "{args:?}: {centroids}");
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let expected = clust("threads-t", &["--id", "0.9"], INPUT);
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let args: Vec<&str> = ["--id", "0.9"]
+            .iter()
+            .copied()
+            .chain(t.iter().copied())
+            .collect();
+        let (output, hits) = run("threads-t", &args, INPUT);
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(
+            (String::from_utf8(output.stdout).unwrap(), hits),
+            expected,
+            "{t:?}"
+        );
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(
+            run("threads-t", &["--id", "0.9", "-t", t], INPUT)
+                .0
+                .status
+                .code(),
+            Some(2),
+            "{t:?}"
+        );
+    }
+    let (output, _) = same_on_threads(
+        "threads-bad",
+        &["--id", "0.9"],
+        ">a\nACGT\n>b;size=0\nACGT\n",
+        &["2", "8"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+}
+
+/// what a search found, to compare two searches.
+fn found(hits: &[Hit]) -> Vec<(usize, bool, bool, String, i64)> {
+    hits.iter()
+        .map(|h| (h.target, h.minus, h.weak, h.cigar.clone(), h.stats.matches))
+        .collect()
+}
+
+#[test]
+fn a_search_its_horizon_clears_is_unchanged() {
+    // a query is searched, then a target is added. Unless the horizon of the
+    // search says the target could change it, searching again finds the same
+    let (mut unchanged, mut flagged, mut changed) = (0, 0, 0);
+    for seed in 0..12u64 {
+        let records = many_sequences(150, 100 + seed);
+        let mut r = Rng::new(seed);
+        let word_len = [4u32, 6, 8, 8, 10][seed as usize % 5];
+        let mut db = Database::growing(
+            records.iter().map(|(h, _)| h.clone()).collect(),
+            records.iter().map(|(_, s)| s.as_bytes().to_vec()).collect(),
+            records
+                .iter()
+                .map(|(h, _)| h[h.find('=').unwrap() + 1..].parse().unwrap())
+                .collect(),
+            word_len,
+        );
+        let limits = Limits {
+            max_accepts: r.below(3) as usize,
+            max_rejects: 1 + r.below(6) as usize,
+            min_word_matches: [1, MIN_WORD_MATCHES[word_len as usize]][seed as usize % 2],
+            top_hits: None,
+        };
+        // weak hits at the identity, as the options make them
+        let id = [0.8, 0.9, 0.97][seed as usize % 3];
+        let criteria = Criteria {
+            id,
+            weak_id: id,
+            ..Criteria::default()
+        };
+        let mut searcher = Searcher::new(&db, criteria, Scoring::default(), limits);
+        for added in 0..records.len() {
+            // a query from just after the target, often a variant of it, or
+            // from anywhere in the input, against the targets so far
+            let q = if r.below(3) == 0 {
+                r.below(records.len() as u64) as usize
+            } else {
+                (added + 1 + r.below(4) as usize).min(records.len() - 1)
+            };
+            let (label, size) = (&records[q].0, db.sizes[q]);
+            let strands = [records[q].1.clone(), revcomp(&records[q].1)];
+            let words = searcher.distinct_words(records[added].1.as_bytes());
+            let mut before = Vec::new();
+            for (minus, query) in [false, true].into_iter().zip(&strands) {
+                let (hits, horizon) =
+                    searcher.search_seen(&db, label, size, query.as_bytes(), minus);
+                let flags = searcher.would_change(&db, &horizon, added, &words);
+                before.push((hits, flags));
+            }
+            db.add(added);
+            for ((minus, query), (hits, flags)) in
+                [false, true].into_iter().zip(&strands).zip(&before)
+            {
+                let after = searcher.search(&db, label, size, query.as_bytes(), minus);
+                let same = found(hits) == found(&after);
+                if !flags {
+                    assert!(
+                        same,
+                        "seed {seed}, query {q}, target {added}: changed unflagged"
+                    );
+                    unchanged += 1;
+                } else {
+                    flagged += 1;
+                    if !same {
+                        changed += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        unchanged > 100 && flagged > 100 && changed > 10,
+        "{unchanged} {flagged} {changed}"
     );
 }
