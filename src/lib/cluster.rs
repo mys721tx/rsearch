@@ -1,6 +1,7 @@
 use bio::io::fasta::Record;
 use bio::io::fastq;
 use std::collections::{BTreeMap, HashMap};
+use std::hash::BuildHasherDefault;
 use std::sync::LazyLock;
 
 use crate::fastx;
@@ -561,17 +562,29 @@ pub fn dereplicate_prefixes(reads: Vec<PrefixRead>) -> Vec<Cluster> {
 
     let mut reads: Vec<Option<PrefixRead>> = reads.into_iter().map(Some).collect();
     let mut clusters: Vec<Option<Cluster>> = Vec::new();
-    // the normalized representative of each live cluster, and how many
-    // live representatives have each length
-    let mut index: HashMap<Vec<u8>, usize> = HashMap::new();
+    // the normalized representative of each cluster; the live clusters by
+    // the hash of their representative, as vsearch finds them; and how
+    // many live representatives have each length
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    let mut index: HashMap<u64, Vec<usize>, BuildHasherDefault<PassThrough>> =
+        HashMap::default();
     let mut lengths: BTreeMap<usize, usize> = BTreeMap::new();
+    // the hash of each prefix of the read, the empty one first
+    let mut hashes: Vec<u64> = Vec::new();
 
     for i in order {
         let read = reads[i].take().unwrap();
         let key = normalize(&read.seq);
         let len = key.len();
+        prefix_hashes(&mut hashes, &key);
+        // the live cluster whose representative is `key[..l]`
+        let find = |l: usize| {
+            index
+                .get(&hashes[l])
+                .and_then(|list| list.iter().copied().find(|&j| keys[j] == key[..l]))
+        };
 
-        if let Some(&j) = index.get(&key) {
+        if let Some(j) = find(len) {
             let cluster = clusters[j].as_mut().unwrap();
             cluster.size += read.size;
             cluster.merged.push(read.label);
@@ -583,11 +596,15 @@ pub fn dereplicate_prefixes(reads: Vec<PrefixRead>) -> Vec<Cluster> {
         let prefix = lengths
             .range(..len)
             .rev()
-            .find_map(|(&l, _)| index.get(&key[..l]).map(|&j| (l, j)));
+            .find_map(|(&l, _)| find(l).map(|j| (l, j)));
 
         let mut cluster = Cluster::new(&read.label, read.size, &read.seq);
         if let Some((l, j)) = prefix {
-            index.remove(&key[..l]);
+            let list = index.get_mut(&hashes[l]).unwrap();
+            list.retain(|&k| k != j);
+            if list.is_empty() {
+                index.remove(&hashes[l]);
+            }
             if let Some(count) = lengths.get_mut(&l) {
                 *count -= 1;
                 if *count == 0 {
@@ -600,12 +617,48 @@ pub fn dereplicate_prefixes(reads: Vec<PrefixRead>) -> Vec<Cluster> {
             cluster.reverse.extend(old.reverse);
             cluster.lengths.extend(old.lengths);
         }
-        index.insert(key, clusters.len());
+        index.entry(hashes[len]).or_default().push(clusters.len());
+        keys.push(key);
         *lengths.entry(len).or_insert(0) += 1;
         clusters.push(Some(cluster));
     }
 
     clusters.into_iter().flatten().collect()
+}
+
+/// writes the 64-bit FNV-1a hash of each prefix of `seq` to `hashes`,
+/// from the empty prefix to the whole, in one pass, as vsearch's
+/// `--derep_prefix` does.
+fn prefix_hashes(hashes: &mut Vec<u64>, seq: &[u8]) {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    hashes.clear();
+    let mut hash = OFFSET;
+    hashes.push(hash);
+    for &c in seq {
+        hash = (hash ^ u64::from(c)).wrapping_mul(PRIME);
+        hashes.push(hash);
+    }
+}
+
+/// A hasher for keys that are hashes already. It keeps them as they are.
+#[derive(Default)]
+struct PassThrough(u64);
+
+impl std::hash::Hasher for PassThrough {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8) | u64::from(b);
+        }
+    }
+
+    fn write_u64(&mut self, x: u64) {
+        self.0 = x;
+    }
 }
 
 /// sorts clusters by decreasing size. The sort is stable, and ties are
