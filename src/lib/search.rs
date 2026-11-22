@@ -7,7 +7,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::accept::{Criteria, Verdict};
-use crate::align16::Search16;
+use crate::align16::{Aligned, Search16};
 use crate::alignment::Stats;
 use crate::linmem::LinearMemoryAligner;
 use crate::scoring::{FOUR_BIT, Scoring, Substitutions};
@@ -410,6 +410,18 @@ struct Candidate {
     rejected: bool,
 }
 
+/// A batch of candidates taken by [`Searcher::pull`]: where it ends in the
+/// candidates taken, how many are to be aligned and whether that is
+/// `MAX_DELAYED`, the last taken, and whether the candidates ran out.
+#[derive(Default)]
+struct Batch {
+    end: usize,
+    delayed: usize,
+    full: bool,
+    last: Option<Key>,
+    exhausted: bool,
+}
+
 /// The hits of a strand so far, and its accepted and rejected targets.
 #[derive(Default)]
 struct Tally {
@@ -724,24 +736,109 @@ impl Searcher {
             h.min_matches = min;
         }
         self.simd.set_query(query);
-        let (max_accepts, max_rejects) = (self.max_accepts, self.max_rejects);
+        let limit = (self.max_accepts + self.max_rejects).saturating_sub(1);
+        // with sixteen lanes a batch and the next are aligned in one call;
+        // the next is counted only if vsearch would have taken it
+        let pair = self.simd.lanes() >= 2 * MAX_DELAYED;
         let mut pending: Vec<Candidate> = Vec::new();
         let mut tally = Tally::default();
-        let (mut finalized, mut delayed) = (0usize, 0usize);
         let mut next = candidates.into_iter();
-        while finalized + delayed < (max_accepts + max_rejects).saturating_sub(1)
-            && tally.rejects < max_rejects
-            && tally.accepts < max_accepts
-        {
-            let Some(key) = next.next() else {
-                if let Some(h) = horizon.as_deref_mut() {
-                    h.open = kept < self.top_hits;
+        // the batch to pull starts after the last full batch
+        let mut base = 0;
+        let reached = |tally: &Tally, this: &Searcher| {
+            tally.rejects >= this.max_rejects || tally.accepts >= this.max_accepts
+        };
+        let note = |horizon: &mut Option<&mut Horizon>, batch: &Batch, top_hits: usize| {
+            if let Some(h) = horizon.as_deref_mut() {
+                if batch.last.is_some() {
+                    h.last = batch.last;
                 }
+                if batch.exhausted {
+                    h.open = kept < top_hits;
+                }
+            }
+        };
+        while !reached(&tally, self) {
+            let first = self.pull(&mut next, &mut pending, base, limit, db, label, query, size);
+            let second = (pair && first.full).then(|| {
+                self.pull(
+                    &mut next,
+                    &mut pending,
+                    first.end,
+                    limit,
+                    db,
+                    label,
+                    query,
+                    size,
+                )
+            });
+            let both = second.as_ref().map_or(first.end, |b| b.end);
+            let mut aligned = self.align_batch(db, &pending[base..both]).into_iter();
+            note(&mut horizon, &first, self.top_hits);
+            if first.delayed > 0 {
+                self.align_delayed(
+                    db,
+                    query,
+                    minus,
+                    &pending[base..first.end],
+                    &mut aligned,
+                    &mut tally,
+                );
+            }
+            if !first.full {
+                break;
+            }
+            base = first.end;
+            let Some(second) = second else {
+                continue;
+            };
+            if reached(&tally, self) {
+                // vsearch stops after the first batch, and the second is
+                // dropped
+                break;
+            }
+            note(&mut horizon, &second, self.top_hits);
+            if second.delayed > 0 {
+                self.align_delayed(
+                    db,
+                    query,
+                    minus,
+                    &pending[first.end..second.end],
+                    &mut aligned,
+                    &mut tally,
+                );
+            }
+            if !second.full {
+                break;
+            }
+            base = second.end;
+        }
+        tally.hits
+    }
+
+    /// takes the candidates of the next batch from `next` into `pending`,
+    /// as vsearch's search loop takes them. It stops once `MAX_DELAYED` are
+    /// to be aligned, the candidates run out, or those taken since the last
+    /// full batch, at `base`, reach `limit`.
+    #[allow(clippy::too_many_arguments)]
+    fn pull(
+        &self,
+        next: &mut impl Iterator<Item = Key>,
+        pending: &mut Vec<Candidate>,
+        base: usize,
+        limit: usize,
+        db: &Database,
+        label: &str,
+        query: &[u8],
+        size: i64,
+    ) -> Batch {
+        let mut batch = Batch::default();
+        while base + batch.delayed < limit {
+            let Some(key) = next.next() else {
+                batch.exhausted = true;
                 break;
             };
-            if let Some(h) = horizon.as_deref_mut() {
-                h.last = Some(key);
-            }
+            batch.last = Some(key);
             let t = key.2;
             let mut ok = self.criteria.unaligned(
                 label,
@@ -762,45 +859,47 @@ impl Searcher {
                             .all(|(&a, &b)| FOUR_BIT[usize::from(a)] == FOUR_BIT[usize::from(b)]));
             }
             if ok {
-                delayed += 1;
+                batch.delayed += 1;
             }
             pending.push(Candidate {
                 target: t,
                 rejected: !ok,
             });
-            if delayed == MAX_DELAYED {
-                self.align_delayed(db, query, minus, &pending[finalized..], &mut tally);
-                finalized = pending.len();
-                delayed = 0;
+            if batch.delayed == MAX_DELAYED {
+                batch.full = true;
+                break;
             }
         }
-        if delayed > 0 {
-            self.align_delayed(db, query, minus, &pending[finalized..], &mut tally);
-        }
-        tally.hits
+        batch.end = pending.len();
+        batch
     }
 
-    /// vsearch's `align_delayed`: aligns the candidates not yet rejected,
-    /// then counts the batch's accepted and rejected ones up to the limits.
+    /// aligns the candidates of `batch` not yet rejected, in one call.
+    fn align_batch(&mut self, db: &Database, batch: &[Candidate]) -> Vec<Aligned> {
+        let targets: Vec<&[u8]> = batch
+            .iter()
+            .filter(|c| !c.rejected)
+            .map(|c| db.seqs[c.target].as_slice())
+            .collect();
+        if targets.is_empty() {
+            Vec::new()
+        } else {
+            self.simd.align(&targets)
+        }
+    }
+
+    /// vsearch's `align_delayed`: counts the batch's accepted and rejected
+    /// candidates up to the limits, with `aligned`, the alignments of those
+    /// not yet rejected, in order.
     fn align_delayed(
         &mut self,
         db: &Database,
         query: &[u8],
         minus: bool,
         batch: &[Candidate],
+        aligned: &mut impl Iterator<Item = Aligned>,
         tally: &mut Tally,
     ) {
-        let targets: Vec<&[u8]> = batch
-            .iter()
-            .filter(|c| !c.rejected)
-            .map(|c| db.seqs[c.target].as_slice())
-            .collect();
-        let mut aligned = if targets.is_empty() {
-            Vec::new()
-        } else {
-            self.simd.align(&targets)
-        }
-        .into_iter();
         for c in batch {
             if tally.rejects >= self.max_rejects || tally.accepts >= self.max_accepts {
                 break;

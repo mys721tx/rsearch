@@ -151,6 +151,19 @@ impl Search16 {
         }
     }
 
+    /// the targets aligned at once in the widest calls.
+    pub fn lanes(&self) -> usize {
+        match &self.kernel {
+            Kernel::Scalar(_) => Scalar::N,
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Sse2(_) => Sse2::N,
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Avx2 { .. } => Avx2::N,
+            #[cfg(target_arch = "aarch64")]
+            Kernel::Neon(_) => Neon::N,
+        }
+    }
+
     /// aligns the query with each of `targets`, as vsearch's `search16`.
     pub fn align(&mut self, targets: &[&[u8]]) -> Vec<Aligned> {
         match &mut self.kernel {
