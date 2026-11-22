@@ -40,7 +40,7 @@ impl Rng {
         (0..n).map(|_| self.base()).collect()
     }
 
-    /// `k` random substitutions, deletions and insertions.
+    /// `k` random substitutions, deletions, and insertions.
     fn edit(&mut self, seq: &str, k: usize) -> String {
         let mut x: Vec<char> = seq.chars().collect();
         for _ in 0..k {
@@ -185,15 +185,186 @@ fn run(name: &str, args: &[&str], q: &str, db: &str) -> Output {
     output
 }
 
-/// Runs dbsrch, which must succeed, and returns its hits.
+/// The thread counts every search is run with. Its hits must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs dbsrch on each of `THREADS`, which must succeed and write the same
+/// hits each time, and returns its hits.
 fn dbsrch(name: &str, args: &[&str], q: &str, db: &str) -> String {
-    let output = run(name, args, q, db);
-    assert!(
-        output.status.success(),
-        "dbsrch failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<String> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let output = run(name, &with_threads, q, db);
+        assert!(
+            output.status.success(),
+            "dbsrch -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let hits = String::from_utf8(output.stdout).unwrap();
+        match &first {
+            None => first = Some(hits),
+            Some(one) => assert_eq!(&hits, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// Runs dbsrch with `args` at -t 1 and at each count of `counts`, and checks
+/// that the output, the messages, and the exit code are the same.
+fn same_on_threads(name: &str, args: &[&str], q: &str, db: &str, counts: &[&str]) -> Output {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = run(
+        name,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        q,
+        db,
     );
-    String::from_utf8(output.stdout).unwrap()
+    for &t in counts {
+        let these = with(t);
+        let other = run(
+            name,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            q,
+            db,
+        );
+        assert_eq!(other.status.code(), one.status.code(), "-t {t}, {args:?}");
+        assert!(
+            other.stdout == one.stdout,
+            "-t {t} writes other hits, {args:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&other.stderr),
+            String::from_utf8_lossy(&one.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
+}
+
+/// Many queries, more than a batch of every thread count: variants of the
+/// database's sequences on either strand, unrelated ones, short and empty
+/// ones, some with abundances, in mixed case.
+fn many_queries(n: usize) -> String {
+    let i = inputs();
+    let targets: Vec<&str> = i.db.lines().skip(1).step_by(2).collect();
+    let mut r = Rng::new(31);
+    let mut records = Vec::with_capacity(n);
+    for k in 0..n {
+        let t = targets[r.below(targets.len() as u64) as usize];
+        let seq = match k % 7 {
+            0 => r.seq(150),
+            1 => rc(&r.edit(t, 3)),
+            2 => String::new(),
+            3 => r.edit(t, 1).to_lowercase(),
+            4 => t[..t.len().min(20)].to_string(),
+            _ => r.edit(t, (k % 11) + 1),
+        };
+        let label = if k % 5 == 0 {
+            format!("m{k};size={}", k % 9 + 1)
+        } else {
+            format!("m{k}")
+        };
+        records.push(format!(">{label}\n{seq}\n"));
+    }
+    records.concat()
+}
+
+#[test]
+fn writes_the_same_hits_on_any_thread_count() {
+    let i = inputs();
+    let q = many_queries(1500);
+    for args in [
+        &["--id", "0.8"][..],
+        &[
+            "--id",
+            "0.7",
+            "--strand",
+            "both",
+            "--maxaccepts",
+            "3",
+            "--maxrejects",
+            "4",
+        ],
+        &[
+            "--id",
+            "0.9",
+            "--maxaccepts",
+            "0",
+            "--maxrejects",
+            "0",
+            "--top-hits-only",
+        ],
+        &[
+            "--id",
+            "0.6",
+            "--weak-id",
+            "0.5",
+            "--maxhits",
+            "2",
+            "--strand",
+            "both",
+        ],
+    ] {
+        let one = same_on_threads("many", args, &q, &i.db, &["2", "3", "4", "7", "16", "0"]);
+        assert!(one.status.success());
+        // a hit or an N record for every query
+        let queries: std::collections::BTreeSet<&str> = std::str::from_utf8(&one.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| l.split('\t').nth(8).unwrap())
+            .collect();
+        assert_eq!(queries.len(), 1500, "{args:?}");
+    }
+}
+
+#[test]
+fn stops_at_an_invalid_query_as_on_one_thread() {
+    let i = inputs();
+    let q = many_queries(1200);
+    // an invalid abundance, and a character that cannot be read, after
+    // enough hits to fill the output's buffer several times over, and as
+    // the first query
+    for bad in [">bad;size=0\nACGT\n", ">bad\nAC\u{1}GT\n"] {
+        for input in [format!("{q}{bad}{q}"), format!("{bad}{q}")] {
+            let one = same_on_threads("bad", &["--id", "0.8"], &input, &i.db, &["2", "3", "8"]);
+            assert_eq!(one.status.code(), Some(1));
+        }
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let i = inputs();
+    let expected = dbsrch("t", &["--id", "0.9"], &i.q, &i.db);
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"], &[]] {
+        let args: Vec<&str> = ["--id", "0.9"]
+            .iter()
+            .copied()
+            .chain(t.iter().copied())
+            .collect();
+        let output = run("t", &args, &i.q, &i.db);
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{t:?}");
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(
+            run("t", &["--id", "0.9", "-t", t], &i.q, &i.db)
+                .status
+                .code(),
+            Some(2),
+            "{t:?}"
+        );
+    }
+    assert_eq!(
+        same_on_threads("empty", &["--id", "0.9"], "", &i.db, &["2", "8"]).stdout,
+        b""
+    );
 }
 
 #[test]
