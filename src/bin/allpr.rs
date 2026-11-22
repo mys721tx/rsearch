@@ -17,6 +17,7 @@ use rsearch::hits::{write_hit, write_no_hit};
 use rsearch::label::checked_abundance;
 use rsearch::linmem::LinearMemoryAligner;
 use rsearch::options::{hit_choice_args, search_args, search_options};
+use rsearch::threads::{Workers, threads, threads_args};
 
 /// prints a warning, which may hold bytes that are not UTF-8.
 fn warn(message: &[u8]) {
@@ -72,7 +73,7 @@ fn main() {
                 .action(ArgAction::SetTrue)
                 .help("Accept every hit, the criteria aside"),
         );
-    let matches = hit_choice_args(search_args(command))
+    let matches = threads_args(hit_choice_args(search_args(command)))
         .group(
             ArgGroup::new("acceptance")
                 .args(["id", "accept-all"])
@@ -80,6 +81,7 @@ fn main() {
         )
         .get_matches();
     let (scoring, criteria) = search_options(&matches);
+    let threads = threads(&matches);
     let accept_all = matches.get_flag("accept-all");
     let max_hits = matches
         .get_one::<u64>("maxhits")
@@ -118,10 +120,15 @@ fn main() {
         )),
         None => Box::new(BufWriter::new(io::stdout())),
     };
-    let mut search = Search16::new(&scoring);
-    let mut fallback = LinearMemoryAligner::new(&scoring);
+    // each sequence against the ones after it, by the workers, the hits
+    // written in input order
+    let workers = Workers::new(threads, || {
+        (Search16::new(&scoring), LinearMemoryAligner::new(&scoring))
+    });
     let table = scoring.substitutions();
-    for q in 0..seqs.len() {
+    let align = |(search, fallback): &mut (Search16, LinearMemoryAligner),
+                 q: usize|
+     -> Result<Vec<u8>, String> {
         let query = &seqs[q];
         let candidates: Vec<usize> = (q + 1..seqs.len())
             .filter(|&t| {
@@ -153,7 +160,7 @@ fn main() {
                     );
                     (aligned.cigar, stats)
                 };
-                let stats = stats.unwrap_or_else(|e| fail(&format!("internal error: {e}")));
+                let stats = stats.map_err(|e| format!("internal error: {e}"))?;
                 let verdict = if accept_all {
                     Verdict::Accepted
                 } else {
@@ -175,13 +182,14 @@ fn main() {
         if top_only && let Some(best) = hits.first().map(id) {
             hits.retain(|h| id(h) >= best);
         }
-        let written = if hits.is_empty() {
-            write_no_hit(&mut out, labels[q].as_bytes())
+        let mut text = Vec::new();
+        if hits.is_empty() {
+            write_no_hit(&mut text, labels[q].as_bytes()).unwrap();
         } else {
-            hits.iter().try_for_each(|h| {
+            for h in &hits {
                 let perfect = h.stats.matches == h.stats.length;
                 write_hit(
-                    &mut out,
+                    &mut text,
                     h.target as u64,
                     query.len(),
                     id(h),
@@ -190,10 +198,23 @@ fn main() {
                     labels[q].as_bytes(),
                     labels[h.target].as_bytes(),
                 )
-            })
-        };
-        written.unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
-    }
+                .unwrap();
+            }
+        }
+        Ok(text)
+    };
+    let mut queries = 0..seqs.len();
+    workers.stream(
+        8 * threads,
+        || queries.next(),
+        align,
+        |text| match text {
+            Ok(text) => out
+                .write_all(&text)
+                .unwrap_or_else(|e| fail(&format!("cannot write: {e}"))),
+            Err(message) => fail(&message),
+        },
+    );
     out.flush()
         .unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
 }

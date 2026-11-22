@@ -6,7 +6,7 @@ Align every pair of sequences in one file; write hits.
 
 ```
 allpr (--id SHARE | --accept-all) [-i FILE] [-o FILE] [criteria] [scores]
-      [--maxhits N] [--top-hits-only]
+      [--maxhits N] [--top-hits-only] [-t N]
 ```
 
 ## Description
@@ -24,6 +24,8 @@ sequence as query.
 
 - `-i`, `--in FILE`: Input FASTA or FASTQ file. Default: standard input.
 - `-o`, `--out FILE`: Output UC file of hits. Default: standard output.
+- `-t`, `--threads N`: Align on N threads, 0 for one per logical core.
+  The hits are the same, in the same order, on any number. Default: 0.
 - `--accept-all`: Accept every hit the criteria do not reject. Not with
   `--id`.
 - `--id SHARE`: Accept hits of at least this identity, 0 to 1.
@@ -73,6 +75,11 @@ left out. Like vsearch it keeps the counts of the 16-bit aligner, which
 takes every column of an empty query's alignment for a gap (`--iddef 3`
 shows it). vsearch's default `--minseqlength 1` is `sqfilt` before it.
 Its other outputs are [hitfmt](hitfmt.md) on the hits.
+
+vsearch aligns on several threads too, and writes each sequence's hits as
+its thread finishes, in another order from one run to the next. allpr writes
+them in input order on any number of threads. That is the order of vsearch
+`--threads 1`, with the same lines as vsearch on any number.
 
 ## Examples
 
