@@ -223,15 +223,143 @@ fn run(name: &str, args: &[&str], input: &str) -> (Output, String) {
     (output, written)
 }
 
-/// Runs unoise, which must succeed, and returns its centroids and hits.
+/// The thread counts every run is made with. The clusters must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs unoise on each of `THREADS`, which must succeed and write the same
+/// centroids and hits each time, and returns them.
 fn unoise(name: &str, args: &[&str], input: &str) -> (String, String) {
-    let (output, hits) = run(name, args, input);
-    assert!(
-        output.status.success(),
-        "unoise failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<(String, String)> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let (output, hits) = run(name, &with_threads, input);
+        assert!(
+            output.status.success(),
+            "unoise -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let this = (String::from_utf8(output.stdout).unwrap(), hits);
+        match &first {
+            None => first = Some(this),
+            Some(one) => assert_eq!(&this, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// xorshift64, for the inputs of the thread tests.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Rng {
+        Rng(seed.wrapping_mul(2_654_435_761).wrapping_add(1))
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    fn base(&mut self) -> char {
+        b"ACGT"[(self.next() >> 62) as usize] as char
+    }
+
+    /// `k` random substitutions, and an insertion or deletion one time in
+    /// four.
+    fn edit(&mut self, seq: &str, k: usize) -> String {
+        let mut x: Vec<char> = seq.chars().collect();
+        for _ in 0..k {
+            let p = self.below(x.len() as u64) as usize;
+            x[p] = self.base();
+        }
+        match self.below(8) {
+            0 => {
+                x.remove(self.below(x.len() as u64) as usize);
+            }
+            1 => {
+                let c = self.base();
+                x.insert(self.below(x.len() as u64) as usize, c);
+            }
+            _ => {}
+        }
+        x.into_iter().collect()
+    }
+}
+
+/// Many sequences by decreasing abundance: abundant templates and their
+/// rarer variants, interleaved, so that centroids found within a batch of
+/// queries are hits of the queries after them in the same batch.
+fn many_sequences(n: usize, seed: u64) -> String {
+    let mut r = Rng::new(seed);
+    let templates: Vec<String> = (0..n / 8)
+        .map(|_| (0..150).map(|_| r.base()).collect())
+        .collect();
+    let mut records = Vec::with_capacity(n);
+    for k in 0..n {
+        let t = &templates[k % templates.len()];
+        let edits = r.below(5) as usize;
+        let seq = if k < templates.len() {
+            t.clone()
+        } else {
+            r.edit(t, edits)
+        };
+        records.push((format!("u{k}"), seq));
+    }
+    // sizes that fall along the input, ties included
+    let mut size = 5000u64;
+    let mut out = String::new();
+    for (label, seq) in records {
+        out.push_str(&format!(">{label};size={size}\n{seq}\n"));
+        size = size.saturating_sub(r.below(8)).max(1);
+    }
+    out
+}
+
+/// Runs unoise with `args` at -t 1 and at each count of `counts`, and checks
+/// that the centroids, the hits, the messages, and the exit code are the same.
+fn same_on_threads(name: &str, args: &[&str], input: &str, counts: &[&str]) -> (Output, String) {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = run(
+        name,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        input,
     );
-    (String::from_utf8(output.stdout).unwrap(), hits)
+    for &t in counts {
+        let these = with(t);
+        let other = run(
+            name,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            input,
+        );
+        assert_eq!(
+            other.0.status.code(),
+            one.0.status.code(),
+            "-t {t}, {args:?}"
+        );
+        assert!(
+            other.0.stdout == one.0.stdout,
+            "-t {t} writes other centroids, {args:?}"
+        );
+        assert!(other.1 == one.1, "-t {t} writes other hits, {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&other.0.stderr),
+            String::from_utf8_lossy(&one.0.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
 }
 
 #[test]
@@ -2191,4 +2319,42 @@ fn rejects_invalid_arguments() {
     }
     let (output, _) = run("bad", &[], ">a\nACGT\n>b;size=0\nACGT\n");
     assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn denoises_the_same_on_any_thread_count() {
+    let input = many_sequences(1600, 9);
+    for args in [
+        &[][..],
+        &["--alpha", "1", "--strand", "both"],
+        &["--maxaccepts", "2", "--maxrejects", "2", "--word-len", "6"],
+        &["--id", "0.95", "--size-order"],
+    ] {
+        let (output, hits) =
+            same_on_threads("threads-many", args, &input, &["2", "3", "5", "16", "0"]);
+        assert!(output.status.success(), "{args:?}");
+        let centroids = hits.lines().filter(|l| l.starts_with('S')).count();
+        assert!(centroids >= 200, "{args:?}: {centroids}");
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let expected = unoise("threads-t", &[], INPUT);
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let (output, hits) = run("threads-t", t, INPUT);
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(
+            (String::from_utf8(output.stdout).unwrap(), hits),
+            expected,
+            "{t:?}"
+        );
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(
+            run("threads-t", &["-t", t], INPUT).0.status.code(),
+            Some(2),
+            "{t:?}"
+        );
+    }
 }
