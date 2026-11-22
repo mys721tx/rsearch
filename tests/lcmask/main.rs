@@ -21,24 +21,96 @@ fn run(args: &[&str], input: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("lcmask should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
+    // fed on a thread of its own. lcmask may stop reading at an error
+    let mut stdin = child.stdin.take().unwrap();
+    let input = input.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
+    output
 }
 
-/// Runs lcmask and returns its standard output, which must succeed.
+/// The thread counts every run is made with. Its output must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs lcmask on each of `THREADS`, which must succeed and write the same
+/// each time, and returns its standard output.
 fn lcmask(args: &[&str], input: &str) -> String {
-    let output = run(args, input);
-    assert!(
-        output.status.success(),
-        "lcmask failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<String> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let output = run(&with_threads, input);
+        assert!(
+            output.status.success(),
+            "lcmask -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let masked = String::from_utf8(output.stdout).unwrap();
+        match &first {
+            None => first = Some(masked),
+            Some(one) => assert_eq!(&masked, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// Runs lcmask with `args` at -t 1 and at each count of `counts`, and checks
+/// that the output, the messages, and the exit code are the same.
+fn same_on_threads(args: &[&str], input: &str, counts: &[&str]) -> Output {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = run(
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        input,
     );
-    String::from_utf8(output.stdout).unwrap()
+    for &t in counts {
+        let these = with(t);
+        let other = run(&these.iter().map(String::as_str).collect::<Vec<_>>(), input);
+        assert_eq!(other.status.code(), one.status.code(), "-t {t}, {args:?}");
+        assert!(
+            other.stdout == one.stdout,
+            "-t {t} masks otherwise, {args:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&other.stderr),
+            String::from_utf8_lossy(&one.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
+}
+
+/// Many records, several chunks of them: the short and long sequences again
+/// and again under new labels, as FASTA or as FASTQ.
+fn many(n: usize, as_fastq: bool) -> String {
+    let all = format!("{}{}", short(), long());
+    let records: Vec<(&str, &str)> = all
+        .split('>')
+        .filter(|r| !r.is_empty())
+        .map(|r| r.trim_end().split_once('\n').unwrap_or((r.trim_end(), "")))
+        .collect();
+    let mut out = String::new();
+    for k in 0..n {
+        let (label, seq) = records[k % records.len()];
+        let label = if k % 4 == 0 {
+            format!("{label}_{k};size={}", k % 3 + 1)
+        } else {
+            format!("{label}_{k}")
+        };
+        if as_fastq {
+            out.push_str(&format!("@{label}\n{seq}\n+\n{}\n", "I".repeat(seq.len())));
+        } else {
+            out.push_str(&format!(">{label}\n{seq}\n"));
+        }
+    }
+    out
 }
 
 /// Builds FASTA text from (label, sequence) pairs.
@@ -323,4 +395,49 @@ fn reads_and_writes_files() {
     std::fs::remove_file(output).unwrap();
     assert_eq!(stdout, "");
     assert_eq!(written, fastq(&[("a", "ttttttttt", "I#5I#5I#5")]));
+}
+
+#[test]
+fn masks_the_same_on_any_thread_count() {
+    for as_fastq in [false, true] {
+        let input = many(5000, as_fastq);
+        for args in [&[][..], &["--hard"], &["--hard", "--no-dust"], &["--clear"]] {
+            let one = same_on_threads(args, &input, &["2", "3", "5", "16", "0"]);
+            assert!(one.status.success(), "{args:?}");
+            assert!(!one.stdout.is_empty());
+        }
+    }
+}
+
+#[test]
+fn stops_at_an_invalid_record_as_on_one_thread() {
+    let input = many(5000, false);
+    let (head, tail) = input.split_at(input.match_indices('>').nth(3700).unwrap().0);
+    for bad in [">bad;size=0\nACGT\n", ">bad\nAC\u{1}GT\n"] {
+        for whole in [format!("{head}{bad}{tail}"), format!("{bad}{input}")] {
+            let one = same_on_threads(&[], &whole, &["2", "3", "8"]);
+            assert_eq!(one.status.code(), Some(1));
+        }
+    }
+    let fastq = many(5000, true);
+    let one = same_on_threads(
+        &["--hard"],
+        &format!("{fastq}@cut\nACGT\n+\nII\n"),
+        &["2", "8"],
+    );
+    assert_eq!(one.status.code(), Some(1));
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let input = many(50, false);
+    let expected = lcmask(&[], &input);
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let output = run(t, &input);
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{t:?}");
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(run(&["-t", t], &input).status.code(), Some(2), "{t:?}");
+    }
 }
