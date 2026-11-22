@@ -8,12 +8,18 @@
 //! unoise takes them). compare/benches/unoise times vsearch at the same
 //! thread counts on the same file, after checking that both write the same
 //! centroids and hits.
+//!
+//! `simd` times unoise/default at each SIMD level this processor has, chosen
+//! with `RSEARCH_SIMD` or listed in `RSEARCH_BENCH_SIMD`. It sets the scalar
+//! code the compiler vectorises against the hand-written SSE2, AVX2, or NEON.
 
 use std::process::{Command, Stdio};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 mod input;
+#[path = "../common/levels.rs"]
+mod levels;
 use input::*;
 
 fn run(program: &str, args: &[&str]) {
@@ -48,5 +54,26 @@ fn bench_binary(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_binary);
+/// unoise/default at each SIMD level this processor has, with the defaults on
+/// one thread.
+fn bench_simd(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
+    let input = input_file();
+    let fa = input.to_str().unwrap();
+    let unoise = env!("CARGO_BIN_EXE_unoise");
+    let mut group = c.benchmark_group(data::group("unoise/simd"));
+    group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
+    group.sample_size(10);
+    let args = ["-i", fa, "-o", "/dev/null", "-t", "1"];
+    for level in levels::levels() {
+        group.bench_function(format!("unoise/default/{}", level.name()), |b| {
+            b.iter(|| levels::run_at(level, unoise, &args))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_binary, bench_simd);
 criterion_main!(benches);
