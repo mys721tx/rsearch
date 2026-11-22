@@ -25,6 +25,7 @@ pub mod scramble;
 pub mod search;
 pub mod select;
 pub mod sff;
+pub mod simd;
 pub mod sintax;
 pub mod taxonomy;
 pub mod threads;
