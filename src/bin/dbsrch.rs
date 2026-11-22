@@ -15,6 +15,7 @@ use rsearch::hits::{write_hit, write_no_hit};
 use rsearch::label::checked_abundance;
 use rsearch::options::{hit_choice_args, search_args, search_options};
 use rsearch::search::{Limits, MIN_WORD_MATCHES, Searcher, order, read_database};
+use rsearch::threads::{Workers, threads, threads_args};
 use rsearch::words::{MAX_WORD_LEN, MIN_WORD_LEN};
 
 /// prints a warning, which may hold bytes that are not UTF-8.
@@ -107,7 +108,7 @@ fn main() {
                     "Words a target shares with the query to be a candidate, default by --word-len",
                 ),
         );
-    let matches = hit_choice_args(search_args(command))
+    let matches = threads_args(hit_choice_args(search_args(command)))
         .mut_arg("id", |a| a.required(true))
         .get_matches();
     let (scoring, criteria) = search_options(&matches);
@@ -151,23 +152,42 @@ fn main() {
     };
     let mut reader = Reader::new(BufReader::new(fin));
     let mut record = Record::new();
-    let mut searcher = Searcher::new(&db, criteria, scoring, limits);
-    let mut minus = Vec::new();
-    loop {
-        reader
-            .read(&mut record)
-            .unwrap_or_else(|e| fail(&e.to_string()));
-        if record.is_empty() {
-            break;
+    // a query, or the error that ends the input. Nothing is read after an
+    // error, and the hits of the queries before it are written first
+    let mut failed = false;
+    let next = || -> Option<Result<(String, i64, Vec<u8>), String>> {
+        if failed {
+            return None;
         }
-        let label = record.header();
-        let qsize = checked_abundance(label)
-            .unwrap_or_else(|e| fail(&format!("{e} in read {label}"))) as i64;
-        let query = record.seq();
-        let mut hits = searcher.search(&db, label, qsize, query, false);
+        let query = match reader.read(&mut record) {
+            Err(e) => Err(e.to_string()),
+            Ok(()) if record.is_empty() => return None,
+            Ok(()) => {
+                let label = record.header();
+                checked_abundance(label)
+                    .map(|size| (label.to_string(), size as i64, record.seq().to_vec()))
+                    .map_err(|e| format!("{e} in read {label}"))
+            }
+        };
+        failed = query.is_err();
+        Some(query)
+    };
+    // each worker's searcher and reverse strand
+    let threads = threads(&matches);
+    let workers = Workers::new(threads, || {
+        (
+            Searcher::new(&db, criteria.clone(), scoring, limits),
+            Vec::new(),
+        )
+    });
+    let search = |(searcher, minus): &mut (Searcher, Vec<u8>),
+                  query: Result<(String, i64, Vec<u8>), String>|
+     -> Result<Vec<u8>, String> {
+        let (label, qsize, query) = query?;
+        let mut hits = searcher.search(&db, &label, qsize, &query, false);
         if both {
-            reverse_complement_keeping_case(&mut minus, query);
-            hits.extend(searcher.search(&db, label, qsize, &minus, true));
+            reverse_complement_keeping_case(minus, &query);
+            hits.extend(searcher.search(&db, &label, qsize, minus, true));
         }
         order(&mut hits, iddef);
         hits.truncate(max_hits);
@@ -178,13 +198,14 @@ fn main() {
                 .count();
             hits.truncate(n);
         }
-        let written = if hits.is_empty() {
-            write_no_hit(&mut out, label.as_bytes())
+        let mut text = Vec::new();
+        if hits.is_empty() {
+            write_no_hit(&mut text, label.as_bytes()).unwrap();
         } else {
-            hits.iter().try_for_each(|h| {
+            for h in &hits {
                 let perfect = h.stats.matches == h.stats.length;
                 write_hit(
-                    &mut out,
+                    &mut text,
                     h.target as u64,
                     query.len(),
                     h.stats.id[iddef],
@@ -193,10 +214,17 @@ fn main() {
                     label.as_bytes(),
                     db.labels[h.target].as_bytes(),
                 )
-            })
-        };
-        written.unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
-    }
+                .unwrap();
+            }
+        }
+        Ok(text)
+    };
+    workers.stream(32 * threads, next, search, |text| match text {
+        Ok(text) => out
+            .write_all(&text)
+            .unwrap_or_else(|e| fail(&format!("cannot write: {e}"))),
+        Err(message) => fail(&message),
+    });
     if let Some(warning) = reader.stripped_warning() {
         warn(&warning);
     }

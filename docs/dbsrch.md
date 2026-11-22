@@ -8,7 +8,7 @@ Search queries against a database; write hits.
 dbsrch --db FILE --id SHARE [-i FILE] [-o FILE] [--strand plus|both]
        [--maxaccepts N] [--maxrejects N] [--word-len N]
        [--min-word-matches N] [criteria] [scores] [--maxhits N]
-       [--top-hits-only]
+       [--top-hits-only] [-t N]
 ```
 
 ## Description
@@ -40,6 +40,8 @@ the target's. [hitfmt](hitfmt.md), [otutab](otutab.md),
 - `-i`, `--in FILE`: Input FASTA or FASTQ file of queries. Default:
   standard input.
 - `-o`, `--out FILE`: Output UC file of hits. Default: standard output.
+- `-t`, `--threads N`: Search on N threads, 0 for one per logical core.
+  The hits are the same, in the same order, on any number. Default: 0.
 - `--db FILE`: Database: FASTA, FASTQ or UDB file. Required.
 - `--strand plus|both`: Search the plus strand of the queries, or both.
   Default: plus.
@@ -139,6 +141,12 @@ the default `--maxaccepts 1` another target can be accepted first. dbsrch
 keeps the masking it is given, whoever made it, rather than running DUST
 again and upper-casing the queries as vsearch does. `--qmask soft` and
 `--qmask none` give vsearch's results, and so does `--strand plus`.
+
+vsearch searches on several threads too, and writes each query's hits as its
+thread finishes, so the queries come in another order from one run to the
+next. dbsrch writes them in input order on any number of threads. That is
+the order of vsearch `--threads 1`, with the same lines as vsearch on any
+number.
 
 Hits that tie
 on vsearch's sort key (the two strands of a target at one identity) are
