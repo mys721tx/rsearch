@@ -3,8 +3,10 @@
 //! `merge` measures `rsearch::merge::Merger` on parsed pairs; `binary` runs
 //! the mergpa program end to end on two FASTQ files. The pairs are 250
 //! bases read from both ends of fragments of 300 to 450, with Illumina-like
-//! scores, so that most overlap by 50 to 200 bases and merge.
-//! compare/benches/mergpa times vsearch on the same files.
+//! scores, so that most overlap by 50 to 200 bases and merge. `binary` runs
+//! at each thread count of `data::thread_counts` (one and one per core, or
+//! `RSEARCH_BENCH_THREADS`). compare/benches/mergpa times vsearch at the
+//! same thread counts on the same files.
 
 use std::hint::black_box;
 use std::process::Command;
@@ -73,8 +75,11 @@ fn bench_binary(c: &mut Criterion) {
     let mut group = c.benchmark_group(data::group("mergpa/binary"));
     group.throughput(Throughput::Elements(data::count(&forward, PAIRS)));
     group.sample_size(10);
-    let args = ["-i", fwd, "--reverse", rev, "-o", "/dev/null"];
-    group.bench_function("mergpa", |b| b.iter(|| run(mergpa, &args)));
+    for threads in data::thread_counts() {
+        let t = threads.to_string();
+        let args = ["-i", fwd, "--reverse", rev, "-o", "/dev/null", "-t", &t];
+        group.bench_function(format!("mergpa/t{t}"), |b| b.iter(|| run(mergpa, &args)));
+    }
     group.finish();
 }
 

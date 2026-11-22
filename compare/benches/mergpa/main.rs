@@ -1,6 +1,6 @@
-//! Times `vsearch --fastq_mergepairs`, on one thread and on its default
-//! number, and its rsearch pipeline on the files of rsearch's mergpa
-//! benchmark (see `common/vsearch.rs`).
+//! Times `vsearch --fastq_mergepairs` and its rsearch pipeline on the files
+//! of rsearch's mergpa benchmark, at the thread counts rsearch's benchmark
+//! takes (`data::thread_counts`; see `common/vsearch.rs`).
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
@@ -32,9 +32,11 @@ fn bench_binary(c: &mut Criterion) {
         "--fastqout",
         "/dev/null",
     ];
-    let one = [&args[..], &["--threads", "1"]].concat();
-    vsearch::bench(&mut group, "vsearch/1-thread", &vsearch, &one);
-    vsearch::bench(&mut group, "vsearch/threads", &vsearch, &args);
+    for threads in data::thread_counts() {
+        let t = threads.to_string();
+        let with = [&args[..], &["--threads", &t]].concat();
+        vsearch::bench(&mut group, format!("vsearch/t{t}"), &vsearch, &with);
+    }
     group.finish();
 }
 
