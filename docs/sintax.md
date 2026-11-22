@@ -6,7 +6,7 @@ Classify sequences by taxonomy with SINTAX.
 
 ```
 sintax --db FILE [-i FILE] [-o FILE] [--word-len N] [--strand plus|both]
-       [--cutoff SHARE] [--random] [--seed SEED] [--report FILE]
+       [--cutoff SHARE] [--random] [--seed SEED] [--report FILE] [-t N]
 ```
 
 ## Description
@@ -44,6 +44,8 @@ from run to run.
   first, sequence.
 - `--seed SEED`: Seed of the random numbers. Default: one from the system.
 - `--report FILE`: Output file of the number of queries classified.
+- `-t`, `--threads N`: Classify on N threads, 0 for one per logical core.
+  The table is the same, in the same order, on any number. Default: 0.
 
 ## vsearch
 
@@ -57,6 +59,12 @@ never masks its queries. Its result is therefore sintax with `lcmask
 database too. Its
 database length limits are `sqfilt --min-len 32 --max-len 50000` on the
 database.
+
+Each query draws its random numbers from a stream of its own, numbered by
+its place in the input, as vsearch's are. The picks of a query thus depend
+only on the seed and its place, on any number of threads. vsearch writes the
+lines as its threads finish, in another order from one run to the next.
+sintax writes them in input order, the order of vsearch `--threads 1`.
 
 ## Examples
 

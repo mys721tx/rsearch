@@ -13,6 +13,7 @@ use rsearch::fastx::{Reader, Record};
 use rsearch::label::checked_abundance;
 use rsearch::random;
 use rsearch::sintax::{Classifier, Database, query_rng, table_fields};
+use rsearch::threads::{Workers, threads, threads_args};
 use rsearch::udb::{self, Udb};
 use rsearch::words::{Index, MAX_WORD_LEN, MIN_WORD_LEN};
 
@@ -130,10 +131,11 @@ fn database(path: &str, word_len: u32) -> Database {
 }
 
 fn main() {
-    let matches = Command::new("sintax")
-        .about("Classify sequences by taxonomy with SINTAX.")
-        .long_about(
-            "Classify sequences by taxonomy with SINTAX.\n\n\
+    let matches = threads_args(
+        Command::new("sintax")
+            .about("Classify sequences by taxonomy with SINTAX.")
+            .long_about(
+                "Classify sequences by taxonomy with SINTAX.\n\n\
              As vsearch --sintax: a hundred times, 32 words drawn at random from a \
              query pick the database sequence sharing the most of them; with fifty \
              picks or more, each level of the ;tax= annotations takes the name most \
@@ -141,74 +143,77 @@ fn main() {
              share of picks agreeing, the strand, and with --cutoff the names whose \
              share reaches it. Lower case residues are masked, in the queries and \
              the database.",
-        )
-        .arg(
-            Arg::new("in")
-                .short('i')
-                .long("in")
-                .value_name("INPUT")
-                .help("Input FASTA or FASTQ file of queries, default to stdin"),
-        )
-        .arg(
-            Arg::new("out")
-                .short('o')
-                .long("out")
-                .value_name("OUTPUT")
-                .help("Output table, default to stdout"),
-        )
-        .arg(
-            Arg::new("db")
-                .long("db")
-                .value_name("FILE")
-                .required(true)
-                .help("Database: FASTA, FASTQ or UDB file with ;tax= annotations"),
-        )
-        .arg(
-            Arg::new("word-len")
-                .long("word-len")
-                .value_name("LEN")
-                .default_value("8")
-                .value_parser(
-                    value_parser!(u32).range(i64::from(MIN_WORD_LEN)..=i64::from(MAX_WORD_LEN)),
-                )
-                .help("Length of the words, 3 to 15; a UDB database has its own"),
-        )
-        .arg(
-            Arg::new("strand")
-                .long("strand")
-                .value_name("STRAND")
-                .value_parser(["plus", "both"])
-                .default_value("plus")
-                .help("Search the plus strand, or both"),
-        )
-        .arg(
-            Arg::new("cutoff")
-                .long("cutoff")
-                .value_name("SHARE")
-                .value_parser(share)
-                .help("Also write the names agreed on by at least this share of picks"),
-        )
-        .arg(
-            Arg::new("random")
-                .long("random")
-                .action(ArgAction::SetTrue)
-                .help("Break ties at random, rather than for the shortest, then first, sequence"),
-        )
-        .arg(
-            Arg::new("seed")
-                .long("seed")
-                .value_name("SEED")
-                .allow_negative_numbers(true)
-                .value_parser(value_parser!(i64))
-                .help("Seed of the random numbers, default to one from the system"),
-        )
-        .arg(
-            Arg::new("report")
-                .long("report")
-                .value_name("FILE")
-                .help("Output file of the number of queries classified"),
-        )
-        .get_matches();
+            )
+            .arg(
+                Arg::new("in")
+                    .short('i')
+                    .long("in")
+                    .value_name("INPUT")
+                    .help("Input FASTA or FASTQ file of queries, default to stdin"),
+            )
+            .arg(
+                Arg::new("out")
+                    .short('o')
+                    .long("out")
+                    .value_name("OUTPUT")
+                    .help("Output table, default to stdout"),
+            )
+            .arg(
+                Arg::new("db")
+                    .long("db")
+                    .value_name("FILE")
+                    .required(true)
+                    .help("Database: FASTA, FASTQ or UDB file with ;tax= annotations"),
+            )
+            .arg(
+                Arg::new("word-len")
+                    .long("word-len")
+                    .value_name("LEN")
+                    .default_value("8")
+                    .value_parser(
+                        value_parser!(u32).range(i64::from(MIN_WORD_LEN)..=i64::from(MAX_WORD_LEN)),
+                    )
+                    .help("Length of the words, 3 to 15; a UDB database has its own"),
+            )
+            .arg(
+                Arg::new("strand")
+                    .long("strand")
+                    .value_name("STRAND")
+                    .value_parser(["plus", "both"])
+                    .default_value("plus")
+                    .help("Search the plus strand, or both"),
+            )
+            .arg(
+                Arg::new("cutoff")
+                    .long("cutoff")
+                    .value_name("SHARE")
+                    .value_parser(share)
+                    .help("Also write the names agreed on by at least this share of picks"),
+            )
+            .arg(
+                Arg::new("random")
+                    .long("random")
+                    .action(ArgAction::SetTrue)
+                    .help(
+                        "Break ties at random, rather than for the shortest, then first, sequence",
+                    ),
+            )
+            .arg(
+                Arg::new("seed")
+                    .long("seed")
+                    .value_name("SEED")
+                    .allow_negative_numbers(true)
+                    .value_parser(value_parser!(i64))
+                    .help("Seed of the random numbers, default to one from the system"),
+            )
+            .arg(
+                Arg::new("report")
+                    .long("report")
+                    .value_name("FILE")
+                    .help("Output file of the number of queries classified"),
+            ),
+    )
+    .get_matches();
     let word_len = *matches.get_one::<u32>("word-len").unwrap();
     let both_strands = matches.get_one::<String>("strand").unwrap() == "both";
     let cutoff = matches.get_one::<f64>("cutoff").copied().unwrap_or(0.0);
@@ -230,35 +235,62 @@ fn main() {
         None => Box::new(io::stdin()),
     };
     let mut reader = Reader::new(BufReader::new(fin));
-    let mut classifier = Classifier::new(&db, both_strands, matches.get_flag("random"));
     let mut record = Record::new();
+    // a query with its place, or the error that ends the input. Nothing is
+    // read after an error, and the queries before it are written first
     let (mut queries, mut classified) = (0u64, 0u64);
-    loop {
-        let error = match reader.read(&mut record) {
-            Err(e) => Some(e.to_string()),
-            Ok(()) if record.is_empty() => break,
-            Ok(()) => checked_abundance(record.header())
-                .err()
-                .map(|e| format!("{e} in read {}", record.header())),
+    let mut read = 0u64;
+    let mut failed = false;
+    let next = || -> Option<Result<(u64, String, Vec<u8>), String>> {
+        if failed {
+            return None;
+        }
+        let query = match reader.read(&mut record) {
+            Err(e) => Err(e.to_string()),
+            Ok(()) if record.is_empty() => return None,
+            Ok(()) => match checked_abundance(record.header()) {
+                Err(e) => Err(format!("{e} in read {}", record.header())),
+                Ok(_) => Ok((read, record.header().to_string(), record.seq().to_vec())),
+            },
         };
-        if let Some(message) = error {
+        read += 1;
+        failed = query.is_err();
+        Some(query)
+    };
+    let random_ties = matches.get_flag("random");
+    let threads = threads(&matches);
+    let workers = Workers::new(threads, || Classifier::new(&db, both_strands, random_ties));
+    // each query's line, and whether it was classified; its random draws
+    // depend only on the seed and its place
+    let classify = |classifier: &mut Classifier,
+                    query: Result<(u64, String, Vec<u8>), String>|
+     -> Result<(Vec<u8>, bool), String> {
+        let (place, header, seq) = query?;
+        let mut rng = query_rng(seed, place);
+        let classification = classifier.classify(&seq, &mut rng);
+        let fields = table_fields(&db, &classification, cutoff);
+        let mut line = Vec::with_capacity(header.len() + fields.len() + 2);
+        line.extend_from_slice(header.as_bytes());
+        line.push(b'\t');
+        line.extend_from_slice(&fields);
+        line.push(b'\n');
+        Ok((line, classification.picks.len() >= 50))
+    };
+    workers.stream(64 * threads, next, classify, |result| match result {
+        Ok((line, is_classified)) => {
+            if is_classified {
+                classified += 1;
+            }
+            queries += 1;
+            out.write_all(&line)
+                .unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
+        }
+        Err(message) => {
             // the queries before an error are written
             let _ = out.flush();
             fail(&message);
         }
-        let mut rng = query_rng(seed, queries);
-        let classification = classifier.classify(record.seq(), &mut rng);
-        let fields = table_fields(&db, &classification, cutoff);
-        if classification.picks.len() >= 50 {
-            classified += 1;
-        }
-        queries += 1;
-        out.write_all(record.header().as_bytes())
-            .and_then(|()| out.write_all(b"\t"))
-            .and_then(|()| out.write_all(&fields))
-            .and_then(|()| out.write_all(b"\n"))
-            .unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
-    }
+    });
     out.flush()
         .unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
     if let Some(warning) = reader.stripped_warning() {
