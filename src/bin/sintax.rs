@@ -84,11 +84,7 @@ fn database(path: &str, word_len: u32) -> Database {
             }
         }
         let index = Index::from_parts(udb.header.word_len(), &udb.counts, list);
-        return Database {
-            headers,
-            lengths: udb.lengths,
-            index,
-        };
+        return Database::new(headers, udb.lengths, index);
     }
 
     let mut reader = Reader::new(fin);
@@ -123,11 +119,8 @@ fn database(path: &str, word_len: u32) -> Database {
             .as_bytes(),
         );
     }
-    Database {
-        headers,
-        lengths: seqs.iter().map(|s| s.len() as u32).collect(),
-        index,
-    }
+    let lengths = seqs.iter().map(|s| s.len() as u32).collect();
+    Database::new(headers, lengths, index)
 }
 
 fn main() {

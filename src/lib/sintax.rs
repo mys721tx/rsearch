@@ -13,12 +13,83 @@ use crate::words::{Index, Uniquer};
 const SUBSET: usize = 32;
 const BOOTSTRAPS: usize = 100;
 
+/// A word held by at least one in this many database sequences is kept as
+/// a bitmap of the sequences too, as vsearch's database index does.
+const BITMAP_SHARE: usize = 8;
+
 /// A database: its headers, sequence lengths and word index.
 pub struct Database {
     pub headers: Vec<Vec<u8>>,
     pub lengths: Vec<u32>,
     pub index: Index,
+    /// the words with a bitmap, in increasing order.
+    common: Vec<u32>,
+    /// the bitmaps of the common words, a bit per sequence, the first in
+    /// the lowest bit; `bitmap_len` words each.
+    bitmaps: Vec<u64>,
+    bitmap_len: usize,
 }
+
+impl Database {
+    /// a database of `headers` and `lengths`, indexed by `index`.
+    pub fn new(headers: Vec<Vec<u8>>, lengths: Vec<u32>, index: Index) -> Database {
+        let n = lengths.len();
+        let bitmap_len = n.div_ceil(64);
+        let threshold = (n / BITMAP_SHARE).max(1);
+        let words = 1usize << (2 * index.word_len());
+        let mut common = Vec::new();
+        let mut bitmaps = Vec::new();
+        for word in 0..words as u32 {
+            let sequences = index.sequences_of(word);
+            if sequences.len() >= threshold {
+                let start = bitmaps.len();
+                bitmaps.resize(start + bitmap_len, 0);
+                for &s in sequences {
+                    bitmaps[start + s as usize / 64] |= 1 << (s % 64);
+                }
+                common.push(word);
+            }
+        }
+        Database {
+            headers,
+            lengths,
+            index,
+            common,
+            bitmaps,
+            bitmap_len,
+        }
+    }
+
+    /// the bitmap of `word`, if it has one.
+    fn bitmap(&self, word: u32) -> Option<&[u64]> {
+        let slot = self.common.binary_search(&word).ok()?;
+        let start = slot * self.bitmap_len;
+        Some(&self.bitmaps[start..start + self.bitmap_len])
+    }
+}
+
+/// For each byte of a bitmap, the eight byte counters it raises by one, as one
+/// word to add. Bit `i` of the byte becomes byte `i` of the word.
+const EXPANSION: [u64; 256] = {
+    let mut table = [0u64; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let mut bit = 0;
+        while bit < 8 {
+            if byte & (1 << bit) != 0 {
+                table[byte] |= 1 << (8 * bit);
+            }
+            bit += 1;
+        }
+        byte += 1;
+    }
+    table
+};
+
+/// A byte with its high bit alone set, in each byte of a word.
+const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+/// One, in each byte of a word.
+const ONES: u64 = 0x0101_0101_0101_0101;
 
 /// The classification of a query.
 pub struct Classification {
@@ -34,7 +105,11 @@ pub struct Classifier<'a> {
     both_strands: bool,
     random_ties: bool,
     uniquer: Uniquer,
-    counters: Vec<u8>,
+    /// a byte counter per database sequence, eight to a word, sequence `s` in
+    /// byte `s % 8` (from the lowest) of word `s / 8`, padded to a whole bitmap
+    /// word. A pick draws at most 32 words. No count thus carries into the next
+    /// byte.
+    counters: Vec<u64>,
     drawn: Vec<bool>,
     rc: Vec<u8>,
 }
@@ -46,7 +121,7 @@ impl<'a> Classifier<'a> {
             both_strands,
             random_ties,
             uniquer: Uniquer::new(db.index.word_len()),
-            counters: vec![0; db.lengths.len()],
+            counters: vec![0; db.bitmap_len * 8],
             drawn: Vec::new(),
             rc: Vec::new(),
         }
@@ -100,33 +175,59 @@ impl<'a> Classifier<'a> {
     /// shortest, then the first, among ties, or one at random with
     /// `random_ties`; none unless it shares two or more.
     fn best(&mut self, words: &[u32], rng: &mut SplitMix64) -> Option<(u32, u32)> {
+        let db = self.db;
         self.counters.fill(0);
         for &word in words {
-            for &seqno in self.db.index.sequences_of(word) {
-                self.counters[seqno as usize] += 1;
+            if let Some(bitmap) = db.bitmap(word) {
+                // eight counters at once, a byte of the bitmap each
+                for (bits, counters) in bitmap.iter().zip(self.counters.chunks_exact_mut(8)) {
+                    if *bits == 0 {
+                        continue;
+                    }
+                    for (i, counter) in counters.iter_mut().enumerate() {
+                        *counter += EXPANSION[((bits >> (8 * i)) & 0xff) as usize];
+                    }
+                }
+            } else {
+                for &seqno in db.index.sequences_of(word) {
+                    self.counters[seqno as usize / 8] += 1 << (8 * (seqno % 8));
+                }
             }
         }
+        let n = db.lengths.len();
         let (mut best_count, mut best_seqno, mut best_length) = (0u32, 0u32, 0u32);
         let mut ties = 0u64;
-        for (seqno, &count) in self.counters.iter().enumerate() {
-            let count = u32::from(count);
-            if count < best_count {
-                continue;
-            }
-            let length = self.db.lengths[seqno];
-            let seqno = seqno as u32;
-            if count > best_count {
-                (best_count, best_seqno, best_length) = (count, seqno, length);
-                ties = 1;
-            } else if self.random_ties {
-                ties += 1;
-                if bounded(rng, ties) == 0 {
-                    (best_seqno, best_length) = (seqno, length);
+        for (at, &counters) in self.counters.iter().enumerate() {
+            // the counters of the word that reach the best so far. No count
+            // exceeds 32. Adding 128 less the best thus sets a byte's high bit
+            // exactly when it does, and carries into no other byte
+            let mut reaching = counters.wrapping_add(ONES * (128 - u64::from(best_count))) & HIGH_BITS;
+            while reaching != 0 {
+                let byte = reaching.trailing_zeros() as usize / 8;
+                reaching &= reaching - 1;
+                let seqno = at * 8 + byte;
+                if seqno >= n {
+                    break;
                 }
-            } else if length < best_length {
-                (best_seqno, best_length) = (seqno, length);
-            } else if length == best_length {
-                best_seqno = best_seqno.min(seqno);
+                let count = ((self.counters[at] >> (8 * byte)) & 0xff) as u32;
+                if count < best_count {
+                    continue;
+                }
+                let length = db.lengths[seqno];
+                let seqno = seqno as u32;
+                if count > best_count {
+                    (best_count, best_seqno, best_length) = (count, seqno, length);
+                    ties = 1;
+                } else if self.random_ties {
+                    ties += 1;
+                    if bounded(rng, ties) == 0 {
+                        (best_seqno, best_length) = (seqno, length);
+                    }
+                } else if length < best_length {
+                    (best_seqno, best_length) = (seqno, length);
+                } else if length == best_length {
+                    best_seqno = best_seqno.min(seqno);
+                }
             }
         }
         (best_count > 1).then_some((best_seqno, best_count))
