@@ -201,7 +201,8 @@ impl<'a> Classifier<'a> {
             // the counters of the word that reach the best so far. No count
             // exceeds 32. Adding 128 less the best thus sets a byte's high bit
             // exactly when it does, and carries into no other byte
-            let mut reaching = counters.wrapping_add(ONES * (128 - u64::from(best_count))) & HIGH_BITS;
+            let mut reaching =
+                counters.wrapping_add(ONES * (128 - u64::from(best_count))) & HIGH_BITS;
             while reaching != 0 {
                 let byte = reaching.trailing_zeros() as usize / 8;
                 reaching &= reaching - 1;

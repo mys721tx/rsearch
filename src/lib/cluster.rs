@@ -566,8 +566,7 @@ pub fn dereplicate_prefixes(reads: Vec<PrefixRead>) -> Vec<Cluster> {
     // the hash of their representative, as vsearch finds them; and how
     // many live representatives have each length
     let mut keys: Vec<Vec<u8>> = Vec::new();
-    let mut index: HashMap<u64, Vec<usize>, BuildHasherDefault<PassThrough>> =
-        HashMap::default();
+    let mut index: HashMap<u64, Vec<usize>, BuildHasherDefault<PassThrough>> = HashMap::default();
     let mut lengths: BTreeMap<usize, usize> = BTreeMap::new();
     // the hash of each prefix of the read, the empty one first
     let mut hashes: Vec<u64> = Vec::new();

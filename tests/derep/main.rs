@@ -600,7 +600,10 @@ fn prefix_reads() -> String {
         let mut seq = template[..len].to_vec();
         match next(8) {
             0 => seq.make_ascii_lowercase(),
-            1 => seq.iter_mut().filter(|c| **c == b'T').for_each(|c| *c = b'U'),
+            1 => seq
+                .iter_mut()
+                .filter(|c| **c == b'T')
+                .for_each(|c| *c = b'U'),
             2 if len > 0 => seq[next(len as u64) as usize] = b'R',
             3 if len > 0 => seq[len - 1] = b"ACGT"[next(4) as usize],
             _ => {}
