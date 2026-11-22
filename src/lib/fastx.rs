@@ -22,6 +22,8 @@
 
 use std::io::{self, BufRead};
 
+use crate::simd::Level;
+
 /// The format of a sequence file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -273,10 +275,28 @@ static FASTA: [Action; 256] = table(Policy::Fasta);
 static FASTQ_SEQUENCE: [Action; 256] = table(Policy::FastqSequence);
 static FASTQ_QUALITY: [Action; 256] = table(Policy::FastqQuality);
 
+/// whether a line holds anything but IUPAC codes, at the SIMD level
+/// `simd::level` chose.
+fn has_non_iupac(line: &[u8]) -> bool {
+    has_non_iupac_at(crate::simd::level(), line)
+}
+
+/// whether a line holds anything but IUPAC codes, at `level`, by NEON or
+/// AVX2 table lookups or else by byte comparisons the compiler vectorises.
+fn has_non_iupac_at(level: Level, line: &[u8]) -> bool {
+    match level {
+        #[cfg(target_arch = "aarch64")]
+        Level::Neon => has_non_iupac_neon(line),
+        // SAFETY: the level is AVX2 only on a processor that has it
+        #[cfg(target_arch = "x86_64")]
+        Level::Avx2 => unsafe { has_non_iupac_avx2(line) },
+        _ => has_non_iupac_portable(line),
+    }
+}
+
 /// whether a line holds anything but IUPAC codes. Byte comparisons only, so
 /// that it vectorizes. Clearing bit 5 maps exactly the letters to
 /// 'A'..='Z', where the codes are six ranges.
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn has_non_iupac_portable(line: &[u8]) -> bool {
     let within = |b: u8, low: u8, high: u8| b.wrapping_sub(low) <= high - low;
     line.iter().fold(0u8, |other, &b| {
@@ -316,10 +336,17 @@ const IUPAC_HIGH: [u8; 16] = {
     table
 };
 
+/// whether the bytes past the vector chunks hold anything but IUPAC codes,
+/// by the same two tables.
+fn has_non_iupac_rest(rest: &[u8]) -> bool {
+    rest.iter()
+        .any(|&b| IUPAC_LOW[usize::from(b & 15)] & IUPAC_HIGH[usize::from(b >> 4)] == 0)
+}
+
 /// whether a line holds anything but IUPAC codes: two 16-entry table
 /// lookups per 16 bytes, with NEON's table instruction.
 #[cfg(target_arch = "aarch64")]
-fn has_non_iupac(line: &[u8]) -> bool {
+fn has_non_iupac_neon(line: &[u8]) -> bool {
     use std::arch::aarch64::*;
     let (chunks, rest) = line.as_chunks::<16>();
     // SAFETY: NEON is part of every aarch64 target, and each load reads
@@ -337,14 +364,38 @@ fn has_non_iupac(line: &[u8]) -> bool {
         }
         vmaxvq_u8(bad) != 0
     };
-    bad || rest
-        .iter()
-        .any(|&b| IUPAC_LOW[usize::from(b & 15)] & IUPAC_HIGH[usize::from(b >> 4)] == 0)
+    bad || has_non_iupac_rest(rest)
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn has_non_iupac(line: &[u8]) -> bool {
-    has_non_iupac_portable(line)
+/// whether a line holds anything but IUPAC codes, by two 16-entry table
+/// lookups per 32 bytes with AVX2's byte shuffle. It looks up each 16-byte
+/// half in its own copy of the table.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn has_non_iupac_avx2(line: &[u8]) -> bool {
+    use std::arch::x86_64::*;
+    let (chunks, rest) = line.as_chunks::<32>();
+    // SAFETY: the tables are 16 bytes, and each load reads 32 bytes from a
+    // chunk of exactly 32.
+    let bad = unsafe {
+        let low = _mm256_broadcastsi128_si256(_mm_loadu_si128(IUPAC_LOW.as_ptr().cast()));
+        let high = _mm256_broadcastsi128_si256(_mm_loadu_si128(IUPAC_HIGH.as_ptr().cast()));
+        let nibble = _mm256_set1_epi8(15);
+        let zero = _mm256_setzero_si256();
+        let mut bad = zero;
+        for chunk in chunks {
+            let bytes = _mm256_loadu_si256(chunk.as_ptr().cast());
+            let by_low = _mm256_shuffle_epi8(low, _mm256_and_si256(bytes, nibble));
+            // AVX2 has no byte shift. Shift the 16-bit words, then keep the
+            // nibble.
+            let high_nibbles = _mm256_and_si256(_mm256_srli_epi16::<4>(bytes), nibble);
+            let by_high = _mm256_shuffle_epi8(high, high_nibbles);
+            let codes = _mm256_and_si256(by_low, by_high);
+            bad = _mm256_or_si256(bad, _mm256_cmpeq_epi8(codes, zero));
+        }
+        _mm256_movemask_epi8(bad) != 0
+    };
+    bad || has_non_iupac_rest(rest)
 }
 
 /// whether a line holds anything but printable quality symbols.
