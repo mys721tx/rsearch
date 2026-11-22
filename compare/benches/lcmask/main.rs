@@ -1,5 +1,6 @@
 //! Times `vsearch --fastx_mask`, soft and hard, and its rsearch pipelines
-//! on the file of rsearch's lcmask benchmark (see `common/vsearch.rs`).
+//! on the file of rsearch's lcmask benchmark, at the thread counts rsearch's
+//! benchmark takes (`data::thread_counts`; see `common/vsearch.rs`).
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
@@ -23,23 +24,26 @@ fn bench_binary(c: &mut Criterion) {
     group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for (name, hardmask) in [("soft", &[][..]), ("hard", &["--hardmask"])] {
-        let args = [
-            &[
-                "--fastx_mask",
-                fq,
-                "--quiet",
-                "--notrunclabels",
-                "--minseqlength",
-                "0",
-                "--threads",
-                "1",
-                "--fastqout",
-                "/dev/null",
-            ][..],
-            hardmask,
-        ]
-        .concat();
-        vsearch::bench(&mut group, format!("vsearch/{name}"), &vsearch, &args);
+        for threads in data::thread_counts() {
+            let t = threads.to_string();
+            let args = [
+                &[
+                    "--fastx_mask",
+                    fq,
+                    "--quiet",
+                    "--notrunclabels",
+                    "--minseqlength",
+                    "0",
+                    "--threads",
+                    &t,
+                    "--fastqout",
+                    "/dev/null",
+                ][..],
+                hardmask,
+            ]
+            .concat();
+            vsearch::bench(&mut group, format!("vsearch/{name}/t{t}"), &vsearch, &args);
+        }
     }
     group.finish();
 }

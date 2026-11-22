@@ -4,7 +4,9 @@
 //! `binary` runs the lcmask program end to end on a FASTQ file, soft and
 //! hard. The reads are random with a repeat, a homopolymer or nothing
 //! inserted, so that some windows are masked and most are searched in
-//! full. compare/benches/lcmask times vsearch on the same file.
+//! full. `binary` runs at each thread count of `data::thread_counts` (one
+//! and one per core, or `RSEARCH_BENCH_THREADS`). compare/benches/lcmask
+//! times vsearch at the same thread counts on the same file.
 
 use std::hint::black_box;
 use std::process::Command;
@@ -64,8 +66,13 @@ fn bench_binary(c: &mut Criterion) {
     group.throughput(Throughput::Elements(data::count(&input, READS)));
     group.sample_size(10);
     for (name, hard) in [("soft", &[][..]), ("hard", &["--hard"])] {
-        let args = [&["-i", fq, "-o", "/dev/null"][..], hard].concat();
-        group.bench_function(format!("lcmask/{name}"), |b| b.iter(|| run(lcmask, &args)));
+        for threads in data::thread_counts() {
+            let t = threads.to_string();
+            let args = [&["-i", fq, "-o", "/dev/null", "-t", &t][..], hard].concat();
+            group.bench_function(format!("lcmask/{name}/t{t}"), |b| {
+                b.iter(|| run(lcmask, &args))
+            });
+        }
     }
     group.finish();
 }
