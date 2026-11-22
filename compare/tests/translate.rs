@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use rscompare::options::{Args, COMMANDS, Value};
-use rscompare::translate::{Pipeline, translate};
+use rscompare::translate::{Pipeline, THREADED_TOOLS, translate};
 
 const W: &str = "w";
 
@@ -901,4 +901,74 @@ fn caveat_lists() {
             .iter()
             .any(|x| x.contains("ignores"))
     );
+}
+
+// threads
+
+/// the arguments of the step running `tool`.
+fn step_args(p: &Pipeline, tool: &str) -> Vec<String> {
+    p.steps
+        .iter()
+        .find(|s| s.tool == tool)
+        .unwrap_or_else(|| panic!("no {tool} in\n{}", p.render()))
+        .args
+        .clone()
+}
+
+#[test]
+fn threads_go_to_the_threaded_tools() {
+    let search = "--usearch_global q --db d --id 0.9 --uc out --notrunclabels";
+    for (given, expected) in [("1", "1"), ("4", "4"), ("0", "0")] {
+        let p = pipe(&format!("{search} --threads {given}"));
+        let args = step_args(&p, "dbsrch");
+        assert_eq!(&args[args.len() - 2..], ["-t", expected], "{}", p.render());
+        // the threaded tools of the pipeline take them, the others none
+        for s in &p.steps {
+            let threaded = THREADED_TOOLS.contains(&s.tool.as_str());
+            assert_eq!(
+                s.args.contains(&"-t".to_string()),
+                threaded,
+                "{}",
+                p.render()
+            );
+        }
+    }
+    // without --threads, both take one per core
+    let p = pipe(search);
+    assert!(!step_args(&p, "dbsrch").contains(&"-t".to_string()));
+}
+
+#[test]
+fn threads_are_set_for_rsearch_alone() {
+    let mut p = pipe("--usearch_global q --db d --id 0.9 --uc out --threads 1 --notrunclabels");
+    p.set_threads(6);
+    let args = step_args(&p, "dbsrch");
+    assert_eq!(args.iter().filter(|a| *a == "-t").count(), 1);
+    assert_eq!(&args[args.len() - 2..], ["-t", "6"]);
+    let mut p = pipe("--usearch_global q --db d --id 0.9 --uc out --notrunclabels");
+    p.set_threads(3);
+    assert_eq!(
+        &step_args(&p, "dbsrch")[step_args(&p, "dbsrch").len() - 2..],
+        ["-t", "3"]
+    );
+}
+
+#[test]
+fn threads_reorder_queries_of_some_commands() {
+    let order = "vsearch writes each query's records in the order its threads finish";
+    let search = "--usearch_global q --db d --id 0.9 --uc out --notrunclabels";
+    assert!(
+        caveats(&format!("{search} --threads 4"))
+            .iter()
+            .any(|c| c.contains(order))
+    );
+    assert!(caveats(search).iter().any(|c| c.contains(order)));
+    assert!(
+        !caveats(&format!("{search} --threads 1"))
+            .iter()
+            .any(|c| c.contains(order))
+    );
+    // clustering gives the same order on any number of threads
+    let cluster = "--cluster_fast q --id 0.9 --centroids out --notrunclabels --threads 4";
+    assert!(!caveats(cluster).iter().any(|c| c.contains("threads")));
 }
