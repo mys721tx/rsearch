@@ -3,8 +3,10 @@
 //! `binary` runs the allpr program end to end on 600 sequences of 250
 //! bases. They are copies of 20 templates with one base in twenty changed,
 //! inserted or deleted. That makes 179,700 alignments, accepting all and at
-//! --id 0.9. compare/benches/allpr times vsearch on the same file, after
-//! checking that both write the same hits.
+//! --id 0.9, at each thread count of `data::thread_counts` (one and one per
+//! core, or `RSEARCH_BENCH_THREADS`). compare/benches/allpr times vsearch at
+//! the same thread counts on the same file, after checking that both write
+//! the same hits.
 
 use std::process::{Command, Stdio};
 
@@ -37,8 +39,13 @@ fn bench_binary(c: &mut Criterion) {
     }));
     group.sample_size(10);
     for (name, rargs) in [("all", vec!["--accept-all"]), ("id90", vec!["--id", "0.9"])] {
-        let rargs = [&["-i", fa, "-o", "/dev/null"][..], &rargs].concat();
-        group.bench_function(format!("allpr/{name}"), |b| b.iter(|| run(allpr, &rargs)));
+        for threads in data::thread_counts() {
+            let t = threads.to_string();
+            let rargs = [&["-i", fa, "-o", "/dev/null", "-t", &t][..], &rargs].concat();
+            group.bench_function(format!("allpr/{name}/t{t}"), |b| {
+                b.iter(|| run(allpr, &rargs))
+            });
+        }
     }
     group.finish();
 }
