@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 
 use crate::fastx;
 use crate::label::abundance;
+use crate::simd::Level;
 
 #[derive(Clone, Debug, Default)]
 /// A struct to store the size and annotation of sequences.
@@ -781,8 +782,123 @@ const COMPLEMENT: [u8; 256] = {
 /// assert_eq!(dest, b"nrYAcgT");
 /// ```
 pub fn reverse_complement_keeping_case(dest: &mut Vec<u8>, seq: &[u8]) {
+    reverse_complement_at(crate::simd::level(), dest, seq);
+}
+
+/// `reverse_complement_keeping_case` at the SIMD level `level`. AVX2 takes
+/// 32 bytes a step and NEON 16, and the others a byte at a time from the
+/// table.
+fn reverse_complement_at(level: Level, dest: &mut Vec<u8>, seq: &[u8]) {
     dest.clear();
-    dest.extend(seq.iter().rev().map(|&c| COMPLEMENT[usize::from(c)]));
+    dest.resize(seq.len(), 0);
+    let done = match level {
+        #[cfg(target_arch = "aarch64")]
+        Level::Neon => reverse_complement_neon(dest, seq),
+        // SAFETY: the level is AVX2 only on a processor that has it
+        #[cfg(target_arch = "x86_64")]
+        Level::Avx2 => unsafe { reverse_complement_avx2(dest, seq) },
+        _ => 0,
+    };
+    // the bases the vectors left, the first ones of `seq`
+    let rest = seq.len() - done;
+    for (out, &c) in dest[done..].iter_mut().zip(seq[..rest].iter().rev()) {
+        *out = COMPLEMENT[usize::from(c)];
+    }
+}
+
+/// The complement of each upper-case letter by its low five bits, 0 for
+/// those without one, for the vector code. A letter with a complement
+/// becomes it, in its own case, and any other byte becomes `N`.
+const COMPLEMENT_BY_LETTER: [u8; 32] = {
+    let mut table = [0; 32];
+    let mut letter = b'A';
+    while letter <= b'Z' {
+        if COMPLEMENT[letter as usize] != b'N' || letter == b'N' {
+            table[(letter & 31) as usize] = COMPLEMENT[letter as usize];
+        }
+        letter += 1;
+    }
+    table
+};
+
+/// writes the reverse complement of the last whole 16-byte chunks of `seq`
+/// to the start of `dest`, with NEON; returns the bytes written.
+#[cfg(target_arch = "aarch64")]
+fn reverse_complement_neon(dest: &mut [u8], seq: &[u8]) -> usize {
+    use std::arch::aarch64::*;
+    let chunks = seq.len() / 16;
+    // SAFETY: NEON is part of every aarch64 target; each load reads 16
+    // bytes of `seq` and each store writes 16 bytes of `dest`, which is as
+    // long, within their lengths.
+    unsafe {
+        let table = vld1q_u8_x2(COMPLEMENT_BY_LETTER.as_ptr());
+        let low5 = vdupq_n_u8(31);
+        let case = vdupq_n_u8(0x20);
+        let n = vdupq_n_u8(b'N');
+        for k in 0..chunks {
+            let bytes = vld1q_u8(seq.as_ptr().add(seq.len() - 16 * (k + 1)));
+            // the 16 bytes in reverse order
+            let reversed = vrev64q_u8(bytes);
+            let reversed = vextq_u8::<8>(reversed, reversed);
+            let lower = vorrq_u8(reversed, case);
+            let letter = vcleq_u8(vsubq_u8(lower, vdupq_n_u8(b'a')), vdupq_n_u8(25));
+            let upper = vqtbl2q_u8(table, vandq_u8(reversed, low5));
+            let known = vandq_u8(letter, vtstq_u8(upper, upper));
+            let complement = vorrq_u8(upper, vandq_u8(reversed, case));
+            let out = vbslq_u8(known, complement, n);
+            vst1q_u8(dest.as_mut_ptr().add(16 * k), out);
+        }
+    }
+    16 * chunks
+}
+
+/// writes the reverse complement of the last whole 32-byte chunks of `seq`
+/// to the start of `dest`, with AVX2; returns the bytes written.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn reverse_complement_avx2(dest: &mut [u8], seq: &[u8]) -> usize {
+    use std::arch::x86_64::*;
+    let chunks = seq.len() / 32;
+    // SAFETY: each load reads 32 bytes of `seq` and each store writes 32
+    // bytes of `dest`, which is as long, within their lengths; the tables
+    // are 16 bytes.
+    unsafe {
+        let table = |half: usize| {
+            _mm256_broadcastsi128_si256(_mm_loadu_si128(
+                COMPLEMENT_BY_LETTER[16 * half..].as_ptr().cast(),
+            ))
+        };
+        let (first, second) = (table(0), table(1));
+        let reverse = _mm256_setr_epi8(
+            15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 7,
+            6, 5, 4, 3, 2, 1, 0,
+        );
+        let low4 = _mm256_set1_epi8(15);
+        let bit4 = _mm256_set1_epi8(16);
+        let case = _mm256_set1_epi8(0x20);
+        let n = _mm256_set1_epi8(b'N' as i8);
+        let zero = _mm256_setzero_si256();
+        for k in 0..chunks {
+            let bytes = _mm256_loadu_si256(seq.as_ptr().add(seq.len() - 32 * (k + 1)).cast());
+            // the bytes reversed in each 16-byte half, then the halves swapped
+            let reversed = _mm256_permute4x64_epi64::<0x4e>(_mm256_shuffle_epi8(bytes, reverse));
+            // the letters, 'a'..='z' once lower-cased, as unsigned bytes
+            let lower = _mm256_or_si256(reversed, case);
+            let from_a = _mm256_sub_epi8(lower, _mm256_set1_epi8(b'a' as i8));
+            let letter = _mm256_cmpeq_epi8(_mm256_min_epu8(from_a, _mm256_set1_epi8(25)), from_a);
+            // the low four bits pick within a half table, bit 4 the half
+            let index = _mm256_and_si256(reversed, low4);
+            let by_first = _mm256_shuffle_epi8(first, index);
+            let by_second = _mm256_shuffle_epi8(second, index);
+            let in_second = _mm256_cmpeq_epi8(_mm256_and_si256(reversed, bit4), bit4);
+            let upper = _mm256_blendv_epi8(by_first, by_second, in_second);
+            let known = _mm256_andnot_si256(_mm256_cmpeq_epi8(upper, zero), letter);
+            let complement = _mm256_or_si256(upper, _mm256_and_si256(reversed, case));
+            let out = _mm256_blendv_epi8(n, complement, known);
+            _mm256_storeu_si256(dest.as_mut_ptr().add(32 * k).cast(), out);
+        }
+    }
+    32 * chunks
 }
 
 /// The complement of a base, keeping its case, as vsearch's.
