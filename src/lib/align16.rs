@@ -522,7 +522,11 @@ impl<L: Lanes> Engine<L> {
     }
 
     /// vsearch's `aligncolumns`: four target columns down the query.
+    /// Inlined, as everything `align` calls in its loop is. With AVX2 the
+    /// lanes' instructions must land in `align_avx2`, which has the
+    /// feature. A function without it would call each one.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn align_columns(
         &mut self,
         s_vec: &mut [L; 4],
