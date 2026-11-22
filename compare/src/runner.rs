@@ -112,7 +112,16 @@ pub fn run(names: &[String], seeds: Option<&[u64]>, opts: Options) -> std::io::R
     }
     drop(tx);
     let mut file = match &opts.out {
-        Some(p) => Some(OpenOptions::new().create(true).append(true).open(p)?),
+        Some(p) => {
+            let (file, held) = open_out(p)?;
+            if held > 0 {
+                eprintln!(
+                    "Warning: {} already holds {held} records; this run's are added after them",
+                    p.display()
+                );
+            }
+            Some(file)
+        }
         None => None,
     };
     let mut tally = Tally::new();
@@ -127,7 +136,7 @@ pub fn run(names: &[String], seeds: Option<&[u64]>, opts: Options) -> std::io::R
                 .entry(outcome.clone())
                 .or_default() += 1;
             if let Some(f) = file.as_mut() {
-                writeln!(f, "{}", Value::Object(r.clone()))?;
+                write_record(f, &r)?;
             }
             if (outcome == "fail" || outcome == "error") && shown < 200 {
                 shown += 1;
@@ -161,6 +170,105 @@ pub fn run(names: &[String], seeds: Option<&[u64]>, opts: Options) -> std::io::R
     Ok(tally)
 }
 
+/// opens `path` to add records to, creating it, and returns it with the
+/// number of records it already holds. When it ends partway through a line,
+/// as a run stopped while writing leaves it, a newline goes first, so that
+/// the next record starts a line of its own.
+fn open_out(path: &Path) -> std::io::Result<(std::fs::File, usize)> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    let mut held = 0;
+    let mut last = b'\n';
+    let mut reader = BufReader::new(&file);
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            break;
+        }
+        held += buffer.iter().filter(|&&b| b == b'\n').count();
+        last = *buffer.last().unwrap();
+        let n = buffer.len();
+        reader.consume(n);
+    }
+    if last != b'\n' {
+        held += 1;
+        file.write_all(b"\n")?;
+    }
+    Ok((file, held))
+}
+
+/// writes `record` as a line of JSON, in one write.
+fn write_record(file: &mut std::fs::File, record: &Map<String, Value>) -> std::io::Result<()> {
+    let mut line = Value::Object(record.clone()).to_string();
+    line.push('\n');
+    file.write_all(line.as_bytes())
+}
+
+/// the records of `paths`, each case (source, seed, index) once, by its
+/// last record, and warnings for the lines that are not records and for
+/// the cases recorded more than once.
+fn read_records(paths: &[PathBuf]) -> std::io::Result<(Vec<Value>, Vec<String>)> {
+    let mut records: Vec<Value> = Vec::new();
+    let mut place: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut warnings = Vec::new();
+    let mut repeated = 0;
+    for path in paths {
+        for (n, line) in BufReader::new(std::fs::File::open(path)?)
+            .lines()
+            .enumerate()
+        {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: Value = match serde_json::from_str(&line) {
+                Ok(r) => r,
+                Err(e) => {
+                    warnings.push(format!(
+                        "{}:{}: not a record, skipped ({e})",
+                        path.display(),
+                        n + 1
+                    ));
+                    continue;
+                }
+            };
+            let key = format!(
+                "{} {} {}",
+                record["source"], record["seed"], record["index"]
+            );
+            match place.get(&key) {
+                Some(&at) => {
+                    if records[at] != Value::Null {
+                        repeated += 1;
+                    }
+                    records[at] = Value::Null;
+                    place.insert(key, records.len());
+                    records.push(record);
+                }
+                None => {
+                    place.insert(key, records.len());
+                    records.push(record);
+                }
+            }
+        }
+    }
+    if repeated > 0 {
+        let cases = if repeated == 1 {
+            "case is"
+        } else {
+            "cases are"
+        };
+        warnings.push(format!(
+            "{repeated} {cases} recorded more than once; the last record of each is counted"
+        ));
+    }
+    records.retain(|r| *r != Value::Null);
+    Ok((records, warnings))
+}
+
 const OUTCOMES: [&str; 4] = ["pass", "fail", "skip", "error"];
 
 /// Prints the outcome counts per source, and their total.
@@ -190,52 +298,49 @@ pub fn summary(paths: &[PathBuf]) -> std::io::Result<()> {
     let mut cover: BTreeMap<String, BTreeMap<String, BTreeMap<String, u64>>> = BTreeMap::new();
     let mut caveats: BTreeMap<String, u64> = BTreeMap::new();
     let mut seconds: BTreeMap<String, (f64, f64)> = BTreeMap::new();
-    for path in paths {
-        for line in BufReader::new(std::fs::File::open(path)?).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
+    let (records, warnings) = read_records(paths)?;
+    for warning in &warnings {
+        eprintln!("Warning: {warning}");
+    }
+    for r in records {
+        let s = r["source"].as_str().unwrap_or("").to_string();
+        let outcome = r["outcome"].as_str().unwrap_or("").to_string();
+        *tally
+            .entry(s.clone())
+            .or_default()
+            .entry(outcome)
+            .or_default() += 1;
+        let c = cover.entry(s.clone()).or_default();
+        if let Some(Value::Object(cov)) = r.get("coverage") {
+            for (k, v) in cov {
+                let v = match v {
+                    Value::Object(o) => o
+                        .iter()
+                        .map(|(a, b)| format!("{a}{b}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    Value::Number(n) if k != "exit" => match n.as_f64() {
+                        Some(0.0) => "0".into(),
+                        Some(1.0) => "1".into(),
+                        _ => ">1".into(),
+                    },
+                    Value::String(t) => t.clone(),
+                    other => other.to_string(),
+                };
+                *c.entry(k.clone()).or_default().entry(v).or_default() += 1;
             }
-            let r: Value = serde_json::from_str(&line).map_err(std::io::Error::other)?;
-            let s = r["source"].as_str().unwrap_or("").to_string();
-            let outcome = r["outcome"].as_str().unwrap_or("").to_string();
-            *tally
-                .entry(s.clone())
-                .or_default()
-                .entry(outcome)
-                .or_default() += 1;
-            let c = cover.entry(s.clone()).or_default();
-            if let Some(Value::Object(cov)) = r.get("coverage") {
-                for (k, v) in cov {
-                    let v = match v {
-                        Value::Object(o) => o
-                            .iter()
-                            .map(|(a, b)| format!("{a}{b}"))
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        Value::Number(n) if k != "exit" => match n.as_f64() {
-                            Some(0.0) => "0".into(),
-                            Some(1.0) => "1".into(),
-                            _ => ">1".into(),
-                        },
-                        Value::String(t) => t.clone(),
-                        other => other.to_string(),
-                    };
-                    *c.entry(k.clone()).or_default().entry(v).or_default() += 1;
-                }
+        }
+        if let Some(Value::Array(cs)) = r.get("caveats") {
+            for cv in cs {
+                *caveats
+                    .entry(cv.as_str().unwrap_or("").to_string())
+                    .or_default() += 1;
             }
-            if let Some(Value::Array(cs)) = r.get("caveats") {
-                for cv in cs {
-                    *caveats
-                        .entry(cv.as_str().unwrap_or("").to_string())
-                        .or_default() += 1;
-                }
-            }
-            if let Some(sec) = r.get("seconds") {
-                let e = seconds.entry(s).or_default();
-                e.0 += sec["vsearch"].as_f64().unwrap_or(0.0);
-                e.1 += sec["rsearch"].as_f64().unwrap_or(0.0);
-            }
+        }
+        if let Some(sec) = r.get("seconds") {
+            let e = seconds.entry(s).or_default();
+            e.0 += sec["vsearch"].as_f64().unwrap_or(0.0);
+            e.1 += sec["rsearch"].as_f64().unwrap_or(0.0);
         }
     }
     print_tally(&tally);

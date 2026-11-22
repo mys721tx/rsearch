@@ -93,6 +93,13 @@ own, one case at a time:
 `summary` tallies the outcomes, the coverage values, and the caveats of
 one or more result files so that two runs can be compared.
 
+`--out` adds to a file that already holds records, and `run` warns that
+it does. A run stopped while writing leaves its last record cut short,
+and the next run starts a new line after it. `summary` skips a line that
+is not a record and counts each case (source, seed, and index) once. The
+last record of a case is the one counted. It warns of both and names the
+file and the line.
+
 ## The translator
 
 `src/translate.rs` can be used alone:
