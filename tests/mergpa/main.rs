@@ -115,13 +115,14 @@ fn merge(name: &str, args: &[&str], forward: &str, reverse: &str) -> Merged {
         .stderr(Stdio::piped())
         .spawn()
         .expect("mergpa should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(forward.as_bytes())
-        .unwrap();
+    // fed on a thread of its own. mergpa may stop reading at an error
+    let mut stdin = child.stdin.take().unwrap();
+    let input = forward.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
     let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     // an output not written reads as empty
     let read = |i: usize| std::fs::read_to_string(&paths[i]).unwrap_or_default();
     let merged = Merged {
@@ -138,15 +139,133 @@ fn merge(name: &str, args: &[&str], forward: &str, reverse: &str) -> Merged {
     merged
 }
 
-/// Runs mergpa, which must succeed.
+/// The thread counts every run is made with. What it writes must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Checks that two runs wrote the same files and messages and exited alike.
+#[track_caller]
+fn assert_same(other: &Merged, one: &Merged, what: &str) {
+    assert_eq!(
+        other.output.status.code(),
+        one.output.status.code(),
+        "{what}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&other.output.stderr),
+        String::from_utf8_lossy(&one.output.stderr),
+        "{what}"
+    );
+    assert!(other.merged == one.merged, "{what}: merged");
+    assert!(other.not_merged == one.not_merged, "{what}: not merged");
+    assert!(
+        other.rev_not_merged == one.rev_not_merged,
+        "{what}: reverse not merged"
+    );
+    assert_eq!(other.report, one.report, "{what}: report");
+    assert!(other.ee_table == one.ee_table, "{what}: ee table");
+}
+
+/// Runs mergpa with `args` at -t 1 and at each count of `counts`, checks
+/// that every run writes the same, and returns the first.
+fn same_on_threads(
+    name: &str,
+    args: &[&str],
+    forward: &str,
+    reverse: &str,
+    counts: &[&str],
+) -> Merged {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = merge(
+        name,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        forward,
+        reverse,
+    );
+    for &t in counts {
+        let these = with(t);
+        let other = merge(
+            name,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            forward,
+            reverse,
+        );
+        assert_same(&other, &one, &format!("-t {t}, {args:?}"));
+    }
+    one
+}
+
+/// Runs mergpa on each of `THREADS`, which must succeed and write the same
+/// each time.
 fn merge_ok(name: &str, args: &[&str], forward: &str, reverse: &str) -> Merged {
-    let merged = merge(name, args, forward, reverse);
+    let merged = same_on_threads(name, args, forward, reverse, &THREADS[1..]);
     assert!(
         merged.output.status.success(),
         "mergpa failed: {}",
         String::from_utf8_lossy(&merged.output.stderr)
     );
     merged
+}
+
+/// Many pairs, several chunks of them: pairs that merge, with differences, Ns,
+/// and low scores, staggered ones, ones too short or without overlap, and empty
+/// reads, some with abundances.
+fn many_pairs(n: usize) -> (String, String) {
+    let long = long_fragment();
+    let (mut fwd, mut rev) = (Vec::new(), Vec::new());
+    let mut labels = Vec::new();
+    for k in 0..n {
+        labels.push(if k % 6 == 0 {
+            format!("p{k};size={}", k % 5 + 1)
+        } else {
+            format!("p{k}")
+        });
+    }
+    for (k, label) in labels.iter().enumerate() {
+        let (f, fq, r, rq) = match k % 7 {
+            0 => (forward(), q('I', 50), reverse(), q('I', 50)),
+            1 => (
+                substitute(&forward(), 40),
+                q('5', 50),
+                reverse(),
+                q('I', 50),
+            ),
+            2 => (
+                long[..70].to_string(),
+                q('H', 70),
+                rc(&long[34..]),
+                q('?', 70),
+            ),
+            3 => (forward(), q('#', 50), substitute(&reverse(), 5), q('+', 50)),
+            4 => (
+                FRAGMENT[..20].to_string(),
+                q('I', 20),
+                rc(&FRAGMENT[60..]),
+                q('I', 20),
+            ),
+            5 => (String::new(), String::new(), reverse(), q('I', 50)),
+            _ => (
+                format!("{}N{}", &forward()[..45], &forward()[46..]),
+                q('A', 50),
+                reverse(),
+                q('A', 50),
+            ),
+        };
+        fwd.push((label.clone(), f, fq));
+        rev.push((label.clone(), r, rq));
+    }
+    let text = |records: &[(String, String, String)]| -> String {
+        records
+            .iter()
+            .map(|(id, seq, qual)| format!("@{id}\n{seq}\n+\n{qual}\n"))
+            .collect()
+    };
+    (text(&fwd), text(&rev))
 }
 
 /// Asserts that a run failed with exit code 1 and `message`.
@@ -657,4 +776,84 @@ fn reads_and_writes_files() {
         written.starts_with(&format!("@a\n{FRAGMENT}\n")),
         "{written}"
     );
+}
+
+#[test]
+fn merges_the_same_on_any_thread_count() {
+    let (fwd, rev) = many_pairs(2600);
+    for args in [
+        &[][..],
+        &["--stagger", "--min-overlap", "10", "--max-diffs", "2"],
+        &["--max-diff-pct", "10", "--qmax-out", "40"],
+    ] {
+        let merged = same_on_threads(
+            "threads-many",
+            args,
+            &fwd,
+            &rev,
+            &["2", "3", "5", "16", "0"],
+        );
+        assert!(merged.output.status.success(), "{args:?}");
+        assert!(
+            merged.report.contains("2600"),
+            "{args:?}: {}",
+            merged.report
+        );
+    }
+}
+
+#[test]
+fn stops_at_an_error_as_on_one_thread() {
+    let (fwd, rev) = many_pairs(1700);
+    let bad_score = "@bad\nACGTACGTAC\n+\nIIIIIIIII\u{7f}\n";
+    let bad_read = "@bad\nACGT\nIIII\n";
+    let zero = "@bad;size=0\nACGT\n+\nIIII\n";
+    let good = "@bad\nACGT\n+\nIIII\n";
+    // in the middle of a chunk, at its start, and as the first pair
+    for at in [1200, 1500, 0] {
+        let cut = |text: &str, extra: &str| -> String {
+            let lines: Vec<&str> = text.lines().collect();
+            let (head, tail) = lines.split_at(at * 4);
+            let mut out: String = head.iter().map(|l| format!("{l}\n")).collect();
+            out.push_str(extra);
+            out.extend(tail.iter().map(|l| format!("{l}\n")));
+            out
+        };
+        for (f, r) in [
+            (cut(&fwd, bad_score), cut(&rev, good)),
+            (cut(&fwd, good), cut(&rev, bad_score)),
+            (cut(&fwd, bad_read), cut(&rev, good)),
+            (cut(&fwd, good), cut(&rev, zero)),
+            (
+                fwd.clone(),
+                rev.lines().take(at * 4).map(|l| format!("{l}\n")).collect(),
+            ),
+            (cut(&fwd, good), rev.clone()),
+            (fwd.clone(), format!("{rev}{good}")),
+        ] {
+            let merged =
+                same_on_threads("threads-bad", &["--qmax", "41"], &f, &r, &["2", "3", "8"]);
+            assert_eq!(merged.output.status.code(), Some(1), "at {at}");
+        }
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let (fwd, rev) = many_pairs(30);
+    let expected = merge_ok("threads-t", &[], &fwd, &rev);
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let merged = merge("threads-t", t, &fwd, &rev);
+        assert_same(&merged, &expected, &format!("{t:?}"));
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(
+            merge("threads-t", &["-t", t], &fwd, &rev)
+                .output
+                .status
+                .code(),
+            Some(2),
+            "{t:?}"
+        );
+    }
 }
