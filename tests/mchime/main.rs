@@ -87,12 +87,19 @@ fn temp_path(name: &str) -> PathBuf {
 #[derive(Debug, PartialEq)]
 struct Written([String; 4]);
 
-/// Runs mchime with `args` on `input`, writing every output.
-fn run(name: &str, args: &[&str], input: &str) -> (Output, Written) {
+/// Runs mchime with `args` on `input`, writing every output, at the SIMD
+/// level `level` or the processor's best.
+fn run_at(
+    level: Option<rsearch::simd::Level>,
+    name: &str,
+    args: &[&str],
+    input: &str,
+) -> (Output, Written) {
     let inp = temp_path(&format!("{name}-in"));
     std::fs::write(&inp, input).unwrap();
     let outs = ["chimeras", "table", "alignments"].map(|o| temp_path(&format!("{name}-{o}")));
     let mut command = Command::new(env!("CARGO_BIN_EXE_mchime"));
+    command.envs(level.map(|l| (rsearch::simd::VARIABLE, l.name())));
     command.arg("-i").arg(&inp);
     for (option, path) in ["--chimeras", "--table", "--alignments"].iter().zip(&outs) {
         command.arg(option).arg(path);
@@ -1599,4 +1606,48 @@ fn rejects_invalid_arguments() {
     }
     let (output, _) = run("bad", &[], ">a;size=0\nACGT\n");
     assert_eq!(output.status.code(), Some(1));
+}
+
+/// Runs mchime with `args` on `input`, writing every output.
+fn run(name: &str, args: &[&str], input: &str) -> (Output, Written) {
+    run_at(None, name, args, input)
+}
+
+/// The SIMD levels of this processor, scalar with SSE2 and AVX2 or with
+/// NEON. Each aligns eight or sixteen targets at once and must give the
+/// output of the others.
+fn levels() -> Vec<rsearch::simd::Level> {
+    let levels = rsearch::simd::available();
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    assert!(levels.len() >= 2, "{levels:?}");
+    levels
+}
+
+#[test]
+fn finds_the_same_chimeras_at_every_simd_level() {
+    let levels = levels();
+    // INPUT and a copy at abundance 1, so that a search has more
+    // targets than sixteen lanes
+    let copy: String = INPUT
+        .lines()
+        .map(|line| match line.strip_prefix('>') {
+            Some(header) => format!(">copy_{};size=1\n", header.split(';').next().unwrap()),
+            None => format!("{line}\n"),
+        })
+        .collect();
+    let input = &format!("{INPUT}{copy}");
+    for args in [&[][..], &["--max-parents", "4", "--diff-pct", "1"]] {
+        let runs: Vec<(Output, Written)> = levels
+            .iter()
+            .map(|&level| run_at(Some(level), "levels", args, input))
+            .collect();
+        assert!(runs[0].0.status.success(), "{args:?}");
+        for (level, (output, written)) in levels.iter().zip(&runs).skip(1) {
+            assert!(output.status.success(), "{level:?} {args:?}");
+            assert!(
+                written.0 == runs[0].1.0,
+                "{level:?} writes otherwise, {args:?}"
+            );
+        }
+    }
 }
