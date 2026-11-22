@@ -1,7 +1,9 @@
-//! Times `vsearch --sintax --threads 1` on both strands and its rsearch
-//! pipelines on the files of rsearch's sintax benchmark. It runs against
-//! the FASTA database and its UDB file. It first checks that sintax writes
-//! the same table (see `common/vsearch.rs`).
+//! Times `vsearch --sintax` on both strands and its rsearch pipelines on the
+//! files of rsearch's sintax benchmark, at the thread counts rsearch's
+//! benchmark takes (`data::thread_counts`). It runs against the FASTA database
+//! and its UDB file. It first checks that sintax on the most threads writes the
+//! table of vsearch --threads 1 (see `common/vsearch.rs`). vsearch on several
+//! threads writes the same lines in the order its threads finish.
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
@@ -32,35 +34,40 @@ fn bench_binary(c: &mut Criterion) {
             data::output(tmp("sintax-bench-v.tsv")),
         );
         let (r, v) = (r.to_str().unwrap(), v.to_str().unwrap());
-        let vargs = [
+        let vbase = [
             "--sintax",
             fa,
             "--db",
             db,
-            "--tabbedout",
-            v,
             "--randseed",
             "1",
             "--strand",
             "both",
             "--quiet",
             "--notrunclabels",
-            "--threads",
-            "1",
         ];
+        let counts = data::thread_counts();
+        let most = counts.iter().max().unwrap().to_string();
         // both write the same table
         vsearch::run(
             &sintax,
             &[
-                "-i", fa, "--db", db, "-o", r, "--seed", "1", "--strand", "both",
+                "-i", fa, "--db", db, "-o", r, "--seed", "1", "--strand", "both", "-t", &most,
             ],
         );
-        vsearch::run(&vsearch, &vargs);
+        vsearch::run(
+            &vsearch,
+            &[&vbase[..], &["--threads", "1", "--tabbedout", v]].concat(),
+        );
         assert!(
             std::fs::read(r).unwrap() == std::fs::read(v).unwrap(),
             "sintax and vsearch wrote different tables"
         );
-        vsearch::bench(&mut group, format!("vsearch/{name}"), &vsearch, &vargs);
+        for threads in counts {
+            let t = threads.to_string();
+            let vargs = [&vbase[..], &["--threads", &t, "--tabbedout", v]].concat();
+            vsearch::bench(&mut group, format!("vsearch/{name}/t{t}"), &vsearch, &vargs);
+        }
     }
     group.finish();
 }

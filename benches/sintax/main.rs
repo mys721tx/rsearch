@@ -5,7 +5,9 @@
 //! them reverse-complemented, against a database of 5,000 mutated copies of
 //! the templates, each annotated with its template's taxonomy, at the
 //! default word length of 8, searching both strands, from a FASTA file and
-//! from mkudb's UDB file of it. compare/benches/sintax times vsearch on the
+//! from mkudb's UDB file of it, at each thread count of
+//! `data::thread_counts` (one and one per core, or `RSEARCH_BENCH_THREADS`).
+//! compare/benches/sintax times vsearch at the same thread counts on the
 //! same files, after checking that both write the same table.
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -28,10 +30,15 @@ fn bench_binary(c: &mut Criterion) {
     group.sample_size(10);
     for (name, db) in [("fasta", &dbfa), ("udb", &udb)] {
         let db = db.to_str().unwrap();
-        let rargs = [
-            "-i", fa, "--db", db, "-o", r, "--seed", "1", "--strand", "both",
-        ];
-        group.bench_function(format!("sintax/{name}"), |b| b.iter(|| run(sintax, &rargs)));
+        for threads in data::thread_counts() {
+            let t = threads.to_string();
+            let rargs = [
+                "-i", fa, "--db", db, "-o", r, "--seed", "1", "--strand", "both", "-t", &t,
+            ];
+            group.bench_function(format!("sintax/{name}/t{t}"), |b| {
+                b.iter(|| run(sintax, &rargs))
+            });
+        }
     }
     group.finish();
 }
