@@ -176,15 +176,90 @@ fn dbornt(name: &str, db: &[u8], args: &[&str], input: &str) -> Run {
     result
 }
 
-/// Runs dbornt, which must succeed.
+/// The thread counts every run is made with. What it writes must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Checks that two runs wrote the same files and messages and exited alike.
+#[track_caller]
+fn assert_same(other: &Run, one: &Run, what: &str) {
+    assert_eq!(
+        other.output.status.code(),
+        one.output.status.code(),
+        "{what}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&other.output.stderr),
+        String::from_utf8_lossy(&one.output.stderr),
+        "{what}"
+    );
+    assert!(other.oriented == one.oriented, "{what}: oriented");
+    assert!(
+        other.not_oriented == one.not_oriented,
+        "{what}: not oriented"
+    );
+    assert!(other.table == one.table, "{what}: table");
+    assert_eq!(other.report, one.report, "{what}: report");
+}
+
+/// Runs dbornt with `args` at -t 1 and at each count of `counts`, checks
+/// that every run writes the same, and returns the first.
+fn same_on_threads(name: &str, db: &[u8], args: &[&str], input: &str, counts: &[&str]) -> Run {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = dbornt(
+        name,
+        db,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        input,
+    );
+    for &t in counts {
+        let these = with(t);
+        let other = dbornt(
+            name,
+            db,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            input,
+        );
+        assert_same(&other, &one, &format!("-t {t}, {args:?}"));
+    }
+    one
+}
+
+/// Runs dbornt on each of `THREADS`, which must succeed and write the same
+/// each time.
 fn dbornt_ok(name: &str, db: &[u8], args: &[&str], input: &str) -> Run {
-    let result = dbornt(name, db, args, input);
+    let result = same_on_threads(name, db, args, input, &THREADS[1..]);
     assert!(
         result.output.status.success(),
         "dbornt failed: {}",
         String::from_utf8_lossy(&result.output.stderr)
     );
     result
+}
+
+/// Many queries, several chunks of them: `queries` again and again under
+/// new labels, as FASTA or as FASTQ.
+fn many_queries(n: usize, as_fastq: bool) -> String {
+    let queries = queries();
+    let mut out = String::new();
+    for k in 0..n {
+        let (label, seq) = &queries[k % queries.len()];
+        let label = format!("{}_{k}", label.split(' ').next().unwrap());
+        if as_fastq {
+            let qual: String = (0..seq.len())
+                .map(|i| (33 + (i % 40) as u8) as char)
+                .collect();
+            out.push_str(&format!("@{label}\n{seq}\n+\n{qual}\n"));
+        } else {
+            out.push_str(&format!(">{label}\n{seq}\n"));
+        }
+    }
+    out
 }
 
 const TABLE: &str = r##"fwd	+	89	0
@@ -585,4 +660,56 @@ GGGAAGTAGGGCGTCAATCG
 GTAGGAAAGCCCAGCAAGCAGATCATGGCACAATTCATAGGTATTGGAAGacccctcagcagcccccgtttagtattatc
 "##
     );
+}
+
+#[test]
+fn orients_the_same_on_any_thread_count() {
+    let db = database_fasta(&database());
+    for as_fastq in [false, true] {
+        let input = many_queries(5000, as_fastq);
+        for args in [&[][..], &["--word-len", "8"]] {
+            let run = same_on_threads(
+                "threads-many",
+                db.as_bytes(),
+                args,
+                &input,
+                &["2", "3", "5", "16", "0"],
+            );
+            assert!(run.output.status.success(), "{args:?}");
+            assert!(run.report.contains("5000"), "{}", run.report);
+        }
+    }
+}
+
+#[test]
+fn stops_at_an_invalid_query_as_on_one_thread() {
+    let db = database_fasta(&database());
+    let input = many_queries(5000, false);
+    let (head, tail) = input.split_at(input.match_indices('>').nth(3700).unwrap().0);
+    for bad in [">bad;size=0\nACGT\n", ">bad\nAC\u{1}GT\n"] {
+        for whole in [format!("{head}{bad}{tail}"), format!("{bad}{input}")] {
+            let run = same_on_threads(
+                "threads-invalid",
+                db.as_bytes(),
+                &[],
+                &whole,
+                &["2", "3", "8"],
+            );
+            assert_eq!(run.output.status.code(), Some(1));
+        }
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let db = database_fasta(&database());
+    let expected = dbornt_ok("threads-t", db.as_bytes(), &[], &queries_fasta());
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let run = dbornt("threads-t", db.as_bytes(), t, &queries_fasta());
+        assert_same(&run, &expected, &format!("{t:?}"));
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        let run = dbornt("threads-t", db.as_bytes(), &["-t", t], &queries_fasta());
+        assert_eq!(run.output.status.code(), Some(2), "{t:?}");
+    }
 }
