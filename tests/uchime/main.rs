@@ -251,15 +251,92 @@ fn run(name: &str, args: &[&str], input: &str, db: Option<&str>) -> (Output, Wri
     (output, written)
 }
 
-/// Runs uchime, which must succeed, and returns what it wrote.
+/// The thread counts every run is made with. What it writes must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs uchime on each of `THREADS`, which must succeed and write the same
+/// each time, and returns what it wrote.
 fn uchime(name: &str, args: &[&str], input: &str, db: Option<&str>) -> Written {
-    let (output, written) = run(name, args, input, db);
-    assert!(
-        output.status.success(),
-        "uchime failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<Written> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let (output, written) = run(name, &with_threads, input, db);
+        assert!(
+            output.status.success(),
+            "uchime -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        match &first {
+            None => first = Some(written),
+            Some(one) => assert_eq!(&written, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap()
+}
+
+/// Runs uchime with `args` at -t 1 and at each count of `counts`, and checks
+/// that its outputs, messages, and exit code are the same.
+fn same_on_threads(
+    name: &str,
+    args: &[&str],
+    input: &str,
+    db: Option<&str>,
+    counts: &[&str],
+) -> (Output, Written) {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let one = run(
+        name,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        input,
+        db,
     );
-    written
+    for &t in counts {
+        let these = with(t);
+        let other = run(
+            name,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            input,
+            db,
+        );
+        assert_eq!(
+            other.0.status.code(),
+            one.0.status.code(),
+            "-t {t}, {args:?}: {} against {}",
+            String::from_utf8_lossy(&other.0.stderr),
+            String::from_utf8_lossy(&one.0.stderr)
+        );
+        assert!(other.1 == one.1, "-t {t} writes otherwise, {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&other.0.stderr),
+            String::from_utf8_lossy(&one.0.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
+}
+
+/// `QUERIES` and `INPUT` repeated under new labels: more queries than a
+/// batch of every thread count.
+fn many_queries(n: usize) -> String {
+    let records: Vec<&str> = QUERIES
+        .split('>')
+        .chain(INPUT.split('>'))
+        .filter(|r| !r.is_empty())
+        .collect();
+    let mut out = String::new();
+    for k in 0..n {
+        let record = records[k % records.len()];
+        let (header, seq) = record.split_once('\n').unwrap();
+        let (label, size) = header.split_once(';').unwrap_or((header, "size=1"));
+        out.push_str(&format!(">{label}_{k};{size}\n{seq}"));
+    }
+    out
 }
 
 #[test]
@@ -3300,4 +3377,71 @@ fn rejects_invalid_arguments() {
     }
     let (output, _) = run("bad", &[], ">a;size=0\nACGT\n", None);
     assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn finds_the_same_chimeras_on_any_thread_count() {
+    let queries = many_queries(1500);
+    for args in [
+        &[][..],
+        &[
+            "--mindiffs",
+            "1",
+            "--mindiv",
+            "0.3",
+            "--minh",
+            "0.1",
+            "--width",
+            "40",
+        ],
+        &["--xn", "6", "--dn", "1"],
+    ] {
+        let (output, written) = same_on_threads(
+            "threads-many",
+            args,
+            &queries,
+            Some(REF),
+            &["2", "3", "5", "16", "0"],
+        );
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(written.0[3].lines().count(), 1500, "{args:?}");
+    }
+    // de novo the input is the database. It runs on one thread whatever -t
+    let (output, _) = same_on_threads("threads-many-denovo", &[], &many_queries(300), None, &["4"]);
+    assert!(output.status.success());
+}
+
+#[test]
+fn stops_at_an_invalid_query_as_on_one_thread() {
+    let queries = many_queries(1200);
+    for bad in [">bad;size=0\nACGT\n", ">bad\nAC\u{1}GT\n"] {
+        for input in [
+            format!("{queries}{bad}{queries}"),
+            format!("{bad}{queries}"),
+        ] {
+            let (output, _) =
+                same_on_threads("threads-invalid", &[], &input, Some(REF), &["2", "3", "8"]);
+            assert_eq!(output.status.code(), Some(1));
+        }
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let expected = uchime("threads-t", &[], QUERIES, Some(REF));
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let (output, written) = run("threads-t", t, QUERIES, Some(REF));
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(written, expected, "{t:?}");
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        assert_eq!(
+            run("threads-t", &["-t", t], QUERIES, Some(REF))
+                .0
+                .status
+                .code(),
+            Some(2),
+            "{t:?}"
+        );
+    }
 }
