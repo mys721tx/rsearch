@@ -8,12 +8,18 @@
 //! (one and one per core, or `RSEARCH_BENCH_THREADS`).
 //! compare/benches/dbsrch times vsearch at the same thread counts on the
 //! same files, after checking that both write the same hits.
+//!
+//! `simd` times dbsrch/id97 at each SIMD level this processor has, chosen with
+//! `RSEARCH_SIMD` or listed in `RSEARCH_BENCH_SIMD`. It sets the scalar code
+//! the compiler vectorises against the hand-written SSE2, AVX2, or NEON.
 
 use std::process::{Command, Stdio};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 mod input;
+#[path = "../common/levels.rs"]
+mod levels;
 use input::*;
 
 fn run(program: &str, args: &[&str]) {
@@ -62,5 +68,37 @@ fn bench_binary(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_binary);
+/// dbsrch/id97 at each SIMD level this processor has, with the defaults and
+/// --id 0.97 on one thread.
+fn bench_simd(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
+    let (q, db) = input_files();
+    let (q, db) = (q.to_str().unwrap(), db.to_str().unwrap());
+    let dbsrch = env!("CARGO_BIN_EXE_dbsrch");
+    let mut group = c.benchmark_group(data::group("dbsrch/simd"));
+    group.throughput(Throughput::Elements(data::count(q, QUERIES)));
+    group.sample_size(10);
+    let args = [
+        "-i",
+        q,
+        "--db",
+        db,
+        "-o",
+        "/dev/null",
+        "-t",
+        "1",
+        "--id",
+        "0.97",
+    ];
+    for level in levels::levels() {
+        group.bench_function(format!("dbsrch/id97/{}", level.name()), |b| {
+            b.iter(|| levels::run_at(level, dbsrch, &args))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_binary, bench_simd);
 criterion_main!(benches);
