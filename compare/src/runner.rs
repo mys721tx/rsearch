@@ -1,10 +1,16 @@
 //! Runs the cases of sources over seeds on several threads, recording each
 //! case as a line of JSON, and summarises recorded runs.
+//!
+//! The runner's threads only run cases. A reporter thread of its own takes
+//! each seed's records from them, writes each record whole, and prints the
+//! differences, so that what an interruption cuts short never reaches the
+//! results.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -55,6 +61,9 @@ fn work(name: &str, seed: u64, opts: &Options) -> Vec<Map<String, Value>> {
     };
     let mut out = Vec::new();
     for (k, case) in cases.iter().enumerate() {
+        if STOP.load(Ordering::SeqCst) {
+            break;
+        }
         let t = Instant::now();
         let mut rec = run_case(
             case,
@@ -94,24 +103,7 @@ pub fn run(names: &[String], seeds: Option<&[u64]>, opts: Options) -> std::io::R
             items.push_back((name.clone(), seed));
         }
     }
-    let queue = Arc::new(Mutex::new(items));
-    let opts = Arc::new(opts);
-    let (tx, rx) = mpsc::channel();
-    let mut handles = Vec::new();
-    for _ in 0..opts.jobs.max(1) {
-        let (queue, opts, tx) = (queue.clone(), opts.clone(), tx.clone());
-        handles.push(std::thread::spawn(move || {
-            loop {
-                let item = queue.lock().unwrap().pop_front();
-                let Some((name, seed)) = item else { break };
-                if tx.send(work(&name, seed, &opts)).is_err() {
-                    break;
-                }
-            }
-        }));
-    }
-    drop(tx);
-    let mut file = match &opts.out {
+    let file = match &opts.out {
         Some(p) => {
             let (file, held) = open_out(p)?;
             if held > 0 {
@@ -124,9 +116,72 @@ pub fn run(names: &[String], seeds: Option<&[u64]>, opts: Options) -> std::io::R
         }
         None => None,
     };
+    let queue = Arc::new(Mutex::new(items));
+    let opts = Arc::new(opts);
+    let (tx, rx) = mpsc::channel();
+    let reporter = std::thread::spawn(move || report(rx, file, &STOP));
+    let mut handles = Vec::new();
+    for _ in 0..opts.jobs.max(1) {
+        let (queue, opts, tx) = (queue.clone(), opts.clone(), tx.clone());
+        handles.push(std::thread::spawn(move || {
+            while !STOP.load(Ordering::SeqCst) {
+                let item = queue.lock().unwrap().pop_front();
+                let Some((name, seed)) = item else { break };
+                if tx.send(work(&name, seed, &opts)).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx);
+    for h in handles {
+        let _ = h.join();
+    }
+    reporter.join().expect("the reporter thread")
+}
+
+/// Set when the run is interrupted: no case starts after it, and no record
+/// that arrives after it is written.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// whether the run was interrupted.
+pub fn interrupted() -> bool {
+    STOP.load(Ordering::SeqCst)
+}
+
+/// makes SIGINT and SIGTERM stop the run instead of the process, so that
+/// the reporter ends the results on a whole record.
+pub fn catch_interrupts() {
+    #[cfg(unix)]
+    {
+        extern "C" fn on_signal(_: libc::c_int) {
+            // only an atomic store: all a signal handler may safely do
+            STOP.store(true, Ordering::SeqCst);
+        }
+        let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        // SAFETY: the handler only stores to an atomic
+        unsafe {
+            libc::signal(libc::SIGINT, handler);
+            libc::signal(libc::SIGTERM, handler);
+        }
+    }
+}
+
+/// The reporter: takes each seed's records from `rx` until the runner's
+/// threads are done, counts them, writes each whole to `file`, and prints
+/// the first 200 differences. Records that arrive once `stop` is set come
+/// from cases the interruption cut short, and are dropped.
+fn report(
+    rx: mpsc::Receiver<Vec<Map<String, Value>>>,
+    mut file: Option<std::fs::File>,
+    stop: &AtomicBool,
+) -> std::io::Result<Tally> {
     let mut tally = Tally::new();
     let mut shown = 0;
     for recs in rx {
+        if stop.load(Ordering::SeqCst) {
+            continue;
+        }
         for r in recs {
             let source = r["source"].as_str().unwrap_or("").to_string();
             let outcome = r["outcome"].as_str().unwrap_or("").to_string();
@@ -163,9 +218,6 @@ pub fn run(names: &[String], seeds: Option<&[u64]>, opts: Options) -> std::io::R
         if let Some(f) = file.as_mut() {
             f.flush()?;
         }
-    }
-    for h in handles {
-        let _ = h.join();
     }
     Ok(tally)
 }
@@ -436,8 +488,11 @@ mod tests {
         let (file, _) = open_out(&path).unwrap();
         let stop = std::sync::atomic::AtomicBool::new(false);
         let (tx, rx) = mpsc::channel();
-        tx.send(vec![record("derep", 1, 0, "pass"), record("derep", 1, 1, "fail")])
-            .unwrap();
+        tx.send(vec![
+            record("derep", 1, 0, "pass"),
+            record("derep", 1, 1, "fail"),
+        ])
+        .unwrap();
         tx.send(vec![record("conv", 2, 0, "pass")]).unwrap();
         let sender = std::thread::spawn(move || tx);
         let tx = sender.join().unwrap();
@@ -459,7 +514,10 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 3);
         assert!(text.ends_with('\n'));
-        assert!(text.lines().all(|l| serde_json::from_str::<Value>(l).is_ok()));
+        assert!(
+            text.lines()
+                .all(|l| serde_json::from_str::<Value>(l).is_ok())
+        );
     }
 
     #[test]

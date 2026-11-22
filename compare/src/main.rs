@@ -400,10 +400,18 @@ fn run(m: &clap::ArgMatches) -> ExitCode {
             .unwrap_or_else(runner::default_jobs),
         threads: m.get_one::<usize>("threads").copied(),
     };
+    runner::catch_interrupts();
     match runner::run(&names, seeds.as_deref(), opts) {
         Err(e) => {
             eprintln!("rscompare: {e}");
             ExitCode::FAILURE
+        }
+        Ok(tally) if runner::interrupted() => {
+            runner::print_tally(&tally);
+            eprintln!(
+                "rscompare: interrupted; the seeds finished before it are recorded, each case whole"
+            );
+            ExitCode::from(130)
         }
         Ok(tally) => {
             runner::print_tally(&tally);

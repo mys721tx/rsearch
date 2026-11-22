@@ -5,8 +5,9 @@ results. They form the Rust crate `rscompare`. It is a member of the
 workspace. It translates a vsearch command line into the rsearch
 pipeline that should give the same results and runs both. It then
 compares their outputs, exit codes, error messages, and warnings. Its
-dependencies are `clap` and `serde_json`. It calls `gzip`, `bzip2`, and,
-for `fetch`, `curl` and `md5`/`md5sum`.
+dependencies are `clap`, `serde_json`, and `libc` (to catch an
+interruption). It calls `gzip`, `bzip2`, and, for `fetch`, `curl` and
+`md5`/`md5sum`.
 
 ## Build
 
@@ -93,12 +94,19 @@ own, one case at a time:
 `summary` tallies the outcomes, the coverage values, and the caveats of
 one or more result files so that two runs can be compared.
 
+The runner's threads only run cases. A reporter thread of its own takes
+each seed's records, writes each record whole, and prints the `DIFF`
+lines. SIGINT or SIGTERM stops the run. No case starts after it, the
+records that arrive after it are dropped (an interrupted case's tools may
+have been killed), and `run` exits with code 130. The results then end on
+a whole record.
+
 `--out` adds to a file that already holds records, and `run` warns that
-it does. A run stopped while writing leaves its last record cut short,
-and the next run starts a new line after it. `summary` skips a line that
-is not a record and counts each case (source, seed, and index) once. The
-last record of a case is the one counted. It warns of both and names the
-file and the line.
+it does. A file whose last record was cut short (by a kill, or an older
+rscompare) gets a newline first. `summary` skips a line that is not a
+record and counts each case (source, seed, and index) once. The last
+record of a case is the one counted. It warns of both and names the file
+and the line.
 
 ## The translator
 
