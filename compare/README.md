@@ -55,12 +55,14 @@ case failed.
 
 `--vsearch` and `--bin` name the vsearch binary and the rsearch build
 (defaults `compare/vsearch-build/vsearch` and `target/release`).
-`--jobs` sets the cases run at once (threads; each tool stays
-single-threaded). `--tmp` sets the working directory
-(`$TMPDIR/rscompare`). `--keep` keeps the files of passing cases too.
-The files of a failing case are always kept in
-`$TMPDIR/rscompare/<source>-<seed>/c<index>/`. vsearch's outputs are in
-`v/` and rsearch's in `r/`.
+`--jobs` sets the cases run at once (threads). The translation gives
+rsearch's threaded tools vsearch's `--threads` as `-t`. `--threads N`
+overrides vsearch's thread count and runs them on N threads. A source
+written for `--threads 1` then checks rsearch on several threads against
+vsearch's one. `--tmp` sets the working directory (`$TMPDIR/rscompare`).
+`--keep` keeps the files of passing cases too. The files of a failing
+case are always kept in `$TMPDIR/rscompare/<source>-<seed>/c<index>/`.
+vsearch's outputs are in `v/` and rsearch's in `r/`.
 
 `all` runs every source but two. The UDB files of `mkudb-long` reach 4
 GB, and `datasets` needs the downloads (below). `mkudb-long` runs on its
@@ -160,8 +162,10 @@ Each case records its caveats:
   and `--maxseqlength` is then not applied.
 - Without `--notrunclabels`, vsearch cuts labels at spaces. rsearch
   keeps them whole.
-- Without `--threads 1`, the multithreaded commands may order their
-  outputs otherwise.
+- Without `--threads 1`, `--usearch_global`, `--search_exact`,
+  `--allpairs_global`, `--sintax`, and `--uchime_ref` write their
+  queries in the order their threads finish. rsearch writes them in
+  input order.
 - Without `--randseed`, random draws differ.
 - `sqfilt` checks `;size=`. Dereplication reads it only with `--sizein`.
 - With `--strand both` and `--qmask dust`, `--usearch_global` dusts each
@@ -200,8 +204,12 @@ cargo bench -p rscompare --bench derep
 The vsearch command lines keep the options that leave vsearch's default
 filters, masking and wrapping out where they change nothing on the
 benchmark's input (`--minseqlength 0`, `--qmask soft`, and
-`--fasta_width 0`). They run vsearch with `--threads 1` so that the
-rsearch timings stay comparable.
+`--fasta_width 0`). The threaded tools' benchmarks first check rsearch
+on the most threads against vsearch with `--threads 1`. They then run
+both at each thread count of `data::thread_counts` (one and one per
+core, or the comma-separated counts of `RSEARCH_BENCH_THREADS`). The
+others run vsearch with `--threads 1` so that the rsearch timings stay
+comparable.
 
 On a real dataset instead of the synthetic input, both crates'
 benchmarks read the files of `RSEARCH_BENCH_DATA=<id>` (fetched by
