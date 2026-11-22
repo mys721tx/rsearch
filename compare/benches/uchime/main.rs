@@ -1,7 +1,9 @@
-//! Times `vsearch --uchime_denovo` and `--uchime_ref` with `--threads 1`
-//! and their rsearch pipelines on the files of rsearch's uchime benchmark,
-//! after checking that uchime writes the same tables (see
-//! `common/vsearch.rs`).
+//! Times `vsearch --uchime_denovo` and `--uchime_ref` and their rsearch
+//! pipelines on the files of rsearch's uchime benchmark, the reference search
+//! at the thread counts rsearch's benchmark takes (`data::thread_counts`). It
+//! first checks that uchime on the most threads writes the tables of vsearch
+//! --threads 1 (see `common/vsearch.rs`). vsearch's --uchime_ref on several
+//! threads writes the same lines in the order its threads finish.
 
 use std::path::{Path, PathBuf};
 
@@ -43,18 +45,24 @@ fn bench_binary(c: &mut Criterion) {
         "soft",
         "--fasta_width",
         "0",
-        "--threads",
-        "1",
     ];
-    let cases: [(&str, Vec<&str>, Vec<&str>); 2] = [
-        ("denovo", vec!["-i", &sorted], vec!["--uchime_denovo", &all]),
+    let counts = data::thread_counts();
+    let most = counts.iter().max().unwrap().to_string();
+    let cases: [(&str, Vec<&str>, Vec<&str>, Vec<usize>); 2] = [
+        (
+            "denovo",
+            vec!["-i", &sorted],
+            vec!["--uchime_denovo", &all],
+            vec![1],
+        ),
         (
             "ref",
-            vec!["-i", &queries, "--db", &db],
+            vec!["-i", &queries, "--db", &db, "-t", &most],
             vec!["--uchime_ref", &queries, "--db", &db, "--dbmask", "soft"],
+            counts.clone(),
         ),
     ];
-    for (name, rargs, vargs) in cases {
+    for (name, rargs, vargs, threads) in cases {
         // both write the same tables
         let (r, v) = (
             data::output(dir.join("uchime-bench-r.tab")),
@@ -66,14 +74,32 @@ fn bench_binary(c: &mut Criterion) {
         );
         vsearch::run(
             &vsearch,
-            &[&vargs[..], &common, &["--uchimeout", &s(&v)]].concat(),
+            &[
+                &vargs[..],
+                &common,
+                &["--threads", "1", "--uchimeout", &s(&v)],
+            ]
+            .concat(),
         );
         assert!(
             std::fs::read(&r).unwrap() == std::fs::read(&v).unwrap(),
             "uchime and vsearch wrote different tables"
         );
-        let va = [&vargs[..], &common, &["--nonchimeras", "/dev/null"]].concat();
-        vsearch::bench(&mut group, format!("vsearch/{name}"), &vsearch, &va);
+        for threads in threads {
+            let t = threads.to_string();
+            let va = [
+                &vargs[..],
+                &common,
+                &["--threads", &t, "--nonchimeras", "/dev/null"],
+            ]
+            .concat();
+            let id = if name == "denovo" {
+                format!("vsearch/{name}")
+            } else {
+                format!("vsearch/{name}/t{t}")
+            };
+            vsearch::bench(&mut group, id, &vsearch, &va);
+        }
     }
     group.finish();
 }

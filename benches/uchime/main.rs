@@ -4,8 +4,10 @@
 //! of 250 bases, sorted by decreasing abundance. They are abundant variants
 //! of 100 parents and rarer two-parent chimeras of them, with one base in a
 //! hundred changed. It also runs the same sequences but the parents against
-//! a database of the parents. compare/benches/uchime times vsearch on the
-//! same files, after checking that both write the same tables.
+//! a database of the parents, at each thread count of `data::thread_counts`
+//! (one and one per core, or `RSEARCH_BENCH_THREADS`); de novo runs on one
+//! thread. compare/benches/uchime times vsearch at the same thread counts
+//! on the same files, after checking that both write the same tables.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -37,13 +39,12 @@ fn bench_binary(c: &mut Criterion) {
     let mut group = c.benchmark_group(data::group("uchime/binary"));
     group.throughput(Throughput::Elements(data::count(&all, SEQUENCES)));
     group.sample_size(10);
-    let cases: [(&str, Vec<&str>); 2] = [
-        ("denovo", vec!["-i", &all]),
-        ("ref", vec!["-i", &queries, "--db", &db]),
-    ];
-    for (name, rargs) in cases {
-        let ra = [&rargs[..], &["-o", "/dev/null"]].concat();
-        group.bench_function(format!("uchime/{name}"), |b| b.iter(|| run(uchime, &ra)));
+    let ra = ["-i", &all, "-o", "/dev/null"];
+    group.bench_function("uchime/denovo", |b| b.iter(|| run(uchime, &ra)));
+    for threads in data::thread_counts() {
+        let t = threads.to_string();
+        let ra = ["-i", &queries, "--db", &db, "-o", "/dev/null", "-t", &t];
+        group.bench_function(format!("uchime/ref/t{t}"), |b| b.iter(|| run(uchime, &ra)));
     }
     group.finish();
 }
