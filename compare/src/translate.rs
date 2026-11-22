@@ -341,7 +341,7 @@ const UNORDERED: &[&str] = &[
     "sintax",
 ];
 /// rsearch's tools that take `-t/--threads`.
-pub const THREADED_TOOLS: &[&str] = &["allpr", "dbsrch", "mergpa", "sintax", "uchime"];
+pub const THREADED_TOOLS: &[&str] = &["allpr", "dbsrch", "lcmask", "mergpa", "sintax", "uchime"];
 /// Commands that keep whole headers without `--notrunclabels`, or read none.
 pub const WHOLE_HEADERS: &[&str] = &[
     "fastq_convert",

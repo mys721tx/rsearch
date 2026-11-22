@@ -5,7 +5,7 @@ Mask low-complexity regions with DUST.
 ## Synopsis
 
 ```
-lcmask [-i FILE] [-o FILE] [--hard [--no-dust] | --clear]
+lcmask [-i FILE] [-o FILE] [--hard [--no-dust] | --clear] [-t N]
 ```
 
 ## Description
@@ -31,6 +31,9 @@ before them chooses their masking, and `lcmask --clear` turns it off.
   into N. Needs `--hard`.
 - `--clear`: Upper-case every residue, clearing any masking. Not with
   `--hard` or `--no-dust`.
+- `-t`, `--threads N`: Mask on N threads, 0 for one per logical core. The
+  records go to the threads 1,000 at a time and are written in input
+  order, the same on any number. Default: 0.
 
 ## vsearch
 
@@ -42,7 +45,8 @@ reads the sequences. `--qmask dust` (the default) is `lcmask`, `--hardmask`
 `--min_unmasked_pct` and `--max_unmasked_pct` filters of `--fastx_mask` are
 [sqfilt](sqfilt.md) after it. Like the other streaming tools, lcmask writes
 the records before an invalid abundance, where `--fastx_mask` reads the
-whole file first and writes none.
+whole file first and writes none. It writes the same records on any number
+of threads.
 
 ## Examples
 
