@@ -180,7 +180,7 @@ impl<'a> Classifier<'a> {
         for &word in words {
             if let Some(bitmap) = db.bitmap(word) {
                 // eight counters at once, a byte of the bitmap each
-                for (bits, counters) in bitmap.iter().zip(self.counters.chunks_exact_mut(8)) {
+                for (bits, counters) in bitmap.iter().zip(self.counters.as_chunks_mut::<8>().0) {
                     if *bits == 0 {
                         continue;
                     }

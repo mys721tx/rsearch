@@ -549,7 +549,7 @@ impl Searcher {
                     // four counters at once, four bits of the bitmap each
                     for (bits, counts) in bitmap[..blocks]
                         .iter()
-                        .zip(self.counts.chunks_exact_mut(BLOCK / 4))
+                        .zip(self.counts.as_chunks_mut::<{ BLOCK / 4 }>().0)
                     {
                         if *bits == 0 {
                             continue;
@@ -579,7 +579,13 @@ impl Searcher {
         if self.top_hits == 0 {
             return Vec::new();
         }
-        for (block, counts) in self.counts.chunks_exact(BLOCK / 4).enumerate() {
+        for (block, counts) in self
+            .counts
+            .as_chunks::<{ BLOCK / 4 }>()
+            .0
+            .iter()
+            .enumerate()
+        {
             // a candidate shares at least this many words. That is the fewest
             // any target of the block may, and once the heap is full, as many
             // as its worst
