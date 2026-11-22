@@ -9,6 +9,7 @@ mergpa [-i FILE] --reverse FILE [-o FILE] [--not-merged FILE]
        [--rev-not-merged FILE] [--report FILE] [--ee-table FILE]
        [--min-overlap N] [--max-diffs N] [--max-diff-pct PCT] [--stagger]
        [--ascii 33|64] [--qmin Q] [--qmax Q] [--qmin-out Q] [--qmax-out Q]
+       [-t N]
 ```
 
 ## Description
@@ -37,6 +38,9 @@ more than a million bases. Nothing is written to standard error.
   standard input.
 - `-o`, `--out FILE`: Output FASTQ file of the merged reads. Default:
   standard output.
+- `-t`, `--threads N`: Merge on N threads, 0 for one per logical core.
+  Each chunk of 500 pairs is merged by one thread, and the outputs are the
+  same, in the same order, on any number. Default: 0.
 - `--reverse FILE`: Input FASTQ file of the reverse reads. Required.
 - `--not-merged FILE`: Output file of the forward reads of the pairs not
   merged.
@@ -76,7 +80,10 @@ hold only the pairs that reached it. vsearch scores a base below Q2 as an
 error of 0.75 when it applies `--fastq_maxee` to a merged read, where
 sqfilt uses 10^(-Q/10). `sqfilt --max-ee` after mergpa can therefore differ
 from `--fastq_maxee` on reads with such scores. What vsearch writes before an
-error depends on its threads, and is not matched.
+error depends on its threads, and is not matched. mergpa writes the same
+before an error on any number of threads. It writes the pairs of the chunks
+before the error's, and of the error's chunk those before a pair whose
+scores are out of range.
 
 ## Examples
 

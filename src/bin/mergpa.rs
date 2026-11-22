@@ -12,11 +12,19 @@ use clap::{Arg, ArgAction, Command, value_parser};
 
 use rsearch::fastx::{Format, Reader, Record};
 use rsearch::label::checked_abundance;
-use rsearch::merge::{Merger, Reason, Settings};
+use rsearch::merge::{Merged, Merger, Reason, Settings};
+use rsearch::threads::{Workers, threads, threads_args};
 use rsearch::writer::Writer;
 
 /// The pairs vsearch reads before merging them.
 const CHUNK: usize = 500;
+
+/// What became of a pair: merged, or not and why, with the reads as they
+/// were tried.
+enum Outcome {
+    Merged(Merged),
+    NotMerged(Reason, (Vec<u8>, Vec<u8>), (Vec<u8>, Vec<u8>)),
+}
 
 /// prints a warning, which may hold bytes that are not UTF-8.
 fn warn(message: &[u8]) {
@@ -160,95 +168,97 @@ fn main() {
             .value_parser(value_parser!(i16))
             .help(help)
     };
-    let mut command = Command::new("mergpa")
-        .about("Merge overlapping read pairs.")
-        .long_about(
-            "Merge overlapping read pairs.\n\n\
+    let mut command = threads_args(
+        Command::new("mergpa")
+            .about("Merge overlapping read pairs.")
+            .long_about(
+                "Merge overlapping read pairs.\n\n\
              Each forward read is merged with the reverse complement of the read at the \
              same position in --reverse where they overlap, found by shared 5-mers and \
              scored by ungapped alignment; a pair merges when one overlap alone scores \
              high enough. Merged bases get posterior scores, and the forward header is \
              kept whole. Pairs not merged go to --not-merged and --rev-not-merged, \
              upper-cased, N scored 0. Both files are FASTQ, with as many reads each.",
-        )
-        .arg(
-            Arg::new("in")
-                .short('i')
-                .long("in")
-                .value_name("INPUT")
-                .help("Input FASTQ file of forward reads, default to stdin"),
-        )
-        .arg(
-            Arg::new("out")
-                .short('o')
-                .long("out")
-                .value_name("OUTPUT")
-                .help("Output FASTQ file of merged pairs, default to stdout"),
-        )
-        .arg(file("reverse", "Input FASTQ file of reverse reads").required(true))
-        .arg(file(
-            "not-merged",
-            "Output file of the forward reads of pairs not merged",
-        ))
-        .arg(file(
-            "rev-not-merged",
-            "Output file of the reverse reads of pairs not merged",
-        ))
-        .arg(file(
-            "report",
-            "Output file of the counts of pairs merged and not, and why",
-        ))
-        .arg(file(
-            "ee-table",
-            "Output file of the expected errors of the overlap in each read and the \
+            )
+            .arg(
+                Arg::new("in")
+                    .short('i')
+                    .long("in")
+                    .value_name("INPUT")
+                    .help("Input FASTQ file of forward reads, default to stdin"),
+            )
+            .arg(
+                Arg::new("out")
+                    .short('o')
+                    .long("out")
+                    .value_name("OUTPUT")
+                    .help("Output FASTQ file of merged pairs, default to stdout"),
+            )
+            .arg(file("reverse", "Input FASTQ file of reverse reads").required(true))
+            .arg(file(
+                "not-merged",
+                "Output file of the forward reads of pairs not merged",
+            ))
+            .arg(file(
+                "rev-not-merged",
+                "Output file of the reverse reads of pairs not merged",
+            ))
+            .arg(file(
+                "report",
+                "Output file of the counts of pairs merged and not, and why",
+            ))
+            .arg(file(
+                "ee-table",
+                "Output file of the expected errors of the overlap in each read and the \
              differences of each merged pair",
-        ))
-        .arg(
-            Arg::new("min-overlap")
-                .long("min-overlap")
-                .value_name("LEN")
-                .value_parser(value_parser!(u32).range(5..))
-                .default_value("10")
-                .help("Shortest overlap, at least 5"),
-        )
-        .arg(
-            Arg::new("max-diffs")
-                .long("max-diffs")
-                .value_name("COUNT")
-                .value_parser(value_parser!(u32))
-                .default_value("10")
-                .help("Most differences in the overlap"),
-        )
-        .arg(
-            Arg::new("max-diff-pct")
-                .long("max-diff-pct")
-                .value_name("PCT")
-                .allow_negative_numbers(true)
-                .value_parser(percentage)
-                .default_value("100")
-                .help("Highest percentage of differences in the overlap"),
-        )
-        .arg(
-            Arg::new("stagger")
-                .long("stagger")
-                .action(ArgAction::SetTrue)
-                .help("Merge pairs whose reverse read runs past the start of the forward read"),
-        )
-        .arg(
-            Arg::new("ascii")
-                .long("ascii")
-                .value_name("OFFSET")
-                .value_parser(["33", "64"])
-                .default_value("33")
-                .help("ASCII offset of quality scores, read and written"),
-        )
-        .arg(score("qmin", "Minimum quality score accepted in the input").default_value("0"))
-        .arg(score(
-            "qmax",
-            "Maximum quality score accepted in the input, default to 126 - ascii",
-        ))
-        .arg(score("qmin-out", "Minimum quality score of merged bases").default_value("0"))
-        .arg(score("qmax-out", "Maximum quality score of merged bases").default_value("41"));
+            ))
+            .arg(
+                Arg::new("min-overlap")
+                    .long("min-overlap")
+                    .value_name("LEN")
+                    .value_parser(value_parser!(u32).range(5..))
+                    .default_value("10")
+                    .help("Shortest overlap, at least 5"),
+            )
+            .arg(
+                Arg::new("max-diffs")
+                    .long("max-diffs")
+                    .value_name("COUNT")
+                    .value_parser(value_parser!(u32))
+                    .default_value("10")
+                    .help("Most differences in the overlap"),
+            )
+            .arg(
+                Arg::new("max-diff-pct")
+                    .long("max-diff-pct")
+                    .value_name("PCT")
+                    .allow_negative_numbers(true)
+                    .value_parser(percentage)
+                    .default_value("100")
+                    .help("Highest percentage of differences in the overlap"),
+            )
+            .arg(
+                Arg::new("stagger")
+                    .long("stagger")
+                    .action(ArgAction::SetTrue)
+                    .help("Merge pairs whose reverse read runs past the start of the forward read"),
+            )
+            .arg(
+                Arg::new("ascii")
+                    .long("ascii")
+                    .value_name("OFFSET")
+                    .value_parser(["33", "64"])
+                    .default_value("33")
+                    .help("ASCII offset of quality scores, read and written"),
+            )
+            .arg(score("qmin", "Minimum quality score accepted in the input").default_value("0"))
+            .arg(score(
+                "qmax",
+                "Maximum quality score accepted in the input, default to 126 - ascii",
+            ))
+            .arg(score("qmin-out", "Minimum quality score of merged bases").default_value("0"))
+            .arg(score("qmax-out", "Maximum quality score of merged bases").default_value("41")),
+    );
     let matches = command.get_matches_mut();
 
     let offset: u8 = matches
@@ -320,50 +330,86 @@ fn main() {
     let mut report_out = matches.get_one::<String>("report").map(|f| create(f));
     let mut ee_out = matches.get_one::<String>("ee-table").map(|f| create(f));
 
-    let mut merger = Merger::new(settings);
     let mut report = Report::default();
     let mut ee_line = String::new();
     let cannot_write = |e: io::Error| -> ! { fail(&format!("cannot write: {e}")) };
     // vsearch reads pairs in chunks and checks each chunk as it reads it,
     // before merging any of its pairs. An error in reading comes before an
-    // error in the scores of an earlier pair of the same chunk
-    let mut chunk: Vec<(Record, Record)> =
-        (0..CHUNK).map(|_| (Record::new(), Record::new())).collect();
+    // error in the scores of an earlier pair of the same chunk. A chunk is
+    // merged by one worker, and the chunks are written in input order. An error
+    // thus ends the run where it does on one thread
     let mut finished = false;
-    while !finished {
-        let mut filled = 0;
-        while filled < CHUNK {
-            let (record, mate) = &mut chunk[filled];
-            if let Err(e) = forward.read(record) {
-                fail(&e.to_string());
-            }
-            if record.is_empty() {
-                finished = true;
-                break;
-            }
-            if let Err(e) = reverse.read(mate) {
-                fail(&e.to_string());
-            }
-            if mate.is_empty() {
-                fail("More forward reads than reverse reads");
-            }
-            // vsearch reads, and checks, the abundance of both reads
-            for header in [record.header(), mate.header()] {
-                if let Err(e) = checked_abundance(header) {
-                    fail(&format!("{e} in read {header}"));
-                }
-            }
-            filled += 1;
+    let next = || -> Option<Result<Vec<(Record, Record)>, String>> {
+        if finished {
+            return None;
         }
-        for (record, mate) in &chunk[..filled] {
+        let mut chunk: Vec<(Record, Record)> = Vec::with_capacity(CHUNK);
+        while chunk.len() < CHUNK {
+            let (mut record, mut mate) = (Record::new(), Record::new());
+            let checked = forward
+                .read(&mut record)
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    if record.is_empty() {
+                        return Ok(false);
+                    }
+                    reverse.read(&mut mate).map_err(|e| e.to_string())?;
+                    if mate.is_empty() {
+                        return Err("More forward reads than reverse reads".to_string());
+                    }
+                    // vsearch reads, and checks, the abundance of both reads
+                    for header in [record.header(), mate.header()] {
+                        checked_abundance(header).map_err(|e| format!("{e} in read {header}"))?;
+                    }
+                    Ok(true)
+                });
+            match checked {
+                Err(message) => {
+                    finished = true;
+                    return Some(Err(message));
+                }
+                Ok(false) => {
+                    finished = true;
+                    break;
+                }
+                Ok(true) => chunk.push((record, mate)),
+            }
+        }
+        (!chunk.is_empty()).then_some(Ok(chunk))
+    };
+    let threads = threads(&matches);
+    let workers = Workers::new(threads, || Merger::new(settings));
+    // each pair's outcome, up to the first pair whose scores are out of
+    // range, and that error
+    let merge = |merger: &mut Merger,
+                 chunk: Result<Vec<(Record, Record)>, String>|
+     -> Result<(Vec<(Record, Record)>, Vec<Outcome>, Option<String>), String> {
+        let chunk = chunk?;
+        let mut outcomes = Vec::with_capacity(chunk.len());
+        for (record, mate) in &chunk {
+            let outcome =
+                match merger.merge((record.seq(), record.qual()), (mate.seq(), mate.qual())) {
+                    Err(e) => {
+                        let message = format!("{e} in read {}", record.id());
+                        return Ok((chunk, outcomes, Some(message)));
+                    }
+                    Ok(None) => Outcome::Merged(merger.merged().clone()),
+                    Ok(Some(reason)) => {
+                        let copy = |(seq, qual): (&[u8], &[u8])| (seq.to_vec(), qual.to_vec());
+                        Outcome::NotMerged(reason, copy(merger.forward()), copy(merger.reverse()))
+                    }
+                };
+            outcomes.push(outcome);
+        }
+        Ok((chunk, outcomes, None))
+    };
+    workers.stream(threads, next, merge, |merged| {
+        let (chunk, outcomes, error) = merged.unwrap_or_else(|message| fail(&message));
+        for ((record, mate), outcome) in chunk.iter().zip(&outcomes) {
             report.pairs += 1;
             report.read_lengths += (record.seq().len() + mate.seq().len()) as f64;
-            let outcome = merger
-                .merge((record.seq(), record.qual()), (mate.seq(), mate.qual()))
-                .unwrap_or_else(|e| fail(&format!("{e} in read {}", record.id())));
             match outcome {
-                None => {
-                    let m = merger.merged();
+                Outcome::Merged(m) => {
                     report.merged += 1;
                     let length = m.seq.len();
                     report.fragment_lengths += length as f64;
@@ -386,12 +432,12 @@ fn main() {
                             .unwrap_or_else(|e| cannot_write(e));
                     }
                 }
-                Some(reason) => {
-                    let index = Reason::ALL.iter().position(|&r| r == reason).unwrap();
+                Outcome::NotMerged(reason, forward_read, reverse_read) => {
+                    let index = Reason::ALL.iter().position(|r| r == reason).unwrap();
                     report.failed[index] += 1;
                     for (out, header, (seq, qual)) in [
-                        (not_merged.as_mut(), record.header(), merger.forward()),
-                        (rev_not_merged.as_mut(), mate.header(), merger.reverse()),
+                        (not_merged.as_mut(), record.header(), forward_read),
+                        (rev_not_merged.as_mut(), mate.header(), reverse_read),
                     ] {
                         if let Some(out) = out {
                             out.write(header, None, seq, qual)
@@ -401,7 +447,10 @@ fn main() {
                 }
             }
         }
-    }
+        if let Some(message) = error {
+            fail(&message);
+        }
+    });
     let mut mate = Record::new();
     if let Err(e) = reverse.read(&mut mate) {
         fail(&e.to_string());
