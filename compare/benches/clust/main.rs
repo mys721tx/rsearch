@@ -1,8 +1,9 @@
-//! Times `vsearch --cluster_smallmem --usersort --threads 1` and its
-//! rsearch pipelines on the file of rsearch's clust benchmark. It runs at
-//! --id 0.97, and on both strands at --id 0.9 with --maxaccepts 4. It first
-//! checks that clust writes the same centroids and hits (see
-//! `common/vsearch.rs`).
+//! Times `vsearch --cluster_smallmem --usersort` and its rsearch pipelines
+//! on the file of rsearch's clust benchmark, at the thread counts rsearch's
+//! benchmark takes (`data::thread_counts`). It runs at --id 0.97, and on
+//! both strands at --id 0.9 with --maxaccepts 4. It first checks that clust
+//! on the most threads writes the centroids and hits of vsearch --threads 1
+//! (see `common/vsearch.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -42,20 +43,29 @@ fn bench_binary(c: &mut Criterion) {
             "soft",
             "--fasta_width",
             "0",
-            "--threads",
-            "1",
         ];
+        let counts = data::thread_counts();
+        let most = counts.iter().max().unwrap().to_string();
         // both write the same centroids and hits
         let path = |name: &str| data::output(dir.join(format!("clust-bench-{name}")));
         let (rc, ru, vc, vu) = (path("r.fa"), path("r.uc"), path("v.fa"), path("v.uc"));
         let s = |p: &PathBuf| p.to_str().unwrap().to_string();
         vsearch::run(
             &clust,
-            &[&["-i", fa, "-o", &s(&rc), "--hits", &s(&ru)][..], args].concat(),
+            &[
+                &["-i", fa, "-o", &s(&rc), "--hits", &s(&ru), "-t", &most][..],
+                args,
+            ]
+            .concat(),
         );
         vsearch::run(
             &vsearch,
-            &[&vbase[..], args, &["--centroids", &s(&vc), "--uc", &s(&vu)]].concat(),
+            &[
+                &vbase[..],
+                args,
+                &["--threads", "1", "--centroids", &s(&vc), "--uc", &s(&vu)],
+            ]
+            .concat(),
         );
         for (r, v) in [(rc, vc), (ru, vu)] {
             assert!(
@@ -63,8 +73,16 @@ fn bench_binary(c: &mut Criterion) {
                 "clust and vsearch wrote different clusters"
             );
         }
-        let vargs = [&vbase[..], args, &["--centroids", "/dev/null"]].concat();
-        vsearch::bench(&mut group, format!("vsearch/{name}"), &vsearch, &vargs);
+        for threads in counts {
+            let t = threads.to_string();
+            let vargs = [
+                &vbase[..],
+                args,
+                &["--threads", &t, "--centroids", "/dev/null"],
+            ]
+            .concat();
+            vsearch::bench(&mut group, format!("vsearch/{name}/t{t}"), &vsearch, &vargs);
+        }
     }
     group.finish();
 }
