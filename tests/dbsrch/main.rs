@@ -3650,3 +3650,91 @@ H	201	16	100.0	+	0	0	98I16M87I	q4	d201
 N	*	*	*	.	*	*	*	q5	*
 H	151	200	100.0	+	0	0	100D12M88D	q6	d151
 "##;
+
+/// Runs dbsrch with `args` on `q` against `db` at the SIMD level `level`.
+fn run_at(level: rsearch::simd::Level, name: &str, args: &[&str], q: &str, db: &str) -> Output {
+    let (qp, dbp) = (
+        temp_path(&format!("{name}-{}-q", level.name())),
+        temp_path(&format!("{name}-{}-db", level.name())),
+    );
+    std::fs::write(&qp, q).unwrap();
+    std::fs::write(&dbp, db).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_dbsrch"))
+        .env(rsearch::simd::VARIABLE, level.name())
+        .arg("-i")
+        .arg(&qp)
+        .arg("--db")
+        .arg(&dbp)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&qp);
+    let _ = std::fs::remove_file(&dbp);
+    output
+}
+
+#[test]
+fn writes_the_same_hits_at_every_simd_level() {
+    // the vector code of every level this processor has (scalar, SSE2, and
+    // AVX2, or scalar and NEON) aligns eight or sixteen targets at once,
+    // and must find the hits of the others: many queries against a few
+    // targets and many, long ones for the linear-memory aligner, and an
+    // invalid query that stops the search
+    let levels = rsearch::simd::available();
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    assert!(levels.len() >= 2, "{levels:?}");
+    let i = inputs();
+    let q = many_queries(600);
+    let many_targets: String = (0..12)
+        .map(|k| i.db.replacen(">t", &format!(">c{k}t"), usize::MAX))
+        .collect();
+    let cases: [(&[&str], &str, &str); 7] = [
+        (&["--id", "0.8"], &q, &i.db),
+        (
+            &["--id", "0.7", "--strand", "both", "--maxaccepts", "3"],
+            &q,
+            &i.db,
+        ),
+        (
+            &[
+                "--id",
+                "0.6",
+                "--maxaccepts",
+                "0",
+                "--maxrejects",
+                "0",
+                "--weak-id",
+                "0.5",
+            ],
+            &q,
+            &many_targets,
+        ),
+        (
+            &["--id", "0.9", "--maxaccepts", "20", "--strand", "both"],
+            &q,
+            &many_targets,
+        ),
+        (&["--id", "0.5", "--strand", "both"], &i.lq, &i.ldb),
+        (&["--id", "0.5"], &i.gq, &i.gdb),
+        (&["--id", "0.8"], &format!("{q}>bad\nAC\u{1}GT\n{q}"), &i.db),
+    ];
+    for (args, q, db) in cases {
+        let outputs: Vec<Output> = levels
+            .iter()
+            .map(|&level| run_at(level, "levels", args, q, db))
+            .collect();
+        for (level, output) in levels.iter().zip(&outputs).skip(1) {
+            assert_eq!(
+                output.status.code(),
+                outputs[0].status.code(),
+                "{level:?} {args:?}"
+            );
+            assert!(
+                output.stdout == outputs[0].stdout,
+                "{level:?} writes other hits, {args:?}"
+            );
+            assert_eq!(output.stderr, outputs[0].stderr, "{level:?} {args:?}");
+        }
+    }
+}
