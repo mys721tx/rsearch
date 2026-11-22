@@ -107,9 +107,11 @@ fn inputs() -> Inputs {
     }
 }
 
-/// Runs allpr with `args` on `input`, fed on stdin.
-fn run(args: &[&str], input: &str) -> Output {
+/// Runs allpr with `args` on `input`, fed on stdin, at the SIMD level
+/// `level` or the processor's best.
+fn run_at(level: Option<rsearch::simd::Level>, args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_allpr"))
+        .envs(level.map(|l| (rsearch::simd::VARIABLE, l.name())))
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1841,4 +1843,44 @@ fn takes_the_thread_count() {
         same_on_threads(&["--id", "0.8"], "", &["2", "8"]).stdout,
         b""
     );
+}
+
+/// Runs allpr with `args` on `input`, fed on stdin.
+fn run(args: &[&str], input: &str) -> Output {
+    run_at(None, args, input)
+}
+
+/// The SIMD levels of this processor, scalar with SSE2 and AVX2 or with
+/// NEON. Each aligns eight or sixteen targets at once and must give the
+/// output of the others.
+fn levels() -> Vec<rsearch::simd::Level> {
+    let levels = rsearch::simd::available();
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    assert!(levels.len() >= 2, "{levels:?}");
+    levels
+}
+
+#[test]
+fn writes_the_same_hits_at_every_simd_level() {
+    let levels = levels();
+    let input = many_sequences(400);
+    for args in [
+        &["--id", "0.8"][..],
+        &["--accept-all", "--maxhits", "3"],
+        &["--id", "0.7", "--top-hits-only", "--iddef", "1"],
+    ] {
+        let runs: Vec<Output> = levels
+            .iter()
+            .map(|&level| run_at(Some(level), args, &input))
+            .collect();
+        assert!(runs[0].status.success(), "{args:?}");
+        assert!(!runs[0].stdout.is_empty(), "{args:?}");
+        for (level, output) in levels.iter().zip(&runs).skip(1) {
+            assert!(output.status.success(), "{level:?} {args:?}");
+            assert!(
+                output.stdout == runs[0].stdout,
+                "{level:?} writes other hits, {args:?}"
+            );
+        }
+    }
 }
