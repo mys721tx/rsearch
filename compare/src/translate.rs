@@ -14,9 +14,9 @@
 //!
 //! An option it cannot translate is a [`TranslationError`] naming it. A
 //! behaviour that is vsearch's default rather than an option, and that the
-//! pipeline does not reproduce (a length filter sqfilt cannot express,
-//! labels cut at spaces without `--notrunclabels`, several threads), is
-//! listed in `caveats` instead.
+//! pipeline does not reproduce (a length filter sqfilt cannot express, labels
+//! cut at spaces without `--notrunclabels`, and the order threaded vsearch
+//! writes queries in), is listed in `caveats` instead.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -86,6 +86,26 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// runs the steps of rsearch's threaded tools on `threads` threads.
+    pub fn set_threads(&mut self, threads: usize) {
+        for step in &mut self.steps {
+            if step.system || !THREADED_TOOLS.contains(&step.tool.as_str()) {
+                continue;
+            }
+            let mut args = Vec::with_capacity(step.args.len() + 2);
+            let mut given = std::mem::take(&mut step.args).into_iter();
+            while let Some(a) = given.next() {
+                if a == "-t" || a == "--threads" {
+                    given.next();
+                } else {
+                    args.push(a);
+                }
+            }
+            args.extend(["-t".to_string(), threads.to_string()]);
+            step.args = args;
+        }
+    }
+
     /// The steps as shell pipelines, a line each.
     pub fn render(&self) -> String {
         let mut uses: HashMap<&str, usize> = HashMap::new();
@@ -311,21 +331,17 @@ const LABEL_FLAGS: &[(&str, &str)] = &[
     ("eeout", "--ee"),
     ("fastq_eeout", "--ee"),
 ];
-const THREADED: &[&str] = &[
+/// Commands that write their per-query outputs in the order their threads
+/// finish when they run on several.
+const UNORDERED: &[&str] = &[
     "usearch_global",
     "search_exact",
     "allpairs_global",
-    "cluster_fast",
-    "cluster_size",
-    "cluster_smallmem",
-    "cluster_unoise",
     "uchime_ref",
     "sintax",
-    "fastq_mergepairs",
-    "fastx_mask",
-    "maskfasta",
-    "makeudb_usearch",
 ];
+/// rsearch's tools that take `-t/--threads`.
+pub const THREADED_TOOLS: &[&str] = &["dbsrch"];
 /// Commands that keep whole headers without `--notrunclabels`, or read none.
 pub const WHOLE_HEADERS: &[&str] = &[
     "fastq_convert",
@@ -827,10 +843,10 @@ impl Translator {
 
     fn threads(&mut self) {
         let t = self.a.take("threads");
-        if THREADED.contains(&self.cmd.as_str()) && t.as_deref() != Some("1") {
+        if UNORDERED.contains(&self.cmd.as_str()) && t.as_deref() != Some("1") {
             self.caveat(
-                "vsearch runs on several threads without --threads 1; rsearch gives its \
-                 single-threaded results"
+                "vsearch writes each query's records in the order its threads finish \
+                 without --threads 1; rsearch writes them in input order"
                     .into(),
             );
         }
@@ -2560,6 +2576,9 @@ impl Hits {
 /// the program name), writing its files into `workdir`.
 pub fn translate<S: AsRef<str>>(argv: &[S], workdir: &str) -> Result<Pipeline, TranslationError> {
     let a = Args::parse(argv)?;
+    // vsearch's thread count, for rsearch's threaded tools; both default
+    // to one thread per core
+    let threads = a.peek("threads").and_then(|t| t.parse::<usize>().ok());
     let t = Translator {
         cmd: a.command.clone(),
         inp: a.input.clone().unwrap_or_default(),
@@ -2579,5 +2598,10 @@ pub fn translate<S: AsRef<str>>(argv: &[S], workdir: &str) -> Result<Pipeline, T
     };
     let mut t = t;
     t.p.command = t.cmd.clone();
-    t.translate()
+    t.translate().map(|mut p| {
+        if let Some(n) = threads {
+            p.set_threads(n);
+        }
+        p
+    })
 }

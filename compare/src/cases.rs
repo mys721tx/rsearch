@@ -175,6 +175,7 @@ pub fn run_case(
     vsearch: &Path,
     bindir: &Path,
     keep: bool,
+    threads: Option<usize>,
 ) -> Map<String, Value> {
     let mut rec = Map::new();
     rec.insert("case".into(), json!(case.name));
@@ -228,6 +229,10 @@ pub fn run_case(
             }
         }
     };
+    let mut pipe = pipe;
+    if let Some(n) = threads {
+        pipe.set_threads(n);
+    }
     rec.insert(
         "rsearch".into(),
         json!(pipe.render().split('\n').collect::<Vec<_>>()),

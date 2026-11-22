@@ -34,6 +34,13 @@ fn cli() -> Command {
                         .help("Cases run at once (default: the cores)"),
                 )
                 .arg(
+                    Arg::new("threads")
+                        .long("threads")
+                        .short('t')
+                        .value_parser(clap::value_parser!(usize))
+                        .help("Threads of rsearch's threaded tools (default: vsearch's)"),
+                )
+                .arg(
                     Arg::new("vsearch")
                         .long("vsearch")
                         .help("vsearch (default: compare/vsearch-build/vsearch)"),
@@ -391,6 +398,7 @@ fn run(m: &clap::ArgMatches) -> ExitCode {
             .get_one::<usize>("jobs")
             .copied()
             .unwrap_or_else(runner::default_jobs),
+        threads: m.get_one::<usize>("threads").copied(),
     };
     match runner::run(&names, seeds.as_deref(), opts) {
         Err(e) => {

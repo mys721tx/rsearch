@@ -25,6 +25,8 @@ pub struct Options {
     pub out: Option<PathBuf>,
     pub keep: bool,
     pub jobs: usize,
+    /// the threads of rsearch's threaded tools, whatever vsearch's argv says
+    pub threads: Option<usize>,
 }
 
 fn work(name: &str, seed: u64, opts: &Options) -> Vec<Map<String, Value>> {
@@ -60,6 +62,7 @@ fn work(name: &str, seed: u64, opts: &Options) -> Vec<Map<String, Value>> {
             &opts.vsearch,
             &opts.bindir,
             opts.keep,
+            opts.threads,
         );
         rec.insert("index".into(), json!(k));
         rec.insert(
