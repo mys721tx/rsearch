@@ -8,7 +8,7 @@ Detect chimeras with UCHIME, de novo or against a database.
 uchime [-i FILE] [-o FILE] [--db FILE] [--chimeras FILE]
        [--borderline FILE] [--table FILE] [--alignments FILE] [--width N]
        [--uchime2] [--abskew SKEW] [--minh SCORE] [--mindiv PCT]
-       [--mindiffs N] [--xn WEIGHT] [--dn COUNT]
+       [--mindiffs N] [--xn WEIGHT] [--dn COUNT] [-t N]
 ```
 
 ## Description
@@ -64,6 +64,10 @@ the alignments of each chimera with its parents.
   crossover. Default: 3.
 - `--xn WEIGHT`: Weight of the no votes. Default: 8.
 - `--dn COUNT`: Pseudo-count of the no votes. Default: 1.4.
+- `-t`, `--threads N`: Against a database, judge the queries on N threads,
+  0 for one per logical core. The outputs are the same, in the same order,
+  on any number. De novo, each sequence's parents are the non-chimeras
+  before it, and uchime runs on one thread. Default: 0.
 
 ## vsearch
 
@@ -77,6 +81,12 @@ options vsearch ignores with it. The sorting, the length limit
 it. `--sizeout`, `--fasta_score` and relabelling are [relab](relab.md)
 after it. `--uchimeout5` is left out.
 Against a database, it also reads FASTQ queries, which vsearch does not.
+
+vsearch runs `--uchime_ref` on several threads and writes each query as its
+thread finishes, in another order from one run to the next. uchime writes
+the queries in input order on any number of threads. That is the order of
+vsearch `--threads 1`, with the same records as vsearch on any number.
+vsearch runs the de novo commands on one thread, as uchime does.
 
 ## Examples
 

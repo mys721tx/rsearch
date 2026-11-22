@@ -9,10 +9,11 @@ use std::io::{BufReader, BufWriter, Read, Write};
 
 use clap::{Arg, ArgAction, Command, value_parser};
 
-use rsearch::chimera::{Options, Status, Uchime};
+use rsearch::chimera::{Options, Status, Uchime, Verdict};
 use rsearch::fastx::{Reader, Record};
 use rsearch::label::checked_abundance;
 use rsearch::search::{Database, read_database};
+use rsearch::threads::{Workers, threads, threads_args};
 use rsearch::writer::Writer;
 
 /// prints a warning, which may hold bytes that are not UTF-8.
@@ -57,10 +58,11 @@ struct Query {
 }
 
 fn main() {
-    let matches = Command::new("uchime")
-        .about("Detect chimeras with UCHIME, de novo or against a database.")
-        .long_about(
-            "Detect chimeras with UCHIME, de novo or against a database.\n\n\
+    let matches = threads_args(
+        Command::new("uchime")
+            .about("Detect chimeras with UCHIME, de novo or against a database.")
+            .long_about(
+                "Detect chimeras with UCHIME, de novo or against a database.\n\n\
              As vsearch --uchime_denovo on input sorted by abundance (sortby --size), \
              each sequence is checked against the earlier non-chimeras at least --abskew \
              times as abundant; with --db, as --uchime_ref, against the database. The \
@@ -69,116 +71,117 @@ fn main() {
              matching it perfectly (--uchime2_denovo; --uchime3_denovo with --abskew 16). \
              The non-chimeras are written to -o, the chimeras and borderline sequences to \
              their files, in the input format, with vsearch's table and alignments.",
-        )
-        .arg(
-            Arg::new("in")
-                .short('i')
-                .long("in")
-                .value_name("INPUT")
-                .help("Input FASTA or FASTQ file, default to stdin"),
-        )
-        .arg(
-            Arg::new("out")
-                .short('o')
-                .long("out")
-                .value_name("OUTPUT")
-                .help("Output non-chimeras in the input format, default to stdout"),
-        )
-        .arg(
-            Arg::new("db")
-                .long("db")
-                .value_name("DATABASE")
-                .help("Database of parents, FASTA, FASTQ or UDB, rather than de novo"),
-        )
-        .arg(
-            Arg::new("chimeras")
-                .long("chimeras")
-                .value_name("FILE")
-                .help("Output chimeras"),
-        )
-        .arg(
-            Arg::new("borderline")
-                .long("borderline")
-                .value_name("FILE")
-                .help("Output borderline sequences, scoring at least --minh but not chimeras"),
-        )
-        .arg(
-            Arg::new("table")
-                .long("table")
-                .value_name("FILE")
-                .help("Output vsearch's --uchimeout table"),
-        )
-        .arg(
-            Arg::new("alignments")
-                .long("alignments")
-                .value_name("FILE")
-                .help("Output vsearch's --uchimealns alignments of the chimeras"),
-        )
-        .arg(
-            Arg::new("width")
-                .long("width")
-                .value_name("WIDTH")
-                .value_parser(value_parser!(usize))
-                .default_value("80")
-                .help("Width of the alignments' rows, 0 for no wrapping"),
-        )
-        .arg(
-            Arg::new("uchime2")
-                .long("uchime2")
-                .action(ArgAction::SetTrue)
-                .conflicts_with_all(["db", "minh", "mindiv", "mindiffs"])
-                .help("Call chimeras by UCHIME2: a model matching the sequence perfectly"),
-        )
-        .arg(
-            Arg::new("abskew")
-                .long("abskew")
-                .value_name("SKEW")
-                .value_parser(above(1.0, true))
-                .conflicts_with("db")
-                .default_value("2")
-                .help("De novo, parents at least this many times as abundant"),
-        )
-        .arg(
-            Arg::new("minh")
-                .long("minh")
-                .value_name("SCORE")
-                .value_parser(above(0.0, false))
-                .default_value("0.28")
-                .help("Minimum score of a chimera"),
-        )
-        .arg(
-            Arg::new("mindiv")
-                .long("mindiv")
-                .value_name("PERCENT")
-                .value_parser(above(0.0, false))
-                .default_value("0.8")
-                .help("Minimum divergence of a chimera from its closest parent"),
-        )
-        .arg(
-            Arg::new("mindiffs")
-                .long("mindiffs")
-                .value_name("N")
-                .value_parser(value_parser!(i32).range(1..))
-                .default_value("3")
-                .help("Minimum differences on each side of a chimera's crossover"),
-        )
-        .arg(
-            Arg::new("xn")
-                .long("xn")
-                .value_name("WEIGHT")
-                .value_parser(above(1.0, false))
-                .default_value("8")
-                .help("Weight of the no votes"),
-        )
-        .arg(
-            Arg::new("dn")
-                .long("dn")
-                .value_name("PSEUDOCOUNT")
-                .value_parser(above(0.0, false))
-                .default_value("1.4")
-                .help("Pseudo-count of the no votes"),
-        )
-        .get_matches();
+            )
+            .arg(
+                Arg::new("in")
+                    .short('i')
+                    .long("in")
+                    .value_name("INPUT")
+                    .help("Input FASTA or FASTQ file, default to stdin"),
+            )
+            .arg(
+                Arg::new("out")
+                    .short('o')
+                    .long("out")
+                    .value_name("OUTPUT")
+                    .help("Output non-chimeras in the input format, default to stdout"),
+            )
+            .arg(
+                Arg::new("db")
+                    .long("db")
+                    .value_name("DATABASE")
+                    .help("Database of parents, FASTA, FASTQ or UDB, rather than de novo"),
+            )
+            .arg(
+                Arg::new("chimeras")
+                    .long("chimeras")
+                    .value_name("FILE")
+                    .help("Output chimeras"),
+            )
+            .arg(
+                Arg::new("borderline")
+                    .long("borderline")
+                    .value_name("FILE")
+                    .help("Output borderline sequences, scoring at least --minh but not chimeras"),
+            )
+            .arg(
+                Arg::new("table")
+                    .long("table")
+                    .value_name("FILE")
+                    .help("Output vsearch's --uchimeout table"),
+            )
+            .arg(
+                Arg::new("alignments")
+                    .long("alignments")
+                    .value_name("FILE")
+                    .help("Output vsearch's --uchimealns alignments of the chimeras"),
+            )
+            .arg(
+                Arg::new("width")
+                    .long("width")
+                    .value_name("WIDTH")
+                    .value_parser(value_parser!(usize))
+                    .default_value("80")
+                    .help("Width of the alignments' rows, 0 for no wrapping"),
+            )
+            .arg(
+                Arg::new("uchime2")
+                    .long("uchime2")
+                    .action(ArgAction::SetTrue)
+                    .conflicts_with_all(["db", "minh", "mindiv", "mindiffs"])
+                    .help("Call chimeras by UCHIME2: a model matching the sequence perfectly"),
+            )
+            .arg(
+                Arg::new("abskew")
+                    .long("abskew")
+                    .value_name("SKEW")
+                    .value_parser(above(1.0, true))
+                    .conflicts_with("db")
+                    .default_value("2")
+                    .help("De novo, parents at least this many times as abundant"),
+            )
+            .arg(
+                Arg::new("minh")
+                    .long("minh")
+                    .value_name("SCORE")
+                    .value_parser(above(0.0, false))
+                    .default_value("0.28")
+                    .help("Minimum score of a chimera"),
+            )
+            .arg(
+                Arg::new("mindiv")
+                    .long("mindiv")
+                    .value_name("PERCENT")
+                    .value_parser(above(0.0, false))
+                    .default_value("0.8")
+                    .help("Minimum divergence of a chimera from its closest parent"),
+            )
+            .arg(
+                Arg::new("mindiffs")
+                    .long("mindiffs")
+                    .value_name("N")
+                    .value_parser(value_parser!(i32).range(1..))
+                    .default_value("3")
+                    .help("Minimum differences on each side of a chimera's crossover"),
+            )
+            .arg(
+                Arg::new("xn")
+                    .long("xn")
+                    .value_name("WEIGHT")
+                    .value_parser(above(1.0, false))
+                    .default_value("8")
+                    .help("Weight of the no votes"),
+            )
+            .arg(
+                Arg::new("dn")
+                    .long("dn")
+                    .value_name("PSEUDOCOUNT")
+                    .value_parser(above(0.0, false))
+                    .default_value("1.4")
+                    .help("Pseudo-count of the no votes"),
+            ),
+    )
+    .get_matches();
     let f = |name: &str| matches.get_one::<f64>(name).copied();
     let db_path = matches.get_one::<String>("db");
     let options = Options {
@@ -209,71 +212,31 @@ fn main() {
     };
     let mut reader = Reader::new(BufReader::new(fin));
     let mut record = Record::new();
-    let mut next = |record: &mut Record| -> Option<Query> {
-        reader.read(record).unwrap_or_else(|e| fail(&e.to_string()));
+    // a query, or the error that ends the input
+    let mut next = |record: &mut Record| -> Option<Result<Query, String>> {
+        if let Err(e) = reader.read(record) {
+            return Some(Err(e.to_string()));
+        }
         if record.is_empty() {
             return None;
         }
         let header = record.header();
-        let size =
-            checked_abundance(header).unwrap_or_else(|e| fail(&format!("{e} in read {header}")));
-        Some(Query {
-            header: header.to_string(),
-            seq: record.seq().to_vec(),
-            qual: record.qual().to_vec(),
-            size: size as i64,
-            fastq: record.is_fastq(),
+        Some(match checked_abundance(header) {
+            Err(e) => Err(format!("{e} in read {header}")),
+            Ok(size) => Ok(Query {
+                header: header.to_string(),
+                seq: record.seq().to_vec(),
+                qual: record.qual().to_vec(),
+                size: size as i64,
+                fastq: record.is_fastq(),
+            }),
         })
     };
 
-    // de novo, the input is the database, read whole, and grows with the
-    // non-chimeras. Against a database, the queries are read in turn
-    let (mut db, mut queries) = match db_path {
-        Some(path) => (
-            read_database(path, 8, &mut |w| warn(w)).unwrap_or_else(|e| fail(&e)),
-            None,
-        ),
-        None => {
-            let mut all = Vec::new();
-            while let Some(q) = next(&mut record) {
-                all.push(q);
-            }
-            let db = Database::growing(
-                all.iter().map(|q| q.header.clone()).collect(),
-                all.iter().map(|q| q.seq.clone()).collect(),
-                all.iter().map(|q| q.size).collect(),
-                8,
-            );
-            (db, Some(all))
-        }
-    };
-    let mut uchime = Uchime::new(&db, options);
     let mut writers: Option<[Writer<Box<dyn Write>>; 3]> = None;
     let written = |r: io::Result<()>| r.unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
-    let mut seqno = 0;
-    loop {
-        let query = match &mut queries {
-            Some(all) => {
-                if seqno == all.len() {
-                    break;
-                }
-                std::mem::replace(
-                    &mut all[seqno],
-                    Query {
-                        header: String::new(),
-                        seq: Vec::new(),
-                        qual: Vec::new(),
-                        size: 0,
-                        fastq: false,
-                    },
-                )
-            }
-            None => match next(&mut record) {
-                Some(q) => q,
-                None => break,
-            },
-        };
-        let verdict = uchime.evaluate(&db, &query.header, query.size, &query.seq);
+    // writes a query where its verdict sends it
+    let mut emit = |query: &Query, verdict: &Verdict| {
         if let Some(t) = &mut table {
             written(t.write_all(verdict.table.as_bytes()));
         }
@@ -295,11 +258,60 @@ fn main() {
             _ => &mut ws[0],
         };
         written(w.write(&query.header, None, &query.seq, &query.qual));
-        // de novo, the non-chimeras become parents
-        if queries.is_some() && verdict.status < Status::Suspicious {
-            db.add(seqno);
+    };
+
+    match db_path {
+        // against a database, the queries are read in turn and judged on
+        // the threads, and written in input order. Nothing is read after
+        // an error, and the queries before it are written first
+        Some(path) => {
+            let db = read_database(path, 8, &mut |w| warn(w)).unwrap_or_else(|e| fail(&e));
+            let threads = threads(&matches);
+            let workers = Workers::new(threads, || Uchime::new(&db, options));
+            let mut failed = false;
+            let read = || -> Option<Result<Query, String>> {
+                if failed {
+                    return None;
+                }
+                let query = next(&mut record)?;
+                failed = query.is_err();
+                Some(query)
+            };
+            let judge = |uchime: &mut Uchime,
+                         query: Result<Query, String>|
+             -> Result<(Query, Verdict), String> {
+                let query = query?;
+                let verdict = uchime.evaluate(&db, &query.header, query.size, &query.seq);
+                Ok((query, verdict))
+            };
+            workers.stream(16 * threads, read, judge, |judged| match judged {
+                Ok((query, verdict)) => emit(&query, &verdict),
+                Err(message) => fail(&message),
+            });
         }
-        seqno += 1;
+        // de novo, the input is the database, read whole, and grows with
+        // the non-chimeras, one query after another
+        None => {
+            let mut all = Vec::new();
+            while let Some(q) = next(&mut record) {
+                all.push(q.unwrap_or_else(|e| fail(&e)));
+            }
+            let mut db = Database::growing(
+                all.iter().map(|q| q.header.clone()).collect(),
+                all.iter().map(|q| q.seq.clone()).collect(),
+                all.iter().map(|q| q.size).collect(),
+                8,
+            );
+            let mut uchime = Uchime::new(&db, options);
+            for (seqno, query) in all.iter().enumerate() {
+                let verdict = uchime.evaluate(&db, &query.header, query.size, &query.seq);
+                emit(query, &verdict);
+                // the non-chimeras become parents
+                if verdict.status < Status::Suspicious {
+                    db.add(seqno);
+                }
+            }
+        }
     }
     if let Some(warning) = reader.stripped_warning() {
         warn(&warning);
