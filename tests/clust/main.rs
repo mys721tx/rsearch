@@ -126,14 +126,21 @@ fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("rsearch-clust-{}-{name}", std::process::id()))
 }
 
-/// Runs clust with `args` on `input`, its hits written to a file.
-fn run(name: &str, args: &[&str], input: &str) -> (Output, String) {
+/// Runs clust with `args` on `input`, its hits written to a file, at the
+/// SIMD level `level` or the processor's best.
+fn run_at(
+    level: Option<rsearch::simd::Level>,
+    name: &str,
+    args: &[&str],
+    input: &str,
+) -> (Output, String) {
     let (inp, hits) = (
         temp_path(&format!("{name}-in")),
         temp_path(&format!("{name}-hits")),
     );
     std::fs::write(&inp, input).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_clust"))
+        .envs(level.map(|l| (rsearch::simd::VARIABLE, l.name())))
         .arg("-i")
         .arg(&inp)
         .arg("--hits")
@@ -3430,4 +3437,59 @@ fn a_search_its_horizon_clears_is_unchanged() {
         unchanged > 100 && flagged > 100 && changed > 10,
         "{unchanged} {flagged} {changed}"
     );
+}
+
+/// Runs clust with `args` on `input`, its hits written to a file.
+fn run(name: &str, args: &[&str], input: &str) -> (Output, String) {
+    run_at(None, name, args, input)
+}
+
+/// The SIMD levels of this processor, scalar with SSE2 and AVX2 or with
+/// NEON. Each aligns eight or sixteen targets at once and must give the
+/// output of the others.
+fn levels() -> Vec<rsearch::simd::Level> {
+    let levels = rsearch::simd::available();
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    assert!(levels.len() >= 2, "{levels:?}");
+    levels
+}
+
+#[test]
+fn clusters_the_same_at_every_simd_level() {
+    let input = fasta_of(&many_sequences(1200, 3));
+    let levels = levels();
+    for args in [
+        &["--id", "0.97"][..],
+        &["--id", "0.9", "--strand", "both"],
+        &[
+            "--id",
+            "0.85",
+            "--maxaccepts",
+            "0",
+            "--maxrejects",
+            "0",
+            "--word-len",
+            "6",
+        ],
+        &[
+            "--id",
+            "0.95",
+            "--maxrejects",
+            "1",
+            "--strand",
+            "both",
+            "--size-order",
+        ],
+    ] {
+        let runs: Vec<(Output, String)> = levels
+            .iter()
+            .map(|&level| run_at(Some(level), "levels", args, &input))
+            .collect();
+        assert!(runs[0].0.status.success(), "{args:?}");
+        for (level, (output, hits)) in levels.iter().zip(&runs).skip(1) {
+            assert!(output.status.success(), "{level:?} {args:?}");
+            assert!(output.stdout == runs[0].0.stdout, "{level:?} {args:?}");
+            assert!(*hits == runs[0].1, "{level:?} writes other hits, {args:?}");
+        }
+    }
 }
