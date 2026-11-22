@@ -1,23 +1,72 @@
 //! vsearch's 16-bit global aligner (`align_simd.cpp`), ported lane for
-//! lane. Eight targets are aligned at once against one query, four target
-//! residues a step, in saturating 16-bit cells. The profile, direction
-//! bits, channel scheduling and backtrack are the same, so that scores,
-//! CIGARs and ties are vsearch's. A pair it cannot score in 16 bits gets
-//! the score `i16::MAX` and no alignment, for the linear-memory aligner.
+//! lane. Eight targets are aligned at once against one query, sixteen with
+//! AVX2, four target residues a step, in saturating 16-bit cells. The
+//! profile, direction bits, channel scheduling, and backtrack are the same,
+//! so that scores, CIGARs, and ties are vsearch's. Each target has a
+//! channel of its own, so the number of lanes changes none of them. A pair
+//! it cannot score in 16 bits gets the score `i16::MAX` and no alignment,
+//! for the linear-memory aligner.
 
 use std::fmt::Write as _;
 
+use crate::lanes::{Lanes, MAX_LANES, Scalar};
 use crate::scoring::{FOUR_BIT, N, Scoring, is_ambiguous};
+use crate::simd::{Level, level};
 
-const CHANNELS: usize = 8;
 const CDEPTH: usize = 4;
 const MAX_LEN_PRODUCT: i64 = 25_000_000;
 const MAX_LEN_SUM: i64 = 65_535;
 
-use crate::lanes::{
-    V, add, and, dup, from_array, mask_gt, max, min, set, shift_left, sub, sub_unsigned, to_array,
-    xor, zero,
-};
+#[cfg(target_arch = "aarch64")]
+use crate::lanes::Neon;
+#[cfg(target_arch = "x86_64")]
+use crate::lanes::{Avx2, Sse2};
+
+// The lanes' operations as functions, as vsearch writes its intrinsics.
+#[inline(always)]
+fn add<L: Lanes>(a: L, b: L) -> L {
+    a.add(b)
+}
+#[inline(always)]
+fn sub<L: Lanes>(a: L, b: L) -> L {
+    a.sub(b)
+}
+#[inline(always)]
+fn sub_unsigned<L: Lanes>(a: L, b: L) -> L {
+    a.sub_unsigned(b)
+}
+#[inline(always)]
+fn max<L: Lanes>(a: L, b: L) -> L {
+    a.max(b)
+}
+#[inline(always)]
+fn min<L: Lanes>(a: L, b: L) -> L {
+    a.min(b)
+}
+#[inline(always)]
+fn and<L: Lanes>(a: L, b: L) -> L {
+    a.and(b)
+}
+#[inline(always)]
+fn xor<L: Lanes>(a: L, b: L) -> L {
+    a.xor(b)
+}
+#[inline(always)]
+fn mask_gt<L: Lanes>(a: L, b: L) -> L::Bits {
+    a.mask_gt(b)
+}
+#[inline(always)]
+fn dup<L: Lanes>(x: i16) -> L {
+    L::dup(x)
+}
+#[inline(always)]
+fn zero<L: Lanes>() -> L {
+    L::zero()
+}
+#[inline(always)]
+fn set<L: Lanes>(v: &mut L, c: usize, x: i16) {
+    *v = v.with(c, x);
+}
 
 /// whether vsearch's 16-bit aligner takes sequences of these lengths.
 pub fn fits(qlen: usize, dlen: usize) -> bool {
@@ -46,8 +95,76 @@ impl Aligned {
     }
 }
 
-/// vsearch's `s16info_s`: the scores and penalties in 16-bit cells.
+/// vsearch's 16-bit aligner, on the lanes [`crate::simd::level`] chose.
 pub struct Search16 {
+    kernel: Kernel,
+}
+
+/// The aligner on each set of lanes.
+enum Kernel {
+    Scalar(Engine<Scalar>),
+    #[cfg(target_arch = "x86_64")]
+    Sse2(Engine<Sse2>),
+    #[cfg(target_arch = "x86_64")]
+    Avx2(Engine<Avx2>),
+    #[cfg(target_arch = "aarch64")]
+    Neon(Engine<Neon>),
+}
+
+impl Search16 {
+    pub fn new(scoring: &Scoring) -> Search16 {
+        let kernel = match level() {
+            #[cfg(target_arch = "x86_64")]
+            Level::Avx2 => Kernel::Avx2(Engine::new(scoring)),
+            #[cfg(target_arch = "x86_64")]
+            Level::Sse2 => Kernel::Sse2(Engine::new(scoring)),
+            #[cfg(target_arch = "aarch64")]
+            Level::Neon => Kernel::Neon(Engine::new(scoring)),
+            _ => Kernel::Scalar(Engine::new(scoring)),
+        };
+        Search16 { kernel }
+    }
+
+    /// vsearch's `search16_qprep`.
+    pub fn set_query(&mut self, query: &[u8]) {
+        match &mut self.kernel {
+            Kernel::Scalar(e) => e.set_query(query),
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Sse2(e) => e.set_query(query),
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Avx2(e) => e.set_query(query),
+            #[cfg(target_arch = "aarch64")]
+            Kernel::Neon(e) => e.set_query(query),
+        }
+    }
+
+    /// aligns the query with each of `targets`, as vsearch's `search16`.
+    pub fn align(&mut self, targets: &[&[u8]]) -> Vec<Aligned> {
+        match &mut self.kernel {
+            Kernel::Scalar(e) => e.align(targets),
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Sse2(e) => e.align(targets),
+            // SAFETY: the kernel is AVX2 only when `simd::level` found the
+            // processor has it
+            #[cfg(target_arch = "x86_64")]
+            Kernel::Avx2(e) => unsafe { align_avx2(e, targets) },
+            #[cfg(target_arch = "aarch64")]
+            Kernel::Neon(e) => e.align(targets),
+        }
+    }
+}
+
+/// [`Engine::align`] compiled with AVX2, so that the lanes' instructions
+/// inline into it.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn align_avx2(engine: &mut Engine<Avx2>, targets: &[&[u8]]) -> Vec<Aligned> {
+    engine.align(targets)
+}
+
+/// vsearch's `s16info_s`: the scores and penalties in 16-bit cells, and
+/// the aligner's buffers, on lanes `L`.
+struct Engine<L: Lanes> {
     /// The score of each pair of 4-bit codes.
     matrix: [[i16; 16]; 16],
     /// Penalties (opening already less the extension, as vsearch's):
@@ -57,8 +174,8 @@ pub struct Search16 {
     n_mismatch: bool,
     /// A score or penalty beyond the cells: every pair to the fallback.
     fallback: bool,
-    hearray: Vec<V>,
-    dir: Vec<u16>,
+    hearray: Vec<L>,
+    dir: Vec<L::Bits>,
     qcodes: Vec<u8>,
     qseq: Vec<u8>,
 }
@@ -76,8 +193,8 @@ fn clamp(value: i64, limit: i64, fallback: &mut bool) -> i16 {
     }
 }
 
-impl Search16 {
-    pub fn new(scoring: &Scoring) -> Search16 {
+impl<L: Lanes> Engine<L> {
+    fn new(scoring: &Scoring) -> Engine<L> {
         let mut fallback = false;
         let score_limit = i64::from(i16::MAX);
         let penalty_limit = i64::from(i16::MAX) / (1 + CDEPTH as i64);
@@ -112,7 +229,7 @@ impl Search16 {
                 extend[s][e] = clamp(exts[e], penalty_limit, &mut fallback);
             }
         }
-        Search16 {
+        Engine {
             matrix,
             open,
             extend,
@@ -126,7 +243,7 @@ impl Search16 {
     }
 
     /// vsearch's `search16_qprep`.
-    pub fn set_query(&mut self, query: &[u8]) {
+    fn set_query(&mut self, query: &[u8]) {
         self.qseq = query.to_vec();
         self.qcodes = query.iter().map(|&c| FOUR_BIT[usize::from(c)]).collect();
         self.hearray.clear();
@@ -144,7 +261,8 @@ impl Search16 {
     }
 
     /// aligns the query with each of `targets`, as vsearch's `search16`.
-    pub fn align(&mut self, targets: &[&[u8]]) -> Vec<Aligned> {
+    #[inline(always)]
+    fn align(&mut self, targets: &[&[u8]]) -> Vec<Aligned> {
         let n = targets.len();
         let mut out = vec![Aligned::default(); n];
         let qlen = self.qseq.len();
@@ -186,12 +304,11 @@ impl Search16 {
         maxdlen = 4 * maxdlen.div_ceil(4);
         let dirsize = qlen * maxdlen * 4;
         if self.dir.len() < dirsize {
-            self.dir.resize(dirsize, 0);
+            self.dir.resize(dirsize, L::Bits::default());
         }
 
-        let pen = |x: i16| dup(x);
-        let qr = |s: usize, e: usize| dup(self.open[s][e].wrapping_add(self.extend[s][e]));
-        let t0: V = from_array([-1, 0, 0, 0, 0, 0, 0, 0]);
+        let pen = |x: i16| dup::<L>(x);
+        let qr = |s: usize, e: usize| dup::<L>(self.open[s][e].wrapping_add(self.extend[s][e]));
         let r_query_left = pen(self.extend[q][left]);
         let qr_query_interior = qr(q, interior);
         let r_query_interior = pen(self.extend[q][interior]);
@@ -206,17 +323,17 @@ impl Search16 {
 
         // per channel: the target, where its next residue is, its offset in
         // the direction buffer, and whether it overflowed
-        let mut begin = [0usize; CHANNELS];
-        let mut end = [0usize; CHANNELS];
-        let mut offset = [0usize; CHANNELS];
-        let mut seq_id = [-1i64; CHANNELS];
-        let mut overflow = [false; CHANNELS];
-        let mut dseq = [[0u8; CHANNELS]; CDEPTH];
-        let mut s_vec: [V; 4] = [zero(); 4];
+        let mut begin = [0usize; MAX_LANES];
+        let mut end = [0usize; MAX_LANES];
+        let mut offset = [0usize; MAX_LANES];
+        let mut seq_id = [-1i64; MAX_LANES];
+        let mut overflow = [false; MAX_LANES];
+        let mut dseq = [[0u8; MAX_LANES]; CDEPTH];
+        let mut s_vec: [L; 4] = [zero(); 4];
         let score_min = self.score_min();
         let score_max = i16::MAX;
-        let (mut h0, mut h1, mut h2, mut h3) = (zero(), zero(), zero(), zero());
-        let (mut f0, mut f1, mut f2, mut f3) = (zero(), zero(), zero(), zero());
+        let (mut h0, mut h1, mut h2, mut h3): (L, L, L, L) = (zero(), zero(), zero(), zero());
+        let (mut f0, mut f1, mut f2, mut f3): (L, L, L, L) = (zero(), zero(), zero(), zero());
         let mut easy = false;
         let mut dir = 0usize;
         let mut next_id = 0usize;
@@ -225,9 +342,9 @@ impl Search16 {
         let ge_q_l = i64::from(self.extend[q][left]);
 
         loop {
-            let mut masked: Option<V> = None;
+            let mut masked: Option<L> = None;
             if easy {
-                for c in 0..CHANNELS {
+                for c in 0..L::N {
                     for depth in dseq.iter_mut() {
                         depth[c] = if begin[c] < end[c] {
                             let code = FOUR_BIT[usize::from(targets[seq_id[c] as usize][begin[c]])];
@@ -243,9 +360,8 @@ impl Search16 {
                 }
             } else {
                 easy = true;
-                let mut m: V = zero();
-                let mut tt = t0;
-                for c in 0..CHANNELS {
+                let mut m: L = zero();
+                for c in 0..L::N {
                     if begin[c] < end[c] {
                         let target = targets[seq_id[c] as usize];
                         for depth in dseq.iter_mut() {
@@ -261,7 +377,7 @@ impl Search16 {
                             easy = false;
                         }
                     } else {
-                        m = xor(m, tt);
+                        m = xor(m, L::lane(c));
                         let cand = seq_id[c];
                         if cand >= 0 {
                             let slot = cand as usize;
@@ -270,7 +386,7 @@ impl Search16 {
                             if overflow[c] {
                                 out[slot] = Aligned::overflow();
                             } else {
-                                let score = to_array(s_vec[z])[c];
+                                let score = s_vec[z].store()[c];
                                 out[slot] = self.backtrack(targets[slot], offset[c], c, maxdlen);
                                 out[slot].score = score;
                             }
@@ -326,7 +442,6 @@ impl Search16 {
                             }
                         }
                     }
-                    tt = shift_left(tt);
                 }
                 if done == n {
                     break;
@@ -336,10 +451,10 @@ impl Search16 {
 
             // the profile: the score of each query code against each target
             // residue of the step
-            let mut profile = [[zero(); CDEPTH]; 16];
+            let mut profile: [[L; CDEPTH]; 16] = [[zero(); CDEPTH]; 16];
             for (r, rows) in profile.iter_mut().enumerate() {
                 for (j, lanes) in rows.iter_mut().enumerate() {
-                    *lanes = from_array(std::array::from_fn(|c| {
+                    *lanes = L::load(&std::array::from_fn(|c| {
                         self.matrix[usize::from(dseq[j][c])][r]
                     }));
                 }
@@ -350,14 +465,12 @@ impl Search16 {
                 let qr_diff = sub(qr_target_right, qr_target_interior);
                 let r_diff = sub(r_target_right, r_target_interior);
                 for j in 0..CDEPTH {
-                    let mut mm: V = zero();
-                    let mut tt = t0;
-                    for c in 0..CHANNELS {
+                    let mut mm: L = zero();
+                    for c in 0..L::N {
                         let dlen = if seq_id[c] >= 0 { end[c] } else { 0 };
                         if begin[c] == end[c] && j >= (dlen + 3) % 4 {
-                            mm = xor(mm, tt);
+                            mm = xor(mm, L::lane(c));
                         }
-                        tt = shift_left(tt);
                     }
                     qr_target[j] = add(qr_target_interior, and(qr_diff, mm));
                     r_target[j] = add(r_target_interior, and(r_diff, mm));
@@ -386,8 +499,8 @@ impl Search16 {
                 mask,
                 dir,
             );
-            let (h_min, h_max) = (to_array(h_min), to_array(h_max));
-            for c in 0..CHANNELS {
+            let (h_min, h_max) = (h_min.store(), h_max.store());
+            for c in 0..L::N {
                 if !overflow[c] && (h_min[c] <= score_min || h_max[c] >= score_max) {
                     overflow[c] = true;
                 }
@@ -412,16 +525,16 @@ impl Search16 {
     #[allow(clippy::too_many_arguments)]
     fn align_columns(
         &mut self,
-        s_vec: &mut [V; 4],
-        profile: &[[V; CDEPTH]; 16],
-        query: [V; 4],
-        qr_t: [V; 4],
-        r_t: [V; 4],
-        h: [V; 4],
-        f: [V; 4],
-        mask: Option<Masked>,
+        s_vec: &mut [L; 4],
+        profile: &[[L; CDEPTH]; 16],
+        query: [L; 4],
+        qr_t: [L; 4],
+        r_t: [L; 4],
+        h: [L; 4],
+        f: [L; 4],
+        mask: Option<Masked<L>>,
         dir: usize,
-    ) -> (V, V) {
+    ) -> (L, L) {
         match mask {
             Some(mask) => self.columns::<true>(s_vec, profile, query, qr_t, r_t, h, f, mask, dir),
             None => {
@@ -443,16 +556,16 @@ impl Search16 {
     #[inline(always)]
     fn columns<const MASKED: bool>(
         &mut self,
-        s_vec: &mut [V; 4],
-        profile: &[[V; CDEPTH]; 16],
-        query: [V; 4],
-        qr_t: [V; 4],
-        r_t: [V; 4],
-        h: [V; 4],
-        f: [V; 4],
-        mut m: Masked,
+        s_vec: &mut [L; 4],
+        profile: &[[L; CDEPTH]; 16],
+        query: [L; 4],
+        qr_t: [L; 4],
+        r_t: [L; 4],
+        h: [L; 4],
+        f: [L; 4],
+        mut m: Masked<L>,
         dir: usize,
-    ) -> (V, V) {
+    ) -> (L, L) {
         let [qr_q_i, r_q_i, qr_q_r, r_q_r] = query;
         let ql = self.qcodes.len();
         let [mut h0, mut h1, mut h2, mut h3] = h;
@@ -644,7 +757,7 @@ impl Search16 {
                 (offset + 16 * qlen * (j as usize / 4) + 16 * i as usize + 4 * (j as usize & 3))
                     % dirsize;
             let d = &self.dir[at..at + 4];
-            let bit = |w: u16| (w >> shift) & 3 != 0;
+            let bit = |w: L::Bits| (L::bits(w) >> shift) & 3 != 0;
             if op == b'I' && bit(d[3]) {
                 j -= 1;
                 push(&mut ops, &mut op, b'I');
@@ -720,19 +833,19 @@ impl Search16 {
 /// bits in `path`.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn step(
-    h: &mut V,
-    n: &mut V,
-    f: &mut V,
-    v: V,
-    path: &mut [u16],
-    e: &mut V,
-    qr_q: V,
-    r_q: V,
-    qr_t: V,
-    r_t: V,
-    h_min: &mut V,
-    h_max: &mut V,
+fn step<L: Lanes>(
+    h: &mut L,
+    n: &mut L,
+    f: &mut L,
+    v: L,
+    path: &mut [L::Bits],
+    e: &mut L,
+    qr_q: L,
+    r_q: L,
+    qr_t: L,
+    r_t: L,
+    h_min: &mut L,
+    h_max: &mut L,
 ) {
     *h = add(*h, v);
     path[0] = mask_gt(*f, *h);
@@ -753,10 +866,10 @@ fn step(
 }
 
 /// The masks of vsearch's `Masked` columns: the channels starting a target.
-struct Masked {
-    mm: V,
-    qr_t_left: V,
-    r_t_left: V,
-    qr_q_interior: V,
-    qr_q_right: V,
+struct Masked<L: Lanes> {
+    mm: L,
+    qr_t_left: L,
+    r_t_left: L,
+    qr_q_interior: L,
+    qr_q_right: L,
 }
