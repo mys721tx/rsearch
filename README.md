@@ -64,8 +64,12 @@ cargo test
 - **Compressed input.** No tool reads compressed files. Decompress into the
   pipe: `gzip -dc reads.fq.gz | sqfilt ...` or `bzip2 -dc reads.fq.bz2 |
   ...`.
-- **Threads.** Every tool runs on one thread, and gives vsearch's results
-  with `--threads 1`.
+- **Threads.** The tools that search, align, classify, merge, mask, or
+  orient (`dbsrch`, `allpr`, `clust`, `unoise`, `uchime` with `--db`,
+  `sintax`, `mergpa`, `lcmask`, `dbornt`) run on `-t/--threads` threads, one
+  per logical core by default. Their output is the same on any number. It is
+  vsearch's with `--threads 1`, in input order where vsearch on several
+  threads writes queries as they finish. The others run on one thread.
 
 ## Tools
 
