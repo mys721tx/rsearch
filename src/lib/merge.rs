@@ -397,6 +397,12 @@ impl Merger {
                     diffs += 1;
                     if score < high - drop {
                         drop = high - score;
+                        // the drop only grows, and at DROP_MAX the score is
+                        // 0 below. A score of 0 is neither the best nor a
+                        // hit, so the rest of the diagonal cannot matter.
+                        if drop >= DROP_MAX {
+                            break;
+                        }
                     }
                 }
             }
