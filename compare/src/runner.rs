@@ -428,6 +428,41 @@ mod tests {
     }
 
     #[test]
+    fn reports_whole_batches_until_stopped() {
+        // the reporter writes each batch whole, then drops what arrives
+        // after a stop: cases cut short by the interruption are not results
+        let path = temp("reporter.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let (file, _) = open_out(&path).unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (tx, rx) = mpsc::channel();
+        tx.send(vec![record("derep", 1, 0, "pass"), record("derep", 1, 1, "fail")])
+            .unwrap();
+        tx.send(vec![record("conv", 2, 0, "pass")]).unwrap();
+        let sender = std::thread::spawn(move || tx);
+        let tx = sender.join().unwrap();
+        std::thread::scope(|scope| {
+            let reporter = scope.spawn(|| report(rx, Some(file), &stop));
+            // let the reporter take the first two batches
+            while std::fs::read_to_string(&path).unwrap().lines().count() < 3 {
+                std::thread::yield_now();
+            }
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            tx.send(vec![record("relab", 3, 0, "fail")]).unwrap();
+            drop(tx);
+            let tally = reporter.join().unwrap().unwrap();
+            assert_eq!(tally["derep"]["pass"], 1);
+            assert_eq!(tally["derep"]["fail"], 1);
+            assert_eq!(tally["conv"]["pass"], 1);
+            assert!(!tally.contains_key("relab"));
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 3);
+        assert!(text.ends_with('\n'));
+        assert!(text.lines().all(|l| serde_json::from_str::<Value>(l).is_ok()));
+    }
+
+    #[test]
     fn starts_a_line_after_a_record_cut_short() {
         // a run stopped while writing leaves half a line; the next run's
         // first record must not join it
