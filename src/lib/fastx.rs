@@ -814,6 +814,31 @@ mod test {
     }
 
     #[test]
+    fn test_fast_checks_at_every_level() {
+        // each SIMD level this processor has agrees with the tables on every
+        // byte, at the start, the middle, and the end of lines that end
+        // within, on, and after the 16- and 32-byte chunks
+        for level in crate::simd::available() {
+            for len in [1, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 65, 100] {
+                let clean = vec![b'g'; len];
+                assert!(!has_non_iupac_at(level, &clean), "{level:?} {len}");
+                for byte in 0..=255u8 {
+                    let rejected = FASTQ_SEQUENCE[usize::from(byte)] != Action::Accept;
+                    for at in [0, len / 2, len - 1] {
+                        let mut line = clean.clone();
+                        line[at] = byte;
+                        assert_eq!(
+                            has_non_iupac_at(level, &line),
+                            rejected,
+                            "{level:?} {len} {at} {byte}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_check() {
         let check = |seq: &[u8], qual: &[u8]| Record::with_attrs("a", None, seq, qual).check();
         assert_eq!(check(b"AC-*.n", b"IIIIII"), Ok(()));
