@@ -1,11 +1,13 @@
 //! Benchmarks of denoising.
 //!
 //! `binary` runs the unoise program end to end on 10,000 sequences of 250
-//! bases, at the defaults and on both strands. They are copies of 300
-//! templates with one base in a hundred changed, inserted or deleted. They
-//! come in decreasing abundance (so sorted, as unoise takes them).
-//! compare/benches/unoise times vsearch on the same file, after checking
-//! that both write the same centroids and hits.
+//! bases, at the defaults and on both strands, at each thread count of
+//! `data::thread_counts` (one and one per core, or `RSEARCH_BENCH_THREADS`).
+//! They are copies of 300 templates with one base in a hundred changed,
+//! inserted or deleted. They come in decreasing abundance (so sorted, as
+//! unoise takes them). compare/benches/unoise times vsearch at the same
+//! thread counts on the same file, after checking that both write the same
+//! centroids and hits.
 
 use std::process::{Command, Stdio};
 
@@ -35,8 +37,13 @@ fn bench_binary(c: &mut Criterion) {
     group.throughput(Throughput::Elements(data::count(&input, SEQUENCES)));
     group.sample_size(10);
     for (name, args) in [("default", &[][..]), ("both", &["--strand", "both"][..])] {
-        let rargs = [&["-i", fa, "-o", "/dev/null"][..], args].concat();
-        group.bench_function(format!("unoise/{name}"), |b| b.iter(|| run(unoise, &rargs)));
+        for threads in data::thread_counts() {
+            let t = threads.to_string();
+            let rargs = [&["-i", fa, "-o", "/dev/null", "-t", &t][..], args].concat();
+            group.bench_function(format!("unoise/{name}/t{t}"), |b| {
+                b.iter(|| run(unoise, &rargs))
+            });
+        }
     }
     group.finish();
 }
