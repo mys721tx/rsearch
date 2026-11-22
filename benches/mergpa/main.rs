@@ -7,6 +7,11 @@
 //! at each thread count of `data::thread_counts` (one and one per core, or
 //! `RSEARCH_BENCH_THREADS`). compare/benches/mergpa times vsearch at the
 //! same thread counts on the same files.
+//!
+//! `repeats` runs mergpa on one thread on 25,000 pairs whose fragments hold
+//! a tandem repeat of 40 bases or more where the reads overlap. Many
+//! diagonals then share enough 5-mers to be scored, and most fall apart
+//! before their end.
 
 use std::hint::black_box;
 use std::process::Command;
@@ -83,5 +88,22 @@ fn bench_binary(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_merge, bench_binary);
+/// mergpa on pairs that hold a tandem repeat in their overlap, on one
+/// thread, where many diagonals are scored and fall apart.
+fn bench_repeats(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
+    let (forward, reverse) = repeat_files();
+    let (fwd, rev) = (forward.to_str().unwrap(), reverse.to_str().unwrap());
+    let mergpa = env!("CARGO_BIN_EXE_mergpa");
+    let mut group = c.benchmark_group(data::group("mergpa/repeats"));
+    group.throughput(Throughput::Elements((PAIRS / 4) as u64));
+    group.sample_size(10);
+    let args = ["-i", fwd, "--reverse", rev, "-o", "/dev/null", "-t", "1"];
+    group.bench_function("mergpa/repeats/t1", |b| b.iter(|| run(mergpa, &args)));
+    group.finish();
+}
+
+criterion_group!(benches, bench_merge, bench_binary, bench_repeats);
 criterion_main!(benches);

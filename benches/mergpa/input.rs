@@ -70,6 +70,67 @@ pub fn generate() -> Vec<(Read, Read)> {
         .collect()
 }
 
+/// Pairs of fragments that hold a tandem repeat of 40 bases or more, a unit
+/// of 2 to 8 repeated, where both reads overlap. Many diagonals then share
+/// enough 5-mers to be scored, and most fall apart along the way.
+pub fn generate_repeats() -> Vec<(Read, Read)> {
+    let mut rng = Rng(0x7e9ea7);
+    (0..PAIRS / 4)
+        .map(|_| {
+            // an overlap of 60 to 200 bases, from length - 250 to 250
+            let length = 300 + rng.below(141);
+            let overlap = 2 * LENGTH - length;
+            let unit: Vec<u8> = (0..2 + rng.below(7))
+                .map(|_| b"ACGT"[rng.below(4)])
+                .collect();
+            // a repeat of 40 bases to 10 short of the overlap, within it
+            let span = 40 + rng.below(overlap - 49);
+            let start = length - LENGTH + rng.below(overlap - span + 1);
+            let fragment: Vec<u8> = (0..length)
+                .map(|i| {
+                    if (start..start + span).contains(&i) {
+                        unit[(i - start) % unit.len()]
+                    } else {
+                        b"ACGT"[rng.below(4)]
+                    }
+                })
+                .collect();
+            let forward = read(&mut rng, fragment[..LENGTH].iter().copied());
+            let reverse = read(
+                &mut rng,
+                fragment[length - LENGTH..].iter().rev().map(|&b| match b {
+                    b'A' => b'T',
+                    b'C' => b'G',
+                    b'G' => b'C',
+                    _ => b'A',
+                }),
+            );
+            (forward, reverse)
+        })
+        .collect()
+}
+
+/// The files of the repeat pairs, written out.
+pub fn repeat_files() -> (PathBuf, PathBuf) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let paths = (
+        dir.join("mergpa-bench-repeats-1.fq"),
+        dir.join("mergpa-bench-repeats-2.fq"),
+    );
+    let pairs = generate_repeats();
+    std::fs::write(
+        &paths.0,
+        fastq(pairs.iter().map(|p| p.0.clone()).enumerate(), 1),
+    )
+    .unwrap();
+    std::fs::write(
+        &paths.1,
+        fastq(pairs.iter().map(|p| p.1.clone()).enumerate(), 2),
+    )
+    .unwrap();
+    paths
+}
+
 pub fn fastq(reads: impl Iterator<Item = (usize, Read)>, mate: u8) -> Vec<u8> {
     let mut out = Vec::new();
     for (i, (seq, qual)) in reads {
