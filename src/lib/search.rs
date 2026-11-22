@@ -29,11 +29,43 @@ const MAX_COUNT: u16 = i16::MAX as u16;
 /// by word length.
 pub const MIN_WORD_MATCHES: [u32; 16] = [0, 0, 0, 18, 17, 16, 15, 14, 12, 11, 10, 9, 8, 7, 5, 3];
 
+/// A word held by at least one in this many of a database's sequences is
+/// kept as a bitmap of the targets too, as vsearch's database index does.
+const BITMAP_SHARE: usize = 8;
+
+/// The targets of a bitmap word, and of a block of the scan for
+/// candidates.
+const BLOCK: usize = 64;
+
+/// For each four bits of a bitmap, the four 16-bit counters they raise by one,
+/// as one word to add. Bit `i` becomes counter `i`.
+const EXPANSION: [u64; 16] = {
+    let mut table = [0u64; 16];
+    let mut bits = 0;
+    while bits < 16 {
+        let mut i = 0;
+        while i < 4 {
+            if bits & (1 << i) != 0 {
+                table[bits] |= 1 << (16 * i);
+            }
+            i += 1;
+        }
+        bits += 1;
+    }
+    table
+};
+
+/// The high bit of each 16-bit counter of a word.
+const HIGH_BITS: u64 = 0x8000_8000_8000_8000;
+/// One, in each 16-bit counter of a word.
+const ONES: u64 = 0x0001_0001_0001_0001;
+
 /// The index of a database's words: for each word, the targets holding
 /// it, by their place in the index; and for each target, its sequence and
 /// the number of its distinct words. The targets are the database's
 /// sequences, or those added as the index grows, as clustering adds its
-/// centroids.
+/// centroids. The words held by many sequences have a bitmap of their
+/// targets as well.
 struct Postings {
     /// for each word, where its targets start in `entries`; one more ends
     /// the last.
@@ -46,11 +78,21 @@ struct Postings {
     seqnos: Vec<u32>,
     /// the distinct words of each target.
     words: Vec<u32>,
+    /// the words with a bitmap, in increasing order, and their bitmaps, a
+    /// bit per target, the first in the lowest bit; `bitmap_len` words
+    /// each.
+    common: Vec<u32>,
+    bitmaps: Vec<u64>,
+    bitmap_len: usize,
+    /// for each block of targets, the fewest distinct words of a target
+    /// holding some (`u32::MAX` for none).
+    fewest: Vec<u32>,
 }
 
 impl Postings {
-    /// room for the words of `counts`, the number of sequences holding each.
-    fn with_room(counts: &[u32]) -> Postings {
+    /// room for the words of `counts`, the number of sequences holding
+    /// each, among `n` sequences.
+    fn with_room(counts: &[u32], n: usize) -> Postings {
         let mut starts = Vec::with_capacity(counts.len() + 1);
         let mut sum = 0u64;
         starts.push(0);
@@ -58,13 +100,63 @@ impl Postings {
             sum += u64::from(c);
             starts.push(sum);
         }
-        Postings {
+        let mut postings = Postings {
             starts,
             filled: vec![0; counts.len()],
             entries: vec![0; sum as usize],
             seqnos: Vec::new(),
             words: Vec::new(),
+            common: Vec::new(),
+            bitmaps: Vec::new(),
+            bitmap_len: n.div_ceil(BLOCK),
+            fewest: Vec::new(),
+        };
+        postings.make_bitmaps(Some(counts), n);
+        postings
+    }
+
+    /// the bitmaps of the words held by enough of `n` sequences. A database
+    /// that grows finds them by `counts`, the sequences holding each word, and
+    /// fills them as targets are added. Any other finds them by its lists of
+    /// targets, which fill them.
+    fn make_bitmaps(&mut self, counts: Option<&[u32]>, n: usize) {
+        let threshold = (n / BITMAP_SHARE).max(1);
+        self.bitmap_len = n.div_ceil(BLOCK);
+        for word in 0..self.starts.len() - 1 {
+            let count = match counts {
+                Some(counts) => u64::from(counts[word]),
+                None => self.starts[word + 1] - self.starts[word],
+            };
+            if count >= threshold as u64 {
+                let mut bitmap = vec![0u64; self.bitmap_len];
+                if counts.is_none() {
+                    for &t in self.sequences_of(word as u32) {
+                        bitmap[t as usize / BLOCK] |= 1 << (t as usize % BLOCK);
+                    }
+                }
+                self.bitmaps.extend_from_slice(&bitmap);
+                self.common.push(word as u32);
+            }
         }
+    }
+
+    /// the bitmap of `word`, if it has one.
+    fn bitmap(&self, word: u32) -> Option<&[u64]> {
+        let slot = self.common.binary_search(&word).ok()?;
+        let start = slot * self.bitmap_len;
+        Some(&self.bitmaps[start..start + self.bitmap_len])
+    }
+
+    /// notes the distinct words of the next target.
+    fn note_words(&mut self, words: u32) {
+        let block = self.words.len() / BLOCK;
+        if block == self.fewest.len() {
+            self.fewest.push(u32::MAX);
+        }
+        if words != 0 {
+            self.fewest[block] = self.fewest[block].min(words);
+        }
+        self.words.push(words);
     }
 
     fn sequences_of(&self, word: u32) -> &[u32] {
@@ -82,12 +174,16 @@ impl Postings {
     fn add(&mut self, seqno: usize, words: &[u32]) {
         let target = self.seqnos.len() as u32;
         for &w in words {
-            let w = w as usize;
-            self.entries[(self.starts[w] + u64::from(self.filled[w])) as usize] = target;
-            self.filled[w] += 1;
+            let at = w as usize;
+            self.entries[(self.starts[at] + u64::from(self.filled[at])) as usize] = target;
+            self.filled[at] += 1;
+            if let Ok(slot) = self.common.binary_search(&w) {
+                let t = target as usize;
+                self.bitmaps[slot * self.bitmap_len + t / BLOCK] |= 1 << (t % BLOCK);
+            }
         }
         self.seqnos.push(seqno as u32);
-        self.words.push(words.len() as u32);
+        self.note_words(words.len() as u32);
     }
 }
 
@@ -111,13 +207,21 @@ impl Database {
         for &s in &entries {
             words[s as usize] += 1;
         }
-        let postings = Postings {
+        let mut postings = Postings {
             starts,
             filled: Vec::new(),
             entries,
             seqnos: (0..seqs.len() as u32).collect(),
-            words,
+            words: Vec::new(),
+            common: Vec::new(),
+            bitmaps: Vec::new(),
+            bitmap_len: 0,
+            fewest: Vec::new(),
         };
+        for w in words {
+            postings.note_words(w);
+        }
+        postings.make_bitmaps(None, seqs.len());
         Database {
             labels,
             seqs,
@@ -139,7 +243,7 @@ impl Database {
     ) -> Database {
         let (counts, _) = crate::words::word_counts(word_len, seqs.iter().map(Vec::as_slice));
         Database {
-            postings: Postings::with_room(&counts),
+            postings: Postings::with_room(&counts, seqs.len()),
             labels,
             seqs,
             sizes,
@@ -345,7 +449,9 @@ pub struct Searcher {
     min_word_matches: u32,
     top_hits: usize,
     uniquer: Uniquer,
-    counts: Vec<u16>,
+    /// a 16-bit counter per target, four to a word, target `t` in counter
+    /// `t % 4` (from the lowest) of word `t / 4`.
+    counts: Vec<u64>,
     simd: Search16,
     fallback: LinearMemoryAligner,
     /// UNOISE's alpha, when its abundance skew rule decides acceptance.
@@ -432,13 +538,39 @@ impl Searcher {
             sorted.sort_unstable();
             *min = min_matches;
         }
+        let targets = postings.seqnos.len();
+        let blocks = targets.div_ceil(BLOCK);
         self.counts.clear();
-        self.counts.resize(postings.seqnos.len(), 0);
-        for &word in words {
-            for &s in postings.sequences_of(word) {
-                let c = &mut self.counts[s as usize];
-                if *c < MAX_COUNT {
-                    *c += 1;
+        self.counts.resize(blocks * BLOCK / 4, 0);
+        if words.len() <= usize::from(MAX_COUNT) {
+            // no count can reach the counters' limit
+            for &word in words {
+                if let Some(bitmap) = postings.bitmap(word) {
+                    // four counters at once, four bits of the bitmap each
+                    for (bits, counts) in bitmap[..blocks]
+                        .iter()
+                        .zip(self.counts.chunks_exact_mut(BLOCK / 4))
+                    {
+                        if *bits == 0 {
+                            continue;
+                        }
+                        for (i, count) in counts.iter_mut().enumerate() {
+                            *count += EXPANSION[((bits >> (4 * i)) & 0xf) as usize];
+                        }
+                    }
+                } else {
+                    for &t in postings.sequences_of(word) {
+                        self.counts[t as usize / 4] += 1 << (16 * (t % 4));
+                    }
+                }
+            }
+        } else {
+            for &word in words {
+                for &t in postings.sequences_of(word) {
+                    let (at, shift) = (t as usize / 4, 16 * (t % 4));
+                    if (self.counts[at] >> shift) & 0xffff < u64::from(MAX_COUNT) {
+                        self.counts[at] += 1 << shift;
+                    }
                 }
             }
         }
@@ -447,19 +579,41 @@ impl Searcher {
         if self.top_hits == 0 {
             return Vec::new();
         }
-        for (t, &count) in self.counts.iter().enumerate() {
-            let c = u32::from(count);
-            let kmers = postings.words[t];
-            if !self.eligible(c, kmers, min_matches) {
-                continue;
+        for (block, counts) in self.counts.chunks_exact(BLOCK / 4).enumerate() {
+            // a candidate shares at least this many words. That is the fewest
+            // any target of the block may, and once the heap is full, as many
+            // as its worst
+            let mut least = min_matches.min(postings.fewest[block]);
+            if heap.len() == self.top_hits {
+                least = least.max(u32::from(heap.peek().unwrap().0.0));
             }
-            let s = postings.seqnos[t] as usize;
-            let key = (Reverse(count), db.seqs[s].len(), s);
-            if heap.len() < self.top_hits {
-                heap.push(key);
-            } else if key < *heap.peek().unwrap() {
-                heap.pop();
-                heap.push(key);
+            let least = u64::from(least.min(u32::from(MAX_COUNT)));
+            for (at, &four) in counts.iter().enumerate() {
+                // the counters reaching `least`. Adding 2^15 less it sets a
+                // counter's high bit exactly when it does, and carries into no
+                // other counter
+                let mut reaching = four.wrapping_add(ONES * (0x8000 - least)) & HIGH_BITS;
+                while reaching != 0 {
+                    let lane = reaching.trailing_zeros() as usize / 16;
+                    reaching &= reaching - 1;
+                    let t = block * BLOCK + at * 4 + lane;
+                    if t >= targets {
+                        break;
+                    }
+                    let count = ((four >> (16 * lane)) & 0xffff) as u16;
+                    let kmers = postings.words[t];
+                    if !self.eligible(u32::from(count), kmers, min_matches) {
+                        continue;
+                    }
+                    let s = postings.seqnos[t] as usize;
+                    let key = (Reverse(count), db.seqs[s].len(), s);
+                    if heap.len() < self.top_hits {
+                        heap.push(key);
+                    } else if key < *heap.peek().unwrap() {
+                        heap.pop();
+                        heap.push(key);
+                    }
+                }
             }
         }
         heap.into_sorted_vec()
