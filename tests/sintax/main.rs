@@ -716,3 +716,85 @@ low	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bac
 "##
     );
 }
+
+/// A database of 157 sequences: 26 copies of each template, one base in
+/// 25 changed, and a random one. Its common words are counted from
+/// bitmaps of three 64-bit words, the last one partly used, and the
+/// others from their lists of sequences.
+fn large_db(templates: &[String]) -> String {
+    let mut rng = Rng::new(19);
+    let mut db = String::new();
+    for i in 0..156 {
+        let t = i % 6;
+        let seq = rng.mutate(&templates[t], 25);
+        let header = match TAXONOMY[t] {
+            Some(tax) => format!("b{i};tax={tax}"),
+            None => format!("b{i}"),
+        };
+        db.push_str(&format!(">{header}\n{seq}\n"));
+    }
+    db.push_str(&format!(">b156;tax=d:Bacteria,p:Other\n{}\n", rng.seq(500)));
+    db
+}
+
+#[test]
+fn classifies_against_a_large_database() {
+    let data = data();
+    let db = large_db(&data.templates);
+    assert_eq!(
+        table("large", db.as_bytes(), &["--seed", "4"], &data.queries),
+        LARGE_TABLE
+    );
+    assert_eq!(
+        table(
+            "large-random",
+            db.as_bytes(),
+            &["--seed", "9", "--random", "--strand", "both"],
+            &data.queries
+        ),
+        LARGE_RANDOM_TABLE
+    );
+}
+
+const LARGE_TABLE: &str = r##"q0	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
+q1	d:Bacteria(0.89),p:Firmicutes(0.89),c:Bacilli(0.89),o:Lactobacillales(0.64),f:Streptococcaceae(0.64),g:Streptococcus(0.38),s:S_mutans(0.38)	+
+q2	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bacillaceae(1.00),g:Bacillus(1.00),s:B_subtilis(1.00)	+
+q3	d:Bacteria(1.00),p:Proteobacteria(1.00),c:Gammaproteobacteria(1.00),g:Escherichia(1.00),s:E_coli(1.00)	+
+q4	d:Bacteria(0.53),p:Firmicutes(0.51),c:Bacilli(0.51),o:Lactobacillales(0.33),f:Streptococcaceae(0.33),g:Lactococcus(0.18)	+
+q5		+
+q6	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
+q7	d:Bacteria(0.62),p:Firmicutes(0.62),c:Bacilli(0.62),o:Bacillales(0.40),f:Bacillaceae(0.40),g:Bacillus(0.40),s:B_subtilis(0.40)	+
+q8	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bacillaceae(1.00),g:Bacillus(1.00),s:B_subtilis(1.00)	+
+q9	d:Bacteria(1.00),p:Proteobacteria(1.00),c:Gammaproteobacteria(1.00),g:Escherichia(1.00),s:E_coli(1.00)	+
+q10	d:Bacteria(0.69),p:Firmicutes(0.37),c:Bacilli(0.37),o:Lactobacillales(0.26),f:Streptococcaceae(0.26),g:Lactococcus(0.20)	+
+q11		+
+q12	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
+q13	d:Bacteria(0.39),p:Firmicutes(0.37),c:Bacilli(0.37),o:Lactobacillales(0.27),f:Streptococcaceae(0.27),g:Streptococcus(0.15),s:S_mutans(0.15)	+
+q14	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bacillaceae(1.00),g:Bacillus(1.00),s:B_subtilis(1.00)	+
+q15	d:Bacteria(1.00),p:Proteobacteria(1.00),c:Gammaproteobacteria(1.00),g:Escherichia(1.00),s:E_coli(1.00)	+
+rand	d:Bacteria(0.85),p:Firmicutes(0.67),c:Bacilli(0.67),o:Lactobacillales(0.67),f:Streptococcaceae(0.67),g:Streptococcus(0.60),s:S_mutans(0.60)	+
+short		
+tiny		
+low		
+"##;
+const LARGE_RANDOM_TABLE: &str = r##"q0	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
+q1	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Lactococcus(1.00)	-
+q2	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bacillaceae(1.00),g:Bacillus(1.00),s:B_subtilis(1.00)	+
+q3	d:Bacteria(1.00),p:Proteobacteria(1.00),c:Gammaproteobacteria(1.00),g:Escherichia(1.00),s:E_coli(1.00)	+
+q4	d:Archaea(1.00),p:Euryarchaeota(1.00)	-
+q5		+
+q6	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
+q7	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Lactococcus(1.00)	-
+q8	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bacillaceae(1.00),g:Bacillus(1.00),s:B_subtilis(1.00)	+
+q9	d:Bacteria(1.00),p:Proteobacteria(1.00),c:Gammaproteobacteria(1.00),g:Escherichia(1.00),s:E_coli(1.00)	+
+q10	d:Archaea(1.00),p:Euryarchaeota(1.00)	-
+q11		+
+q12	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
+q13	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Lactococcus(1.00)	-
+q14	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Bacillales(1.00),f:Bacillaceae(1.00),g:Bacillus(1.00),s:B_subtilis(1.00)	+
+q15	d:Bacteria(1.00),p:Proteobacteria(1.00),c:Gammaproteobacteria(1.00),g:Escherichia(1.00),s:E_coli(1.00)	+
+rand	d:Bacteria(0.48),p:Firmicutes(0.28),c:Bacilli(0.28),o:Bacillales(0.17),f:Bacillaceae(0.17),g:Bacillus(0.17),s:B_subtilis(0.17)	-
+short		
+tiny		
+low		
+"##;
