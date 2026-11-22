@@ -6,6 +6,11 @@
 //! FASTQ with and without clipping, FASTQ and FASTA to wrapped or unwrapped
 //! FASTA, and UDB (written by mkudb from the FASTA reads) to FASTA.
 //! compare/benches/conv times vsearch on the same files.
+//!
+//! `simd` times conv from FASTA and FASTQ to FASTA at each SIMD level this
+//! processor has, chosen with `RSEARCH_SIMD` or listed in `RSEARCH_BENCH_SIMD`,
+//! for the reader. It sets the scalar code the compiler vectorises against the
+//! hand-written vector code.
 
 use std::hint::black_box;
 use std::process::Command;
@@ -17,6 +22,8 @@ use rsearch::quality::Conversion;
 
 mod input;
 use input::*;
+#[path = "../common/levels.rs"]
+mod levels;
 
 fn parse(text: &str) -> Vec<Record> {
     Reader::new(text.as_bytes())
@@ -123,5 +130,27 @@ fn bench_binary(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_converter, bench_binary);
+/// conv from FASTA and FASTQ to FASTA at each SIMD level this processor has. It
+/// mostly reads, and checks each sequence line.
+fn bench_simd(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
+    let inputs = input_files(env!("CARGO_BIN_EXE_mkudb"));
+    let conv = env!("CARGO_BIN_EXE_conv");
+    let mut group = c.benchmark_group(data::group("conv/simd"));
+    group.throughput(Throughput::Elements(data::count(&inputs.phred33, READS)));
+    group.sample_size(10);
+    for (name, input) in [("fasta", &inputs.fasta), ("fastq", &inputs.phred33)] {
+        let args = ["-i", input.to_str().unwrap(), "--fasta", "-o", "/dev/null"];
+        for level in levels::levels() {
+            group.bench_function(format!("conv/{name}/{}", level.name()), |b| {
+                b.iter(|| levels::run_at(level, conv, &args))
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_converter, bench_binary, bench_simd);
 criterion_main!(benches);
