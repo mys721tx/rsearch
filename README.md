@@ -70,6 +70,13 @@ cargo test
   per logical core by default. Their output is the same on any number. It is
   vsearch's with `--threads 1`, in input order where vsearch on several
   threads writes queries as they finish. The others run on one thread.
+- **Vector instructions.** The aligner, the reader, and reverse complements
+  use the best vector instructions the processor has, chosen when the tool
+  starts. These are AVX2, or else SSE2, on x86-64 and NEON on aarch64. The
+  aligner takes sixteen targets at once with AVX2, where vsearch takes
+  eight. `RSEARCH_SIMD` chooses a lower level (`sse2`, `neon`, or `scalar`
+  on any machine) and fails with exit code 2 for one the processor lacks.
+  The output is the same at every level.
 
 ## Tools
 
