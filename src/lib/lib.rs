@@ -27,6 +27,7 @@ pub mod select;
 pub mod sff;
 pub mod sintax;
 pub mod taxonomy;
+pub mod threads;
 pub mod udb;
 pub mod words;
 pub mod writer;

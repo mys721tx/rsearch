@@ -1122,6 +1122,7 @@ dependencies = [
  "criterion",
  "md-5",
  "mimalloc",
+ "rayon",
  "sha1",
 ]
 
