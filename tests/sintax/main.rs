@@ -170,15 +170,158 @@ fn sintax(name: &str, db: &[u8], args: &[&str], queries: &str) -> (Output, Strin
     (output, text)
 }
 
-/// Runs sintax, which must succeed, and returns its table.
+/// The thread counts every classification is run with. Its table and report
+/// must not change.
+const THREADS: [&str; 4] = ["1", "2", "3", "8"];
+
+/// Runs sintax on each of `THREADS`, which must succeed and write the same
+/// table and report each time, and returns its table.
 fn table(name: &str, db: &[u8], args: &[&str], queries: &str) -> String {
-    let (output, _) = sintax(name, db, args, queries);
-    assert!(
-        output.status.success(),
-        "sintax failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let mut first: Option<(String, String)> = None;
+    for t in THREADS {
+        let with_threads: Vec<&str> = args.iter().copied().chain(["-t", t]).collect();
+        let (output, report) = sintax(name, db, &with_threads, queries);
+        assert!(
+            output.status.success(),
+            "sintax -t {t} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let this = (String::from_utf8(output.stdout).unwrap(), report);
+        match &first {
+            None => first = Some(this),
+            Some(one) => assert_eq!(&this, one, "-t {t} against -t 1, {args:?}"),
+        }
+    }
+    first.unwrap().0
+}
+
+/// Runs sintax with `args` at -t 1 and at each count of `counts`, and checks
+/// that the table, the report, the messages, and the exit code are the same.
+fn same_on_threads(name: &str, db: &[u8], args: &[&str], queries: &str, counts: &[&str]) -> Output {
+    let with = |t: &str| -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string())
+            .chain(["-t".to_string(), t.to_string()])
+            .collect()
+    };
+    let one_args = with("1");
+    let (one, one_report) = sintax(
+        name,
+        db,
+        &one_args.iter().map(String::as_str).collect::<Vec<_>>(),
+        queries,
     );
-    String::from_utf8(output.stdout).unwrap()
+    for &t in counts {
+        let these = with(t);
+        let (other, report) = sintax(
+            name,
+            db,
+            &these.iter().map(String::as_str).collect::<Vec<_>>(),
+            queries,
+        );
+        assert_eq!(other.status.code(), one.status.code(), "-t {t}, {args:?}");
+        assert!(
+            other.stdout == one.stdout,
+            "-t {t} writes another table, {args:?}"
+        );
+        assert_eq!(report, one_report, "-t {t}, {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&other.stderr),
+            String::from_utf8_lossy(&one.stderr),
+            "-t {t}, {args:?}"
+        );
+    }
+    one
+}
+
+/// Many queries, more than a batch of every thread count: pieces of the
+/// templates on either strand, unrelated, short, and empty ones.
+fn many_queries(templates: &[String], n: usize) -> String {
+    let mut rng = Rng::new(41);
+    let mut queries = String::new();
+    for i in 0..n {
+        let t = &templates[i % templates.len()];
+        let start = rng.below(350) as usize;
+        let seq = match i % 9 {
+            0 => rng.seq(250),
+            1 => rc(&rng.mutate(&t[start..start + 250], 30)),
+            2 => String::new(),
+            3 => t[..30].to_string(),
+            _ => rng.mutate(&t[start..start + 250], 20 + (i % 40) as u64),
+        };
+        queries.push_str(&format!(">m{i}\n{seq}\n"));
+    }
+    queries
+}
+
+#[test]
+fn classifies_the_same_on_any_thread_count() {
+    let data = data();
+    let queries = many_queries(&data.templates, 1500);
+    for args in [
+        &["--seed", "3"][..],
+        &[
+            "--seed", "11", "--random", "--strand", "both", "--cutoff", "0.8",
+        ],
+        &["--seed", "7", "--random"],
+        &["--seed", "5", "--word-len", "6", "--strand", "both"],
+    ] {
+        let one = same_on_threads(
+            "threads-many",
+            data.db.as_bytes(),
+            args,
+            &queries,
+            &["2", "3", "5", "16", "0"],
+        );
+        assert!(one.status.success());
+        assert_eq!(String::from_utf8_lossy(&one.stdout).lines().count(), 1500);
+    }
+}
+
+#[test]
+fn stops_at_an_invalid_query_as_on_one_thread() {
+    let data = data();
+    let queries = many_queries(&data.templates, 1200);
+    for bad in [">bad;size=0\nACGT\n", ">bad\nAC\u{1}GT\n"] {
+        for input in [
+            format!("{queries}{bad}{queries}"),
+            format!("{bad}{queries}"),
+        ] {
+            let one = same_on_threads(
+                "threads-bad",
+                data.db.as_bytes(),
+                &["--seed", "2"],
+                &input,
+                &["2", "3", "8"],
+            );
+            assert_eq!(one.status.code(), Some(1));
+        }
+    }
+}
+
+#[test]
+fn takes_the_thread_count() {
+    let data = data();
+    let expected = table(
+        "threads-t",
+        data.db.as_bytes(),
+        &["--seed", "1"],
+        &data.queries,
+    );
+    for t in [&["-t", "0"][..], &["--threads", "5"], &["-t", "1025"]] {
+        let args: Vec<&str> = ["--seed", "1"]
+            .iter()
+            .copied()
+            .chain(t.iter().copied())
+            .collect();
+        let (output, _) = sintax("threads-t", data.db.as_bytes(), &args, &data.queries);
+        assert!(output.status.success(), "{t:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{t:?}");
+    }
+    for t in ["-1", "x", "1.5", ""] {
+        let (output, _) = sintax("threads-t", data.db.as_bytes(), &["-t", t], &data.queries);
+        assert_eq!(output.status.code(), Some(2), "{t:?}");
+    }
 }
 
 const TABLE: &str = r##"q0	d:Bacteria(1.00),p:Firmicutes(1.00),c:Bacilli(1.00),o:Lactobacillales(1.00),f:Streptococcaceae(1.00),g:Streptococcus(1.00),s:S_mutans(1.00)	+
