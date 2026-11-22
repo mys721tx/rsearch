@@ -302,3 +302,95 @@ pub fn repo_root() -> PathBuf {
         .unwrap()
         .to_path_buf()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rscompare-runner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    fn record(source: &str, seed: u64, index: u64, outcome: &str) -> Map<String, Value> {
+        let Value::Object(m) = json!({
+            "case": "c", "source": source, "seed": seed, "index": index, "outcome": outcome,
+        }) else {
+            unreachable!()
+        };
+        m
+    }
+
+    #[test]
+    fn starts_a_line_after_a_record_cut_short() {
+        // a run stopped while writing leaves half a line; the next run's
+        // first record must not join it
+        let path = temp("cut.jsonl");
+        std::fs::write(&path, "{\"case\":\"a\"}\n{\"case\":\"b\",\"sou").unwrap();
+        let (mut file, held) = open_out(&path).unwrap();
+        assert_eq!(held, 2);
+        write_record(&mut file, &record("derep", 1, 0, "pass")).unwrap();
+        drop(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], "{\"case\":\"b\",\"sou");
+        assert!(lines[2].starts_with('{') && serde_json::from_str::<Value>(lines[2]).is_ok());
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn creates_and_counts_what_out_holds() {
+        let path = temp("new.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let (mut file, held) = open_out(&path).unwrap();
+        assert_eq!(held, 0);
+        for k in 0..3 {
+            write_record(&mut file, &record("conv", 2, k, "pass")).unwrap();
+        }
+        drop(file);
+        assert_eq!(open_out(&path).unwrap().1, 3);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
+    }
+
+    #[test]
+    fn reads_records_skipping_lines_that_are_not_and_counting_each_case_once() {
+        let path = temp("mixed.jsonl");
+        let line = |m: Map<String, Value>| format!("{}\n", Value::Object(m));
+        let text = [
+            line(record("derep", 1, 0, "fail")),
+            line(record("derep", 1, 1, "pass")),
+            "{\"case\":\"cut\",\"source\":\"uch{\"case\":\"x\"}\n".to_string(),
+            "\n".to_string(),
+            line(record("derep", 1, 0, "pass")),
+            line(record("conv", 3, 0, "skip")),
+        ]
+        .concat();
+        std::fs::write(&path, text).unwrap();
+        let (records, warnings) = read_records(std::slice::from_ref(&path)).unwrap();
+        // the last record of derep 1 #0 counts, once
+        let outcomes: Vec<(String, String)> = records
+            .iter()
+            .map(|r| {
+                (
+                    format!("{} {} {}", r["source"], r["seed"], r["index"]),
+                    r["outcome"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(outcomes.len(), 3);
+        assert!(outcomes.contains(&("\"derep\" 1 0".into(), "pass".into())));
+        assert!(outcomes.contains(&("\"derep\" 1 1".into(), "pass".into())));
+        assert!(outcomes.contains(&("\"conv\" 3 0".into(), "skip".into())));
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{}:3: not a record, skipped", path.display())),
+            "{warnings:?}"
+        );
+        assert_eq!(
+            warnings[1],
+            "1 case is recorded more than once; the last record of each is counted"
+        );
+    }
+}
