@@ -163,6 +163,29 @@ pub fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// The environment variable listing the thread counts of the threaded
+/// tools' benchmarks, such as `1,4,10`.
+pub const THREADS: &str = "RSEARCH_BENCH_THREADS";
+
+/// The thread counts a threaded tool is timed at: those of
+/// `RSEARCH_BENCH_THREADS`, else one and one per core.
+pub fn thread_counts() -> Vec<usize> {
+    if let Ok(list) = std::env::var(THREADS) {
+        let counts: Vec<usize> = list
+            .split(',')
+            .map(|n| {
+                n.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{THREADS}: {list}"))
+            })
+            .collect();
+        assert!(counts.iter().all(|&n| n > 0), "{THREADS}: {list}");
+        return counts;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if cores > 1 { vec![1, cores] } else { vec![1] }
+}
+
 /// A criterion group name: `name`, or `name@<id>` with a dataset.
 pub fn group(name: &str) -> String {
     group_for(name, id().as_deref())

@@ -4,8 +4,10 @@
 //! bases against a database of 10,000. They are copies of 200 templates
 //! with one base in twenty changed, inserted or deleted. It searches at the
 //! defaults with --id 0.97, and on both strands with --id 0.9, --maxaccepts
-//! 8 and --maxrejects 64. compare/benches/dbsrch times vsearch on the same
-//! files, after checking that both write the same hits.
+//! 8 and --maxrejects 64, at each thread count of `data::thread_counts`
+//! (one and one per core, or `RSEARCH_BENCH_THREADS`).
+//! compare/benches/dbsrch times vsearch at the same thread counts on the
+//! same files, after checking that both write the same hits.
 
 use std::process::{Command, Stdio};
 
@@ -45,8 +47,17 @@ fn bench_binary(c: &mut Criterion) {
         "both",
     ];
     for (name, args) in [("id97", &["--id", "0.97"][..]), ("both", &wide[..])] {
-        let rargs = [&["-i", q, "--db", db, "-o", "/dev/null"][..], args].concat();
-        group.bench_function(format!("dbsrch/{name}"), |b| b.iter(|| run(dbsrch, &rargs)));
+        for threads in data::thread_counts() {
+            let t = threads.to_string();
+            let rargs = [
+                &["-i", q, "--db", db, "-o", "/dev/null", "-t", &t][..],
+                args,
+            ]
+            .concat();
+            group.bench_function(format!("dbsrch/{name}/t{t}"), |b| {
+                b.iter(|| run(dbsrch, &rargs))
+            });
+        }
     }
     group.finish();
 }
