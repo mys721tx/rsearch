@@ -216,14 +216,21 @@ fn temp_path(name: &str) -> PathBuf {
 #[derive(Debug, PartialEq)]
 struct Written([String; 5]);
 
-/// Runs uchime with `args` on `input`, writing every output, the
-/// database `db` given.
-fn run(name: &str, args: &[&str], input: &str, db: Option<&str>) -> (Output, Written) {
+/// Runs uchime with `args` on `input`, writing every output, the database
+/// `db` given, at the SIMD level `level` or the processor's best.
+fn run_at(
+    level: Option<rsearch::simd::Level>,
+    name: &str,
+    args: &[&str],
+    input: &str,
+    db: Option<&str>,
+) -> (Output, Written) {
     let inp = temp_path(&format!("{name}-in"));
     std::fs::write(&inp, input).unwrap();
     let outs = ["chimeras", "borderline", "table", "alignments"]
         .map(|o| temp_path(&format!("{name}-{o}")));
     let mut command = Command::new(env!("CARGO_BIN_EXE_uchime"));
+    command.envs(level.map(|l| (rsearch::simd::VARIABLE, l.name())));
     command.arg("-i").arg(&inp);
     let dbp = temp_path(&format!("{name}-db"));
     if let Some(db) = db {
@@ -3443,5 +3450,53 @@ fn takes_the_thread_count() {
             Some(2),
             "{t:?}"
         );
+    }
+}
+
+/// Runs uchime with `args` on `input`, writing every output, the
+/// database `db` given.
+fn run(name: &str, args: &[&str], input: &str, db: Option<&str>) -> (Output, Written) {
+    run_at(None, name, args, input, db)
+}
+
+/// The SIMD levels of this processor, scalar with SSE2 and AVX2 or with
+/// NEON. Each aligns eight or sixteen targets at once and must give the
+/// output of the others.
+fn levels() -> Vec<rsearch::simd::Level> {
+    let levels = rsearch::simd::available();
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    assert!(levels.len() >= 2, "{levels:?}");
+    levels
+}
+
+#[test]
+fn finds_the_same_chimeras_at_every_simd_level() {
+    let levels = levels();
+    let queries = many_queries(800);
+    for (args, db) in [
+        (&[][..], Some(REF)),
+        (
+            &["--mindiffs", "1", "--mindiv", "0.3", "--minh", "0.1"][..],
+            Some(REF),
+        ),
+        (&[][..], None),
+    ] {
+        let input = if db.is_some() {
+            queries.clone()
+        } else {
+            many_queries(300)
+        };
+        let runs: Vec<(Output, Written)> = levels
+            .iter()
+            .map(|&level| run_at(Some(level), "levels", args, &input, db))
+            .collect();
+        assert!(runs[0].0.status.success(), "{args:?}");
+        for (level, (output, written)) in levels.iter().zip(&runs).skip(1) {
+            assert!(output.status.success(), "{level:?} {args:?}");
+            assert!(
+                written.0 == runs[0].1.0,
+                "{level:?} writes otherwise, {args:?}"
+            );
+        }
     }
 }
