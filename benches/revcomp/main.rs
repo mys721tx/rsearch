@@ -4,6 +4,10 @@
 //! reads; `binary` runs the revcomp program end to end on files of FASTQ
 //! and FASTA reads. compare/benches/revcomp times vsearch on the same
 //! files.
+//!
+//! `simd` runs revcomp at each SIMD level this processor has, chosen with
+//! `RSEARCH_SIMD` or listed in `RSEARCH_BENCH_SIMD`. It sets the scalar code
+//! the compiler vectorises against the hand-written AVX2 or NEON.
 
 use std::hint::black_box;
 use std::process::Command;
@@ -14,6 +18,8 @@ use rsearch::cluster::reverse_complement_keeping_case;
 use rsearch::fastx::{Reader, Record};
 
 mod input;
+#[path = "../common/levels.rs"]
+mod levels;
 use input::*;
 
 fn parse(text: &str) -> Vec<Record> {
@@ -67,5 +73,26 @@ fn bench_binary(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_complement, bench_binary);
+/// revcomp on FASTQ and FASTA at each SIMD level this processor has.
+fn bench_simd(c: &mut Criterion) {
+    if skip() {
+        return;
+    }
+    let inputs = input_files();
+    let revcomp = env!("CARGO_BIN_EXE_revcomp");
+    let mut group = c.benchmark_group(data::group("revcomp/simd"));
+    group.throughput(Throughput::Elements(data::count(&inputs.fastq, READS)));
+    group.sample_size(10);
+    for (name, file) in [("fastq", &inputs.fastq), ("fasta", &inputs.fasta)] {
+        let args = ["-i", file.to_str().unwrap(), "-o", "/dev/null"];
+        for level in levels::levels() {
+            group.bench_function(format!("revcomp/{name}/{}", level.name()), |b| {
+                b.iter(|| levels::run_at(level, revcomp, &args))
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_complement, bench_binary, bench_simd);
 criterion_main!(benches);
