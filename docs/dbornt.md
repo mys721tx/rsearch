@@ -6,7 +6,7 @@ Orient sequences by database words; write them forward.
 
 ```
 dbornt --db FILE [-i FILE] [-o FILE] [--word-len N] [--not-oriented FILE]
-       [--tabbedout FILE] [--report FILE]
+       [--tabbedout FILE] [--report FILE] [-t N]
 ```
 
 ## Description
@@ -39,6 +39,9 @@ queries and the database.
 - `--tabbedout FILE`: Output table: header, strand (`+`, `-` or `?`) and
   the votes for each strand.
 - `--report FILE`: Output file of the summary.
+- `-t`, `--threads N`: Orient on N threads, 0 for one per logical core.
+  The queries go to the threads 1,000 at a time, and the outputs are the
+  same, in the same order, on any number. Default: 0.
 
 ## vsearch
 
@@ -51,6 +54,9 @@ is the database without [lcmask](lcmask.md), `--dbmask none` `lcmask
 of its queries without running DUST. dbornt therefore takes them as they
 are. `--qmask none` is `lcmask --clear` on them. Its database length limit
 is `sqfilt --max-len 50000`.
+
+vsearch orients on one thread. dbornt orients on several and writes the
+same as on one.
 
 ## Examples
 

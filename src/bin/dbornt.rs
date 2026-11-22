@@ -13,6 +13,7 @@ use rsearch::cluster::reverse_complement_keeping_case;
 use rsearch::fastx::{Format, Reader, Record};
 use rsearch::label::checked_abundance;
 use rsearch::orient::{Orienter, Strand};
+use rsearch::threads::{Workers, threads, threads_args};
 use rsearch::udb::{self, Header, Udb};
 use rsearch::words::{MAX_WORD_LEN, MIN_WORD_LEN, word_counts};
 use rsearch::writer::Writer;
@@ -151,14 +152,33 @@ fn report(forward: u64, reverse: u64, not_oriented: u64) -> String {
     .concat()
 }
 
+/// The queries a worker orients at once.
+const CHUNK: usize = 1000;
+
+/// A chunk of queries (header, sequence, scores), and the error that ends
+/// the input after them, if any.
+type Chunk = (Vec<(String, Vec<u8>, Vec<u8>)>, Option<String>);
+
+/// What a worker made of a chunk: the bytes of the oriented records, of those
+/// not oriented, and of the table; the queries found forward, reverse, and on
+/// neither strand; and the error after them.
+struct Oriented {
+    oriented: Vec<u8>,
+    not_oriented: Vec<u8>,
+    table: Vec<u8>,
+    counts: [u64; 3],
+    error: Option<String>,
+}
+
 fn main() {
     let file = |name: &'static str, help: &'static str| {
         Arg::new(name).long(name).value_name("FILE").help(help)
     };
-    let matches = Command::new("dbornt")
-        .about("Orient sequences by database words; write them forward.")
-        .long_about(
-            "Orient sequences by database words; write them forward.\n\n\
+    let matches = threads_args(
+        Command::new("dbornt")
+            .about("Orient sequences by database words; write them forward.")
+            .long_about(
+                "Orient sequences by database words; write them forward.\n\n\
              As vsearch --orient: each distinct word of a query votes for a strand when \
              more than eight times as many database sequences hold it on that strand as \
              on the other, and a query is oriented when one strand has a vote and four \
@@ -166,48 +186,49 @@ fn main() {
              written reverse-complemented. Lower case residues are masked, in the \
              queries and the database. Queries are written in their format, FASTA \
              unwrapped.",
-        )
-        .arg(
-            Arg::new("in")
-                .short('i')
-                .long("in")
-                .value_name("INPUT")
-                .help("Input FASTA or FASTQ file, default to stdin"),
-        )
-        .arg(
-            Arg::new("out")
-                .short('o')
-                .long("out")
-                .value_name("OUTPUT")
-                .help("Output file of the oriented sequences, default to stdout"),
-        )
-        .arg(
-            Arg::new("db")
-                .long("db")
-                .value_name("FILE")
-                .required(true)
-                .help("Database: FASTA, FASTQ or UDB file"),
-        )
-        .arg(
-            Arg::new("word-len")
-                .long("word-len")
-                .value_name("LEN")
-                .default_value("12")
-                .value_parser(
-                    value_parser!(u32).range(i64::from(MIN_WORD_LEN)..=i64::from(MAX_WORD_LEN)),
-                )
-                .help("Length of the words, 3 to 15; a UDB database has its own"),
-        )
-        .arg(file(
-            "not-oriented",
-            "Output file of the sequences not oriented",
-        ))
-        .arg(file(
-            "tabbedout",
-            "Output table: label, strand (+, - or ?) and the votes for each strand",
-        ))
-        .arg(file("report", "Output file of the summary"))
-        .get_matches();
+            )
+            .arg(
+                Arg::new("in")
+                    .short('i')
+                    .long("in")
+                    .value_name("INPUT")
+                    .help("Input FASTA or FASTQ file, default to stdin"),
+            )
+            .arg(
+                Arg::new("out")
+                    .short('o')
+                    .long("out")
+                    .value_name("OUTPUT")
+                    .help("Output file of the oriented sequences, default to stdout"),
+            )
+            .arg(
+                Arg::new("db")
+                    .long("db")
+                    .value_name("FILE")
+                    .required(true)
+                    .help("Database: FASTA, FASTQ or UDB file"),
+            )
+            .arg(
+                Arg::new("word-len")
+                    .long("word-len")
+                    .value_name("LEN")
+                    .default_value("12")
+                    .value_parser(
+                        value_parser!(u32).range(i64::from(MIN_WORD_LEN)..=i64::from(MAX_WORD_LEN)),
+                    )
+                    .help("Length of the words, 3 to 15; a UDB database has its own"),
+            )
+            .arg(file(
+                "not-oriented",
+                "Output file of the sequences not oriented",
+            ))
+            .arg(file(
+                "tabbedout",
+                "Output table: label, strand (+, - or ?) and the votes for each strand",
+            ))
+            .arg(file("report", "Output file of the summary")),
+    )
+    .get_matches();
     let word_len = *matches.get_one::<u32>("word-len").unwrap();
 
     // the queries' format is checked first, then the outputs are created and
@@ -221,23 +242,22 @@ fn main() {
     let mut reader = Reader::new(BufReader::new(fin));
     let is_fastq = reader.format().unwrap_or_else(|e| fail(&e.to_string())) == Some(Format::Fastq);
 
-    let writer = |out: Box<dyn Write>| Writer::new(out, !is_fastq, 0);
-    let mut oriented = writer(match matches.get_one::<String>("out").map(String::as_str) {
+    let mut oriented: Box<dyn Write> = match matches.get_one::<String>("out").map(String::as_str) {
         Some(f) => create(f),
         None => Box::new(BufWriter::new(io::stdout())),
-    });
-    let mut not_oriented = matches
-        .get_one::<String>("not-oriented")
-        .map(|f| writer(create(f)));
+    };
+    let mut not_oriented = matches.get_one::<String>("not-oriented").map(|f| create(f));
     let mut table = matches.get_one::<String>("tabbedout").map(|f| create(f));
     let mut report_out = matches.get_one::<String>("report").map(|f| create(f));
 
     let db = matches.get_one::<String>("db").unwrap();
     let (word_len, counts) = database(db, word_len);
-    let mut orienter = Orienter::new(word_len, counts);
+    let orienter = Orienter::new(word_len, counts);
+    let tabled = table.is_some();
+    let sorted_out = not_oriented.is_some();
 
-    let flush_all = |oriented: &mut Writer<Box<dyn Write>>,
-                     not_oriented: &mut Option<Writer<Box<dyn Write>>>,
+    let flush_all = |oriented: &mut Box<dyn Write>,
+                     not_oriented: &mut Option<Box<dyn Write>>,
                      table: &mut Option<Box<dyn Write>>|
      -> io::Result<()> {
         oriented.flush()?;
@@ -250,56 +270,113 @@ fn main() {
         Ok(())
     };
 
-    let mut record = Record::new();
-    let (mut rc, mut rev_qual) = (Vec::new(), Vec::new());
+    // the queries in chunks, up to an error; nothing is read after it
+    let mut failed = false;
+    let next = || -> Option<Chunk> {
+        if failed {
+            return None;
+        }
+        let mut queries = Vec::with_capacity(CHUNK);
+        let mut record = Record::new();
+        while queries.len() < CHUNK {
+            let error = match reader.read(&mut record) {
+                Err(e) => Some(e.to_string()),
+                Ok(()) if record.is_empty() => {
+                    failed = true;
+                    break;
+                }
+                Ok(()) => checked_abundance(record.header())
+                    .err()
+                    .map(|e| format!("{e} in read {}", record.header())),
+            };
+            if error.is_some() {
+                failed = true;
+                return Some((queries, error));
+            }
+            queries.push((
+                record.header().to_string(),
+                record.seq().to_vec(),
+                record.qual().to_vec(),
+            ));
+        }
+        (!queries.is_empty()).then_some((queries, None))
+    };
+    // each chunk oriented and written out by a worker, as bytes
+    let orient = |orienter: &mut Orienter, (queries, error): Chunk| -> Oriented {
+        let (mut oriented, mut not_oriented, mut table) = (Vec::new(), Vec::new(), Vec::new());
+        let mut counts = [0u64; 3];
+        {
+            let mut oriented = Writer::new(&mut oriented, !is_fastq, 0);
+            let mut not_oriented = Writer::new(&mut not_oriented, !is_fastq, 0);
+            let (mut rc, mut rev_qual) = (Vec::new(), Vec::new());
+            for (header, seq, qual) in &queries {
+                let (strand, votes_fwd, votes_rev) = orienter.orient(seq);
+                match strand {
+                    Strand::Forward => {
+                        counts[0] += 1;
+                        oriented.write(header, None, seq, qual)
+                    }
+                    Strand::Reverse => {
+                        counts[1] += 1;
+                        reverse_complement_keeping_case(&mut rc, seq);
+                        rev_qual.clear();
+                        rev_qual.extend(qual.iter().rev());
+                        oriented.write(header, None, &rc, &rev_qual)
+                    }
+                    Strand::Undetermined => {
+                        counts[2] += 1;
+                        if sorted_out {
+                            not_oriented.write(header, None, seq, qual)
+                        } else {
+                            Ok(())
+                        }
+                    }
+                }
+                .expect("writing to memory");
+                if tabled {
+                    writeln!(
+                        table,
+                        "{header}\t{}\t{votes_fwd}\t{votes_rev}",
+                        strand.symbol()
+                    )
+                    .expect("writing to memory");
+                }
+            }
+            oriented.flush().expect("writing to memory");
+            not_oriented.flush().expect("writing to memory");
+        }
+        Oriented {
+            oriented,
+            not_oriented,
+            table,
+            counts,
+            error,
+        }
+    };
+    let threads = threads(&matches);
+    let workers = Workers::new(threads, || orienter.clone());
     let (mut forward, mut reverse, mut undetermined) = (0u64, 0u64, 0u64);
-    loop {
-        let error = match reader.read(&mut record) {
-            Err(e) => Some(e.to_string()),
-            Ok(()) if record.is_empty() => break,
-            Ok(()) => checked_abundance(record.header())
-                .err()
-                .map(|e| format!("{e} in read {}", record.header())),
-        };
-        if let Some(message) = error {
+    workers.stream(threads, next, orient, |chunk| {
+        let written = oriented
+            .write_all(&chunk.oriented)
+            .and_then(|()| match &mut not_oriented {
+                Some(w) => w.write_all(&chunk.not_oriented),
+                None => Ok(()),
+            })
+            .and_then(|()| match &mut table {
+                Some(t) => t.write_all(&chunk.table),
+                None => Ok(()),
+            });
+        written.unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
+        forward += chunk.counts[0];
+        reverse += chunk.counts[1];
+        undetermined += chunk.counts[2];
+        if let Some(message) = chunk.error {
             // the queries before an error are written
             let _ = flush_all(&mut oriented, &mut not_oriented, &mut table);
             fail(&message);
         }
-        let (strand, votes_fwd, votes_rev) = orienter.orient(record.seq());
-        let written = match strand {
-            Strand::Forward => {
-                forward += 1;
-                oriented.write(record.header(), None, record.seq(), record.qual())
-            }
-            Strand::Reverse => {
-                reverse += 1;
-                reverse_complement_keeping_case(&mut rc, record.seq());
-                rev_qual.clear();
-                rev_qual.extend(record.qual().iter().rev());
-                oriented.write(record.header(), None, &rc, &rev_qual)
-            }
-            Strand::Undetermined => {
-                undetermined += 1;
-                match &mut not_oriented {
-                    Some(w) => w.write(record.header(), None, record.seq(), record.qual()),
-                    None => Ok(()),
-                }
-            }
-        };
-        let tabled = match &mut table {
-            Some(t) => writeln!(
-                t,
-                "{}\t{}\t{votes_fwd}\t{votes_rev}",
-                record.header(),
-                strand.symbol()
-            ),
-            None => Ok(()),
-        };
-        written
-            .and(tabled)
-            .unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
-    }
+    });
     flush_all(&mut oriented, &mut not_oriented, &mut table)
         .unwrap_or_else(|e| fail(&format!("cannot write: {e}")));
     if let Some(warning) = reader.stripped_warning() {

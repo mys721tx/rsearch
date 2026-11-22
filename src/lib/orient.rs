@@ -4,6 +4,8 @@
 //! oriented when one strand has at least one vote and four times the votes
 //! of the other.
 
+use std::sync::Arc;
+
 use crate::words::{Uniquer, reverse_complement};
 
 /// The strand a query is found on.
@@ -45,8 +47,20 @@ const VOTES_FACTOR: u32 = 4;
 /// ```
 pub struct Orienter {
     word_len: u32,
-    counts: Vec<u32>,
+    /// shared by the orienters cloned from one another, one a thread.
+    counts: Arc<[u32]>,
     uniquer: Uniquer,
+}
+
+impl Clone for Orienter {
+    /// an orienter sharing the database's counts, with its own scratch.
+    fn clone(&self) -> Orienter {
+        Orienter {
+            word_len: self.word_len,
+            counts: Arc::clone(&self.counts),
+            uniquer: Uniquer::new(self.word_len),
+        }
+    }
 }
 
 impl Orienter {
@@ -56,7 +70,7 @@ impl Orienter {
         assert_eq!(counts.len(), 1 << (2 * word_len));
         Orienter {
             word_len,
-            counts,
+            counts: counts.into(),
             uniquer: Uniquer::new(word_len),
         }
     }
