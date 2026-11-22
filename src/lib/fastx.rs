@@ -865,6 +865,63 @@ mod test {
     }
 
     #[test]
+    fn test_finds_line_ends_at_every_level() {
+        // each SIMD level finds the first newline anywhere in buffers that
+        // end within, on, and after the 16- and 32-byte chunks, or none
+        for level in crate::simd::available() {
+            for len in [0, 1, 15, 16, 17, 31, 32, 33, 47, 48, 63, 64, 65, 100] {
+                let none = vec![b'\r'; len];
+                assert_eq!(find_newline_at(level, &none), None, "{level:?} {len}");
+                for at in 0..len {
+                    let mut bytes = none.clone();
+                    bytes[at] = b'\n';
+                    assert_eq!(find_newline_at(level, &bytes), Some(at), "{level:?} {len}");
+                    if at + 1 < len {
+                        bytes[len - 1] = b'\n';
+                        assert_eq!(find_newline_at(level, &bytes), Some(at), "{level:?} {len}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_reads_lines_at_every_level() {
+        // lines across the reader's buffers, read as read_until reads them
+        let text: Vec<u8> = (0..400u32)
+            .flat_map(|i| {
+                let mut line = vec![b'a' + (i % 26) as u8; (i * 7 % 70) as usize];
+                line.push(b'\n');
+                line
+            })
+            .chain(*b"last line without an end")
+            .collect();
+        for input in [&text[..], b"", b"\n", b"\n\n", b"x"] {
+            let mut expected = Vec::new();
+            let mut plain = input;
+            loop {
+                let mut line = Vec::new();
+                let n = plain.read_until(b'\n', &mut line).unwrap();
+                expected.push(line);
+                if n == 0 {
+                    break;
+                }
+            }
+            for level in crate::simd::available() {
+                for capacity in [1, 2, 3, 16, 33, 64, 8192] {
+                    let mut buffered = io::BufReader::with_capacity(capacity, input);
+                    for (i, want) in expected.iter().enumerate() {
+                        let mut line = Vec::new();
+                        let n = read_line_at(level, &mut buffered, &mut line).unwrap();
+                        assert_eq!(n, want.len(), "{level:?} {capacity} line {i}");
+                        assert_eq!(&line, want, "{level:?} {capacity} line {i}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_fast_checks_at_every_level() {
         // each SIMD level this processor has agrees with the tables on every
         // byte, at the start, the middle, and the end of lines that end
