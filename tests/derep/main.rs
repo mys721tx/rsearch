@@ -577,3 +577,186 @@ fn leaves_other_jobs_to_other_tools() {
 fn accepts_empty_input() {
     assert_eq!(derep(&[], ""), "");
 }
+
+/// Eighty reads cut from three templates at many lengths, so that most
+/// are prefixes of others: some in lower case or with U for T, some with
+/// an ambiguity code, some changed near their end (a branch), some empty,
+/// with abundances.
+fn prefix_reads() -> String {
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move |n: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % n
+    };
+    let templates: Vec<Vec<u8>> = (0..3)
+        .map(|_| (0..40).map(|_| b"ACGT"[next(4) as usize]).collect())
+        .collect();
+    let mut records = Vec::new();
+    for i in 0..80 {
+        let template = &templates[next(3) as usize];
+        let len = next(41) as usize;
+        let mut seq = template[..len].to_vec();
+        match next(8) {
+            0 => seq.make_ascii_lowercase(),
+            1 => seq.iter_mut().filter(|c| **c == b'T').for_each(|c| *c = b'U'),
+            2 if len > 0 => seq[next(len as u64) as usize] = b'R',
+            3 if len > 0 => seq[len - 1] = b"ACGT"[next(4) as usize],
+            _ => {}
+        }
+        let label = match next(4) {
+            0 => format!("r{i};size={}", 1 + next(5)),
+            _ => format!("r{i}"),
+        };
+        records.push(format!(">{label}\n{}\n", String::from_utf8(seq).unwrap()));
+    }
+    records.concat()
+}
+
+#[test]
+fn merges_many_prefixes_as_vsearch() {
+    // vsearch --derep_prefix --sizein --sizeout --minseqlength 0
+    // --notrunclabels --fasta_width 0 --output --uc
+    let input = prefix_reads();
+    let uc = temp_path("many-prefixes.uc");
+    let output = derep(&["--prefix", "--uc", uc.to_str().unwrap()], &input);
+    let uc_text = std::fs::read_to_string(&uc).unwrap();
+    std::fs::remove_file(uc).unwrap();
+    assert_eq!(output, MANY_PREFIXES);
+    assert_eq!(uc_text, MANY_PREFIXES_UC);
+}
+
+const MANY_PREFIXES: &str = r##">r37;size=35
+TATGGCACTCACCGATGACGGTTTAGTCTGCTGAGG
+>r21;size=8
+CACT
+>r4;size=8
+TATTCTGTGACTTGT
+>r12;size=7
+CACGGGAATATACAATGTTCR
+>r38;size=7
+CACGGGAATATACAATGTTCCCTATTACTAGCGCTAA
+>r72;size=7
+TATTCTGTGACTTGCATGCGCA
+>r15;size=6
+TATTCR
+>r16;size=5
+TATTCTGTGACTTGCATGCGCCAATAGTCGCAGAGG
+>r5;size=3
+CACGGGT
+>r59;size=3
+TATTCTGTGR
+>r1;size=1
+CACGGGAATATACAATGTTCCCTATTRCTAG
+>r18;size=1
+CACGGGAATATACAATGRTCCCTATTACT
+>r23;size=1
+TRTGGCACTCACC
+>r34;size=1
+CACGGGAATATARAATGTTCCCT
+>r50;size=1
+RATTCTGTGA
+>r64;size=1
+CACGGGAATATACARTGTTCCCTATTACTAGCGC
+>r65;size=1
+CACGGGAARATACAATGTTCCCTATTACTAG
+"##;
+const MANY_PREFIXES_UC: &str = r##"S	0	36	*	*	*	*	*	r37	*
+H	0	35	100.0	+	0	0	*	r39	r37
+H	0	34	100.0	+	0	0	*	r45	r37
+H	0	33	100.0	+	0	0	*	r48	r37
+H	0	30	100.0	+	0	0	*	r47	r37
+H	0	27	100.0	+	0	0	*	r62	r37
+H	0	23	100.0	+	0	0	*	r30	r37
+H	0	22	100.0	+	0	0	*	r19;size=3	r37
+H	0	19	100.0	+	0	0	*	r77;size=2	r37
+H	0	18	100.0	+	0	0	*	r66	r37
+H	0	16	100.0	+	0	0	*	r25;size=3	r37
+H	0	15	100.0	+	0	0	*	r41	r37
+H	0	14	100.0	+	0	0	*	r52	r37
+H	0	13	100.0	+	0	0	*	r10	r37
+H	0	12	100.0	+	0	0	*	r29;size=1	r37
+H	0	11	100.0	+	0	0	*	r22;size=3	r37
+H	0	8	100.0	+	0	0	*	r11	r37
+H	0	5	100.0	+	0	0	*	r69;size=3	r37
+H	0	13	100.0	+	0	0	*	r6	r37
+H	0	19	100.0	+	0	0	*	r17;size=1	r37
+H	0	22	100.0	+	0	0	*	r61	r37
+H	0	23	100.0	+	0	0	*	r58	r37
+H	0	23	100.0	+	0	0	*	r78	r37
+H	0	35	100.0	+	0	0	*	r42	r37
+H	0	35	100.0	+	0	0	*	r63	r37
+H	0	36	100.0	+	0	0	*	r73	r37
+S	1	4	*	*	*	*	*	r21;size=3	*
+H	1	3	100.0	+	0	0	*	r51	r21;size=3
+H	1	1	100.0	+	0	0	*	r57	r21;size=3
+H	1	0	100.0	+	0	0	*	r24;size=1	r21;size=3
+H	1	0	100.0	+	0	0	*	r8	r21;size=3
+H	1	3	100.0	+	0	0	*	r60	r21;size=3
+S	2	15	*	*	*	*	*	r4	*
+H	2	14	100.0	+	0	0	*	r31;size=3	r4
+H	2	13	100.0	+	0	0	*	r71;size=1	r4
+H	2	11	100.0	+	0	0	*	r20	r4
+H	2	10	100.0	+	0	0	*	r76	r4
+H	2	14	100.0	+	0	0	*	r56	r4
+S	3	21	*	*	*	*	*	r12	*
+H	3	20	100.0	+	0	0	*	r40	r12
+H	3	19	100.0	+	0	0	*	r43	r12
+H	3	14	100.0	+	0	0	*	r36	r12
+H	3	13	100.0	+	0	0	*	r0	r12
+H	3	9	100.0	+	0	0	*	r54	r12
+H	3	19	100.0	+	0	0	*	r75	r12
+S	4	37	*	*	*	*	*	r38	*
+H	4	32	100.0	+	0	0	*	r55	r38
+H	4	31	100.0	+	0	0	*	r26;size=1	r38
+H	4	30	100.0	+	0	0	*	r27	r38
+H	4	29	100.0	+	0	0	*	r53	r38
+H	4	27	100.0	+	0	0	*	r35	r38
+H	4	22	100.0	+	0	0	*	r70	r38
+S	5	22	*	*	*	*	*	r72	*
+H	5	19	100.0	+	0	0	*	r44	r72
+H	5	18	100.0	+	0	0	*	r7;size=4	r72
+H	5	16	100.0	+	0	0	*	r33	r72
+S	6	6	*	*	*	*	*	r15	*
+H	6	5	100.0	+	0	0	*	r79	r15
+H	6	4	100.0	+	0	0	*	r9	r15
+H	6	3	100.0	+	0	0	*	r2	r15
+H	6	2	100.0	+	0	0	*	r28	r15
+H	6	1	100.0	+	0	0	*	r68	r15
+S	7	36	*	*	*	*	*	r16	*
+H	7	30	100.0	+	0	0	*	r14	r16
+H	7	29	100.0	+	0	0	*	r67	r16
+H	7	26	100.0	+	0	0	*	r32	r16
+H	7	23	100.0	+	0	0	*	r46	r16
+S	8	7	*	*	*	*	*	r5	*
+H	8	4	100.0	+	0	0	*	r13	r5
+H	8	4	100.0	+	0	0	*	r49	r5
+S	9	10	*	*	*	*	*	r59	*
+H	9	7	100.0	+	0	0	*	r3	r59
+H	9	6	100.0	+	0	0	*	r74	r59
+S	10	31	*	*	*	*	*	r1	*
+S	11	29	*	*	*	*	*	r18	*
+S	12	13	*	*	*	*	*	r23	*
+S	13	23	*	*	*	*	*	r34	*
+S	14	10	*	*	*	*	*	r50	*
+S	15	34	*	*	*	*	*	r64	*
+S	16	31	*	*	*	*	*	r65	*
+C	0	35	*	*	*	*	*	r37	*
+C	1	8	*	*	*	*	*	r21;size=3	*
+C	2	8	*	*	*	*	*	r4	*
+C	3	7	*	*	*	*	*	r12	*
+C	4	7	*	*	*	*	*	r38	*
+C	5	7	*	*	*	*	*	r72	*
+C	6	6	*	*	*	*	*	r15	*
+C	7	5	*	*	*	*	*	r16	*
+C	8	3	*	*	*	*	*	r5	*
+C	9	3	*	*	*	*	*	r59	*
+C	10	1	*	*	*	*	*	r1	*
+C	11	1	*	*	*	*	*	r18	*
+C	12	1	*	*	*	*	*	r23	*
+C	13	1	*	*	*	*	*	r34	*
+C	14	1	*	*	*	*	*	r50	*
+C	15	1	*	*	*	*	*	r64	*
+C	16	1	*	*	*	*	*	r65	*
+"##;
