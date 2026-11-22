@@ -275,6 +275,114 @@ static FASTA: [Action; 256] = table(Policy::Fasta);
 static FASTQ_SEQUENCE: [Action; 256] = table(Policy::FastqSequence);
 static FASTQ_QUALITY: [Action; 256] = table(Policy::FastqQuality);
 
+/// reads a line into `line`, its newline included, as `BufRead::read_until`
+/// does, finding the newline at the SIMD level `level`; returns the bytes
+/// read, 0 at the end.
+fn read_line_at<R: BufRead>(level: Level, reader: &mut R, line: &mut Vec<u8>) -> io::Result<usize> {
+    let mut read = 0;
+    loop {
+        let buffer = match reader.fill_buf() {
+            Ok(buffer) => buffer,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if buffer.is_empty() {
+            return Ok(read);
+        }
+        let (taken, done) = match find_newline_at(level, buffer) {
+            Some(at) => (at + 1, true),
+            None => (buffer.len(), false),
+        };
+        line.extend_from_slice(&buffer[..taken]);
+        reader.consume(taken);
+        read += taken;
+        if done {
+            return Ok(read);
+        }
+    }
+}
+
+/// the place of the first newline in `bytes`, at `level`. AVX2 looks at 32
+/// bytes a step, SSE2 and NEON at 16, and the others at one.
+fn find_newline_at(level: Level, bytes: &[u8]) -> Option<usize> {
+    match level {
+        #[cfg(target_arch = "aarch64")]
+        Level::Neon => find_newline_neon(bytes),
+        #[cfg(target_arch = "x86_64")]
+        Level::Sse2 => find_newline_sse2(bytes),
+        // SAFETY: the level is AVX2 only on a processor that has it
+        #[cfg(target_arch = "x86_64")]
+        Level::Avx2 => unsafe { find_newline_avx2(bytes) },
+        _ => bytes.iter().position(|&b| b == b'\n'),
+    }
+}
+
+/// the first newline, 16 bytes a step with NEON.
+#[cfg(target_arch = "aarch64")]
+fn find_newline_neon(bytes: &[u8]) -> Option<usize> {
+    use std::arch::aarch64::*;
+    let (chunks, rest) = bytes.as_chunks::<16>();
+    // SAFETY: NEON is part of every aarch64 target, and each load reads
+    // 16 bytes from a chunk of exactly 16.
+    unsafe {
+        let newline = vdupq_n_u8(b'\n');
+        for (i, chunk) in chunks.iter().enumerate() {
+            let equal = vceqq_u8(vld1q_u8(chunk.as_ptr()), newline);
+            if vmaxvq_u8(equal) != 0 {
+                // four bits a byte, the first byte lowest
+                let nibbles = vget_lane_u64::<0>(vreinterpret_u64_u8(vshrn_n_u16::<4>(
+                    vreinterpretq_u16_u8(equal),
+                )));
+                return Some(16 * i + nibbles.trailing_zeros() as usize / 4);
+            }
+        }
+    }
+    let done = 16 * chunks.len();
+    rest.iter().position(|&b| b == b'\n').map(|at| done + at)
+}
+
+/// the first newline, 16 bytes a step with SSE2.
+#[cfg(target_arch = "x86_64")]
+fn find_newline_sse2(bytes: &[u8]) -> Option<usize> {
+    use std::arch::x86_64::*;
+    let (chunks, rest) = bytes.as_chunks::<16>();
+    // SAFETY: SSE2 is part of every x86-64 target, and each load reads 16
+    // bytes from a chunk of exactly 16.
+    unsafe {
+        let newline = _mm_set1_epi8(b'\n' as i8);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let equal = _mm_cmpeq_epi8(_mm_loadu_si128(chunk.as_ptr().cast()), newline);
+            let mask = _mm_movemask_epi8(equal) as u32;
+            if mask != 0 {
+                return Some(16 * i + mask.trailing_zeros() as usize);
+            }
+        }
+    }
+    let done = 16 * chunks.len();
+    rest.iter().position(|&b| b == b'\n').map(|at| done + at)
+}
+
+/// the first newline, 32 bytes a step with AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn find_newline_avx2(bytes: &[u8]) -> Option<usize> {
+    use std::arch::x86_64::*;
+    let (chunks, rest) = bytes.as_chunks::<32>();
+    // SAFETY: each load reads 32 bytes from a chunk of exactly 32.
+    unsafe {
+        let newline = _mm256_set1_epi8(b'\n' as i8);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let equal = _mm256_cmpeq_epi8(_mm256_loadu_si256(chunk.as_ptr().cast()), newline);
+            let mask = _mm256_movemask_epi8(equal) as u32;
+            if mask != 0 {
+                return Some(32 * i + mask.trailing_zeros() as usize);
+            }
+        }
+    }
+    let done = 32 * chunks.len();
+    rest.iter().position(|&b| b == b'\n').map(|at| done + at)
+}
+
 /// whether a line holds anything but IUPAC codes, at the SIMD level
 /// `simd::level` chose.
 fn has_non_iupac(line: &[u8]) -> bool {
@@ -545,7 +653,7 @@ impl<R: BufRead> Reader<R> {
     /// reads the next line without its line feed; false at end of input.
     fn next_line(&mut self) -> io::Result<bool> {
         self.line.clear();
-        if self.reader.read_until(b'\n', &mut self.line)? == 0 {
+        if read_line_at(crate::simd::level(), &mut self.reader, &mut self.line)? == 0 {
             return Ok(false);
         }
         self.line_complete = self.line.last() == Some(&b'\n');
