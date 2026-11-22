@@ -1,7 +1,8 @@
 //! Times `vsearch --orient --threads 1` and its rsearch pipelines on the
 //! files of rsearch's dbornt benchmark. It runs against the FASTA database
 //! (with `--dbmask soft`, the database as it is) and its UDB file. It first
-//! checks that dbornt writes the same table (see `common/vsearch.rs`).
+//! checks that dbornt on the most threads of `data::thread_counts` writes
+//! the same table (see `common/vsearch.rs`). vsearch orients on one thread.
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
@@ -59,6 +60,8 @@ fn bench_binary(c: &mut Criterion) {
                 null,
                 "--tabbedout",
                 r.to_str().unwrap(),
+                "-t",
+                &data::thread_counts().iter().max().unwrap().to_string(),
             ],
         );
         vsearch::run(
