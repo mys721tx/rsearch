@@ -40,7 +40,8 @@ pub struct Uniquer {
     /// The words found in the last sequence.
     list: Vec<u32>,
     /// For each word, the number of the last sequence it was found in,
-    /// plus one; empty above `MAX_TABLE_WORD_LEN`.
+    /// plus one. It is made on the first sequence, and only up to
+    /// `MAX_TABLE_WORD_LEN`.
     stamps: Vec<u32>,
     /// The words seen in the last sequence, above `MAX_TABLE_WORD_LEN`.
     seen: std::collections::HashSet<u32>,
@@ -51,15 +52,10 @@ pub struct Uniquer {
 impl Uniquer {
     pub fn new(word_len: u32) -> Uniquer {
         assert!((MIN_WORD_LEN..=MAX_WORD_LEN).contains(&word_len));
-        let stamps = if word_len <= MAX_TABLE_WORD_LEN {
-            vec![0; 1 << (2 * word_len)]
-        } else {
-            Vec::new()
-        };
         Uniquer {
             word_len,
             list: Vec::new(),
-            stamps,
+            stamps: Vec::new(),
             seen: std::collections::HashSet::new(),
             stamp: 0,
         }
@@ -78,7 +74,7 @@ impl Uniquer {
         let mut word = 0u32;
         // the residues read since the last one no word may hold
         let mut run = 0usize;
-        if self.stamps.is_empty() {
+        if self.word_len > MAX_TABLE_WORD_LEN {
             for &residue in seq {
                 let code = CODE[usize::from(residue)];
                 if code > 3 {
@@ -93,6 +89,9 @@ impl Uniquer {
             }
             self.seen.clear();
             return &self.list;
+        }
+        if self.stamps.is_empty() {
+            self.stamps = vec![0; 1 << (2 * k)];
         }
         self.stamp = self.stamp.wrapping_add(1);
         if self.stamp == 0 {
