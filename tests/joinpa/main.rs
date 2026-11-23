@@ -38,13 +38,13 @@ fn run(name: &str, args: &[&str], forward: &str, reverse: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("joinpa should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(forward.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = forward.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
     let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     std::fs::remove_file(path).unwrap();
     output
 }

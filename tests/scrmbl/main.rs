@@ -21,13 +21,14 @@ fn run(args: &[&str], input: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("scrmbl should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = input.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
+    let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
+    output
 }
 
 /// Runs scrmbl and returns its standard output, which must succeed.

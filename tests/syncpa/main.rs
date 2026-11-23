@@ -71,13 +71,13 @@ fn sync(name: &str, args: &[&str], forward: &str, reverse: &str) -> Synced {
         .stderr(Stdio::piped())
         .spawn()
         .expect("syncpa should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(forward.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = forward.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
     let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     // an output not written reads as empty
     let read = |i: usize| std::fs::read_to_string(&paths[i]).unwrap_or_default();
     let synced = Synced {

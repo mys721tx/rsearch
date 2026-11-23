@@ -58,13 +58,13 @@ fn cut(name: &str, pattern: &str, args: &[&str], input: &str) -> Cut {
         .stderr(Stdio::piped())
         .spawn()
         .expect("redig should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = input.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
     let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     // an output not written reads as empty
     let read = |i: usize| std::fs::read_to_string(&paths[i]).unwrap_or_default();
     let result = Cut {

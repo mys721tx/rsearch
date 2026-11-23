@@ -26,8 +26,14 @@ fn run_bytes(args: &[&str], input: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("conv should start");
-    child.stdin.take().unwrap().write_all(input).unwrap();
-    child.wait_with_output().unwrap()
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = input.to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
+    let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
+    output
 }
 
 /// Runs conv and returns its standard output, which must succeed.
@@ -689,13 +695,13 @@ fn pipe(bin: &str, first: &[&str], second: &[&str], input: &str) -> String {
         .stdout(Stdio::piped())
         .spawn()
         .expect("the first binary should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = input.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
     let between = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     assert!(between.status.success(), "{bin} failed");
     conv(second, std::str::from_utf8(&between.stdout).unwrap())
 }
@@ -803,13 +809,13 @@ fn udb_file(fasta: &str) -> Vec<u8> {
         .stderr(Stdio::null())
         .spawn()
         .expect("mkudb should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(fasta.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = fasta.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
     let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     assert!(output.status.success());
     output.stdout
 }

@@ -3295,13 +3295,13 @@ fn reads_stdin_and_writes_files() {
         .spawn()
         .unwrap();
     use std::io::Write;
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(i.q.as_bytes())
-        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let fed = i.q.as_bytes().to_vec();
+    let feeder = std::thread::spawn(move || {
+        let _ = stdin.write_all(&fed);
+    });
     let output = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
     let written = std::fs::read_to_string(&out).unwrap();
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_file(&out);
