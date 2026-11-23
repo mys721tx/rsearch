@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,12 +62,23 @@ fn finish(mut child: Child) -> (i32, String) {
             err.push_str("\nrscompare: timed out\n");
             137
         }
-        Some(s) => s.code().unwrap_or_else(|| {
-            use std::os::unix::process::ExitStatusExt;
-            128 + s.signal().unwrap_or(0)
-        }),
+        Some(s) => s.code().unwrap_or_else(|| signal_code(s)),
     };
     (code, err)
+}
+
+/// The exit code a shell gives a process ended by a signal: 128 plus the
+/// signal.
+#[cfg(unix)]
+fn signal_code(status: ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    128 + status.signal().unwrap_or(0)
+}
+
+/// Windows has no signals. Every process there ends with a code.
+#[cfg(not(unix))]
+fn signal_code(_: ExitStatus) -> i32 {
+    128
 }
 
 fn proc(argv: &[String], stdin: Option<&Path>, stdout: Option<&Path>, cwd: &Path) -> (i32, String) {
