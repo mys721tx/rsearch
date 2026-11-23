@@ -289,3 +289,23 @@ pub fn reverse_complement(word: u32, word_len: u32) -> u32 {
     }
     reverse
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A uniquer makes its table of every word on its first sequence. A
+    /// worker that gets no sequence then holds no table. dbornt's table of
+    /// 4^12 words is 64 MiB, and a thousand idle workers ran Windows out of
+    /// memory.
+    #[test]
+    fn makes_the_table_on_the_first_sequence() {
+        let mut uniquer = Uniquer::new(MAX_TABLE_WORD_LEN);
+        assert_eq!(uniquer.stamps.capacity(), 0);
+        assert_eq!(uniquer.words(b"ACGTACGTACGTA"), &[0x1b1b1b, 0x6c6c6c]);
+        assert_eq!(uniquer.stamps.len(), 1 << (2 * MAX_TABLE_WORD_LEN));
+        let mut longer = Uniquer::new(MAX_TABLE_WORD_LEN + 1);
+        assert_eq!(longer.words(b"ACGTACGTACGTA"), &[0x6c6c6c]);
+        assert_eq!(longer.stamps.capacity(), 0);
+    }
+}
