@@ -114,7 +114,14 @@ fn assert_selects(args: &[&str], indices: &[usize]) {
         rest(indices),
         "{args:?} --invert"
     );
-    let path = temp_path(&format!("discarded-{}", args.join("_").replace('/', "")));
+    // only the characters a file name may hold on every system. A path in
+    // the arguments has separators, and a drive colon on Windows
+    let name: String = args
+        .join("_")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || "-_.=".contains(*c))
+        .collect();
+    let path = temp_path(&format!("discarded-{name}"));
     let mut both = args.to_vec();
     both.extend(["--discarded", path.to_str().unwrap()]);
     assert_eq!(getseq(&both, &records()), pick(indices), "{args:?}");
