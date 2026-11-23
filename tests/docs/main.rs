@@ -157,14 +157,39 @@ fn examples(page: &str) -> Vec<(String, String)> {
     examples
 }
 
+/// copies the files of `from` into `to`, each line ended by a line feed
+/// alone. The pages show the examples with line feeds. Git on Windows may
+/// check them out with carriage returns.
 fn copy_dir(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
         if entry.file_type().unwrap().is_file() {
-            fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+            let bytes = fs::read(entry.path()).unwrap();
+            let mut lines = Vec::with_capacity(bytes.len());
+            for (i, &b) in bytes.iter().enumerate() {
+                if !(b == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
+                    lines.push(b);
+                }
+            }
+            fs::write(to.join(entry.file_name()), lines).unwrap();
         }
     }
+}
+
+#[test]
+fn copies_the_examples_with_line_feeds() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("docs-copy");
+    let (from, to) = (dir.join("from"), dir.join("to"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&from).unwrap();
+    fs::write(from.join("seqs.fa"), ">s1\r\nACGT\r\n>s2\nAC\rGT\n").unwrap();
+    copy_dir(&from, &to);
+    assert_eq!(
+        fs::read(to.join("seqs.fa")).unwrap(),
+        b">s1\nACGT\n>s2\nAC\rGT\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
