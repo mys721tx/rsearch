@@ -235,6 +235,18 @@ fn page_options_are_those_of_help() {
     }
 }
 
+/// `output` with the tools named as the pages name them. clap names a tool
+/// by its file. On Windows that file is `conv.exe`, and the pages say
+/// `conv`.
+fn as_on_page(output: &str) -> String {
+    if !cfg!(windows) {
+        return output.to_string();
+    }
+    TOOLS.iter().fold(output.to_string(), |shown, (tool, _)| {
+        shown.replace(&format!("{tool}.exe"), tool)
+    })
+}
+
 #[test]
 fn page_examples_give_their_output() {
     let bin_dir = Path::new(TOOLS[0].1).parent().unwrap();
@@ -266,7 +278,7 @@ fn page_examples_give_their_output() {
                 .output()
                 .unwrap();
             assert_eq!(
-                String::from_utf8_lossy(&output.stdout),
+                as_on_page(&String::from_utf8_lossy(&output.stdout)),
                 expected,
                 "{tool}: the output of `{command}`"
             );
