@@ -57,6 +57,8 @@ jobs:
           - build: windows
             os: windows-latest
             rust: stable
+            # rscompare runs vsearch commands as POSIX shell pipelines
+            packages: --exclude rscompare
           - build: beta
             os: ubuntu-latest
             rust: beta
@@ -77,4 +79,4 @@ jobs:
         uses: clechasseur/rs-cargo@v5.1.2
         with:
           command: test
-          args: --all --no-fail-fast
+          args: --workspace ${{ matrix.packages }} --no-fail-fast
