@@ -9,6 +9,15 @@ updates:
       prefix: "chore"
       prefix-development: "chore"
       include: "scope"
+  - package-ecosystem: cargo
+    directory: "/compare"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore"
+      prefix-development: "chore"
+      include: "scope"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
